@@ -1,0 +1,45 @@
+/* TowerControl dashboard styles */
+
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+.game-canvas {
+  max-width: 100%;
+  height: auto;
+  cursor: crosshair;
+  background: #111;
+  border: 1px solid #333;
+}
+
+.overlay-msg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #888;
+  font-size: 1.1rem;
+  pointer-events: none;
+}
+
+.card {
+  border-radius: 6px;
+}
+
+.card-header {
+  font-weight: 600;
+  font-size: 0.9rem;
+  letter-spacing: 0.03em;
+}
+
+#ocrText {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.badge-running   { background-color: #198754 !important; }
+.badge-paused    { background-color: #ffc107 !important; color: #000 !important; }
+.badge-stopped   { background-color: #dc3545 !important; }
+.badge-no_window { background-color: #6c757d !important; }
