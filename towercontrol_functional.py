@@ -671,7 +671,7 @@ def check_known_markers(frame: OCRFrame) -> None:
                     pass
         
         # Check for coins at position
-        if abs(fx - 0.3132) < 0.05 and abs(fy - 0.0819) < 0.05:
+        if abs(fx - 0.3132) < 0.02 and abs(fy - 0.0819) < 0.02:
             # Parse number with suffix (K, M, B, T)
             match = re.match(r'^([0-9.]+)\s*([KMBT])?$', r.text.strip(), re.IGNORECASE)
             if match:
