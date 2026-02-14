@@ -792,29 +792,22 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
             best_row, best_choice, best_idx = perk_text_priority[0]
             log.info(f"Best perk choice: '{best_choice}' in row {best_row} with text '{perk_text_join[best_row]}'")
             # click the perk in that row
-            click_y_frac = PERK_ROWS[best_row][1]
-            click_x_frac = 0.671
-
-            click_x = int(click_x_frac * w)
-            click_y = int(click_y_frac * h)
-
-            log.info(f"Clicking perk at row {best_row} (choice: '{best_choice}') at ({click_x_frac:.4f}, {click_y_frac:.4f}) -> pixels ({click_x}, {click_y})")
-            if window_rect and config:
-                execute_click(click_x, click_y, window_rect, config)
+            message = f"Clicking perk at row {best_row} (choice: '{best_choice}')"
+            do_click(window_rect, config, log, w, h, best_row, message,  0.671, PERK_ROWS[best_row][1])
             close_perks(window_rect, config, log, w, h)
         
     if perks_mode and not choose:
-
         close_perks(window_rect, config, log, w, h)
 
-def close_perks(window_rect, config, log, w, h):
-    click_x_frac = 0.878
-    click_y_frac =0.100            
+def do_click(window_rect, config, log, w, h, message,  click_x_frac, click_y_frac):
     click_x = int(click_x_frac * w)
     click_y = int(click_y_frac * h)
-    log.info(f'closing perks mode by clicking at ({click_x_frac:.4f}, {click_y_frac:.4f}) -> pixels ({click_x}, {click_y})')
+    log.info(f'{message} at ({click_x_frac:.4f}, {click_y_frac:.4f}) -> pixels ({click_x}, {click_y})')
     if window_rect and config:
         execute_click(click_x, click_y, window_rect, config)
+
+def close_perks(window_rect, config, log, w, h):
+    do_click(window_rect, config, log, w, h, "Closing perks mode by clicking 'X'", 0.878, 0.100)
 
 
 
