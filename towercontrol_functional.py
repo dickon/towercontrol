@@ -30,6 +30,33 @@ from PIL import Image, ImageDraw
 import mss
 import pyautogui
 
+PERK_ROWS = [ (0, 0.273), (1, 0.373), (2, 0.473), (3, 0.573), (4, 0.673) ]
+PERK_CHOICES = [
+    r'Peak Wave Requirement -[\d\.]+%',
+    r'Increase Max Game Speed by \-[\d\.]+',
+    r'x[\d\.]+ All Coins Bonuses',
+    r'Chain Lightning Damage x[\d\.]+',
+    r'Golden Tower Bonus x[\d\.]+',
+    r'x[\d\.]+ Damage',
+    r'\d+ More Smart Missiles',
+    r'\d+ Wave On Death Wave',
+    r'Bounce Shot \+\d+',
+    r'Black Hole Duration \+[\d\.]+s',
+    r'Spotlight Damage Bonus x[\d\.]+',
+    r'Defense percent \+[\d\.]+%',
+    r'x[\d\.]+ Health Regen',
+    r'x[\d\.]+ Max Health',
+    r'x[\d\.]+ Cash Bonus',
+    r'Chrono Field Duration \+[\d\.]s',
+    r'Swamp Radius x[\d\.]+',
+    r'Extra Set Of Inner Mines',
+    r'Free Upgrade Chancel for All \+[\d\.]+%',
+    r'Orbs \+\d+',
+    r'x[\d\.]+ Defense Absolute',
+    r'Land Mine Damage x[\d\.]+',
+    r'Interest x[\d\.]+',    
+]
+
 # OCR
 try:
     import pytesseract
@@ -45,6 +72,7 @@ try:
     import win32gui
 except ImportError:
     win32gui = None
+
 
 # ============================================================================
 # CONFIGURATION
@@ -691,17 +719,22 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
     print('perks_mode:', perks_mode, 'choose', choose)
     if perks_mode and choose:
         log.info("Perks mode found")
-        mode = 'perks'
+        mode = 'perks'        
     else:
         mode = 'main'
+    perk_text = {}
     for r in frame.results:
         cx, cy = r.center
         fx, fy = cx / w, cy / h
         
         
         lowertext = r.text.lower()
-        # if it is Perks near 0.5519, 0.0872 with width about 0.1194
-            
+
+        for (row, dy) in PERK_ROWS:
+            if abs(fy-dy) < 0.05 and fx > 0.54 and fx < 0.78:
+                perk_text.setdefault(row, list())            
+                perk_text[row].append(r.text)
+
         # Check for Perk button - CLICK IT
         if mode == 'main' and  r.text.lower() in ["perk", "perk:"]:
             log.info(f"'Perk' detected at ({fx:.4f}, {fy:.4f}) - clicking!")
@@ -740,8 +773,48 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
                 multipliers = {'K': 1_000, 'M': 1_000_000, 'B': 1_000_000_000, 'T': 1_000_000_000_000}
                 multiplier = multipliers.get(suffix, 1)
                 coins = value * multiplier
-                    
-                
+    if mode == 'perks' and perk_text:
+        perk_text_join = {row: " ".join(texts) for row, texts in perk_text.items()}        
+        log.info(f"Perk text by row: {perk_text_join}")
+        # perk_text_priority defined as the keys in perk_text_join and the index in PERK_CHOICES that has a regexp that matches the value
+        perk_text_priority = []
+        for row, text in perk_text_join.items():
+            hit = False
+            for idx, choice_pattern in enumerate(PERK_CHOICES):
+                if re.search(choice_pattern, text, re.IGNORECASE):
+                    perk_text_priority.append((row, choice_pattern, idx))
+                    hit = True
+                    break
+            if not hit:
+                log.warning(f"No perk choice pattern matched for row {row} with text '{text}'")
+        perk_text_priority.sort(key=lambda x: x[2])  # Sort by choice index (priority)
+        # pick the row with the highest priority (lowest index)
+        if perk_text_priority:
+            best_row, best_choice, best_idx = perk_text_priority[0]
+            log.info(f"Best perk choice: '{best_choice}' in row {best_row} with text '{perk_text_join[best_row]}'")
+            # click the perk in that row
+            click_y_frac = PERK_ROWS[best_row][1]
+            click_x_frac = 0.671
+
+            click_x = int(click_x_frac * w)
+            click_y = int(click_y_frac * h)
+
+            log.info(f"Clicking perk at row {best_row} (choice: '{best_choice}') at ({click_x_frac:.4f}, {click_y_frac:.4f}) -> pixels ({click_x}, {click_y})")
+            if window_rect and config:
+                execute_click(click_x, click_y, window_rect, config)
+        
+    if perks_mode and not choose:
+        click_x_frac = 0.878
+        click_y_frac =0.100            
+        click_x = int(click_x_frac * w)
+        click_y = int(click_y_frac * h)
+        log.info(f'closing perks mode by clicking at ({click_x_frac:.4f}, {click_y_frac:.4f}) -> pixels ({click_x}, {click_y})')
+        if window_rect and config:
+            execute_click(click_x, click_y, window_rect, config)
+
+
+
+
 
 def build_screen_state(frame: OCRFrame, window_rect: Optional[WindowRect] = None, config: Optional[Config] = None) -> ScreenState:
     """Build ScreenState from OCR frame. Pure function."""
