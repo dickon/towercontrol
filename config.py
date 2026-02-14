@@ -17,6 +17,7 @@ CAPTURE_INTERVAL = 0.5               # seconds between captures
 OCR_ENGINE = "pytesseract"            # "pytesseract" or "easyocr"
 OCR_LANG = "eng"
 OCR_CONFIDENCE_THRESHOLD = 40.0       # discard results below this %
+TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # ── Input ──────────────────────────────────────────────────────────────
 CLICK_PAUSE = 0.08                    # seconds after each click
@@ -34,3 +35,14 @@ WEB_PORT = 7700
 
 # ── Game ───────────────────────────────────────────────────────────────
 ACTIVE_GAME = "tower_idle"
+
+# ── Tower Idle Game Layout ─────────────────────────────────────────────
+# Tab positions (assuming ~540x960 portrait layout in BlueStacks)
+TAB_Y = 920
+TAB_POSITIONS = {
+    "battle":  (70,  TAB_Y),
+    "upgrades": (170, TAB_Y),
+    "shop":    (370, TAB_Y),
+    "more":    (470, TAB_Y),
+}
+SCROLL_REGION = (20, 200, 500, 650)

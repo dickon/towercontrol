@@ -9,6 +9,7 @@ Historical state is kept for the strategy engine to detect changes.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -26,8 +27,7 @@ class Screen(Enum):
     UNKNOWN = auto()
     MAIN = auto()
     SHOP = auto()
-    HEROES = auto()
-    SKILLS = auto()
+    UPGRADES = auto()
     SETTINGS = auto()
     DIALOG = auto()         # modal popup
     LOADING = auto()
@@ -75,7 +75,6 @@ class ScreenState:
         return out
 
     def has_text(self, pattern: str) -> bool:
-        import re
         for t in self.raw_texts:
             if re.search(pattern, t, re.IGNORECASE):
                 return True
@@ -88,6 +87,8 @@ class GameState:
     current_screen: ScreenState = field(default_factory=ScreenState)
     tab_states: Dict[str, ScreenState] = field(default_factory=dict)
     resources: Dict[str, str] = field(default_factory=dict)
+    wave: Optional[str] = None
+    wave_pos: Optional[Tuple[float, float]] = None  # (x_frac, y_frac)
     last_full_scan: float = 0.0
     action_history: List[Dict[str, Any]] = field(default_factory=list)
     error_count: int = 0
@@ -107,6 +108,7 @@ class GameState:
         """Serialisable summary for the web dashboard."""
         return {
             "current_screen": self.current_screen.screen.name,
+            "wave": self.wave,
             "resources": self.resources,
             "element_count": len(self.current_screen.elements),
             "elements": [
@@ -182,7 +184,50 @@ class StateMachine:
         )
         self.state.current_screen = ss
         self.state.resources.update(resources)
+
+        # Extract wave from OCR results positioned immediately to the right
+        self._extract_tier_wave(frame)
+
         return ss
+
+    def _extract_tier_wave(self, frame: OCRFrame):
+        """Extract wave by finding numeric text to the right of labels."""
+        w, h = frame.image_size
+        if w == 0 or h == 0:
+            log.warning("_extract_tier_wave: invalid image size (%d, %d)", w, h)
+            return
+            
+        for r in frame.results:
+            text_lower = r.text.lower().strip()
+            
+            # Found "wave" label
+            if text_lower in ("wave", "w"):
+                log.debug("Found wave label: '%s' at bbox %s", r.text, r.bbox)
+                label_x = r.bbox[0] + r.bbox[2]
+                label_y = r.bbox[1] + r.bbox[3] // 2
+                
+                best_num = None
+                best_candidate = None
+                best_dist = 999999
+                for candidate in frame.results:
+                    if re.match(r'^[0-9]+$', candidate.text.strip()):
+                        cand_x = candidate.bbox[0]
+                        cand_y = candidate.bbox[1] + candidate.bbox[3] // 2
+                        if cand_x > label_x and abs(cand_y - label_y) < 20:
+                            dist = cand_x - label_x
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_num = candidate.text.strip()
+                                best_candidate = candidate
+                if best_num and best_candidate:
+                    self.state.wave = best_num
+                    cx, cy = best_candidate.center
+                    self.state.wave_pos = (cx / w if w else 0, cy / h if h else 0)
+                    log.debug("Wave number found: %s at position (%.3f, %.3f)", 
+                             best_num, self.state.wave_pos[0], self.state.wave_pos[1])
+                elif text_lower in ("wave", "w"):
+                    log.debug("Wave label found but no valid number to the right (checked %d candidates)", 
+                             len([c for c in frame.results if re.match(r'^[0-9]+$', c.text.strip())]))
 
     def store_tab_state(self, tab_name: str, screen_state: ScreenState):
         """Save a scanned tab's state."""

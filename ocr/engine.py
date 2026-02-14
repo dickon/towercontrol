@@ -156,8 +156,10 @@ class OCREngine:
                 self._init_backend()
         else:
             try:
-                import pytesseract  # noqa: F401
-                log.info("pytesseract backend ready")
+                import pytesseract
+                import config as cfg
+                pytesseract.pytesseract.tesseract_cmd = cfg.TESSERACT_CMD
+                log.info("pytesseract backend ready (cmd=%s)", cfg.TESSERACT_CMD)
             except ImportError:
                 log.error("pytesseract not installed")
 

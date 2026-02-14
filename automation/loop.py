@@ -8,18 +8,20 @@ Runs in its own thread so the web server stays responsive.
 from __future__ import annotations
 
 import base64
+import datetime
 import io
 import logging
 import threading
 import time
 from typing import Any, Dict, Optional
 
+import config as cfg
+
 import cv2
 import numpy as np
 from PIL import Image
 
 from capture.window import WindowCapture
-from games.base import GameDefinition
 from input.controller import InputController
 from ocr.engine import OCREngine
 from scanner.ui_scanner import UIScanner
@@ -35,14 +37,13 @@ class AutomationLoop:
     def __init__(self, capture: WindowCapture, ocr: OCREngine,
                  controller: InputController, state_machine: StateMachine,
                  scanner: UIScanner, strategy: Strategy,
-                 game: GameDefinition, tick: float = 1.0):
+                 tick: float = 1.0):
         self.capture = capture
         self.ocr = ocr
         self.controller = controller
         self.sm = state_machine
         self.scanner = scanner
         self.strategy = strategy
-        self.game = game
         self.tick = tick
 
         self._thread: Optional[threading.Thread] = None
@@ -55,6 +56,7 @@ class AutomationLoop:
         self._latest_annotated: Optional[np.ndarray] = None
         self._override_action: Optional[Action] = None
         self._status: str = "stopped"
+        self.save_screenshots: bool = False   # disabled by default
 
     # ── Thread control ──────────────────────────────────────────────────
 
@@ -162,13 +164,27 @@ class AutomationLoop:
         self._latest_image = img
 
         # 2. OCR
-        frame = self.ocr.process(img)
-        screen_state = self.sm.update(frame, self.game.classify_element)
-        resources = self.game.extract_resources(frame.results)
+        try:
+            frame = self.ocr.process(img)
+        except Exception as exc:
+            log.error("OCR failed in main loop: %s", exc)
+            self.sm.state.error_count += 1
+            time.sleep(1)
+            return
+        
+        screen_state = self.sm.update(frame, self.scanner._classify_element)
+        resources = self.scanner._extract_resources(frame.results)
         self.sm.state.resources.update(resources)
 
         # 3. Build annotated image for dashboard
-        self._latest_annotated = self._annotate(img, frame)
+        try:
+            self._latest_annotated = self._annotate(img, frame)
+        except Exception:
+            self._latest_annotated = None
+
+        # 3b. Save screenshot to disk
+        if self.save_screenshots:
+            self._save_screenshot(img, self._latest_annotated)
 
         # 4. Check for override action
         action: Optional[Action] = None
@@ -229,3 +245,16 @@ class AutomationLoop:
             cv2.putText(arr, r.text[:30], (x, y - 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
         return arr
+
+    def _save_screenshot(self, raw: Image.Image, annotated: np.ndarray):
+        """Save raw and annotated screenshots to the screenshots directory."""
+        try:
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            raw_path = cfg.SCREENSHOTS_DIR / f"{ts}_raw.png"
+            ann_path = cfg.SCREENSHOTS_DIR / f"{ts}_ocr.jpg"
+            raw.save(str(raw_path))
+            cv2.imwrite(str(ann_path), annotated,
+                        [cv2.IMWRITE_JPEG_QUALITY, 85])
+            log.debug("Screenshots saved: %s", ts)
+        except Exception as exc:
+            log.warning("Failed to save screenshot: %s", exc)

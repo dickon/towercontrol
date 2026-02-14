@@ -38,3 +38,11 @@ screenshots/
 # OS
 .DS_Store
 Thumbs.db
+__pycache__/config.cpython-313.pyc
+automation/__pycache__/__init__.cpython-313.pyc
+automation/__pycache__/loop.cpython-313.pyc
+capture/__pycache__/__init__.cpython-313.pyc
+capture/__pycache__/window.cpython-313.pyc
+games/__pycache__/__init__.cpython-313.pyc
+games/__pycache__/base.cpython-313.pyc
+games/__pycache__/tower_idle.cpython-313.pyc
