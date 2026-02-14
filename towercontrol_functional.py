@@ -88,6 +88,12 @@ class Config:
         return d
 
     @property
+    def debug_dir(self) -> Path:
+        d = self.base_dir / "debug"
+        d.mkdir(exist_ok=True)
+        return d
+
+    @property
     def templates_dir(self) -> Path:
         return self.base_dir / "web" / "templates"
 
@@ -267,6 +273,46 @@ def image_to_bgr_array(img: Image.Image) -> np.ndarray:
     """Convert PIL Image to OpenCV BGR array."""
     arr = np.array(img)
     return arr[:, :, ::-1].copy()
+
+
+def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: str = "capture") -> None:
+    """Save debug image and text file with fractional positions of OCR elements."""
+    log = logging.getLogger(__name__)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    
+    try:
+        # Fixed filenames that overwrite
+        img_path = config.debug_dir / f"{prefix}.png"
+        txt_path = config.debug_dir / f"{prefix}.txt"
+        
+        # Save image
+        img.save(img_path)
+        log.debug(f"Saved debug image: {img_path}")
+        
+        # Create text table
+        img_width, img_height = frame.image_size
+        
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write(f"Debug Capture: {timestamp}\n")
+            f.write(f"Image Size: {img_width} x {img_height}\n")
+            f.write(f"Total OCR Elements: {len(frame.results)}\n")
+            f.write("\n" + "="*100 + "\n")
+            f.write(f"{'Text':<30} | {'X_Frac':<8} | {'Y_Frac':<8} | {'W_Frac':<8} | {'H_Frac':<8} | {'Conf':<6}\n")
+            f.write("="*100 + "\n")
+            
+            for result in frame.results:
+                x, y, w, h = result.bbox
+                x_frac = x / img_width if img_width > 0 else 0.0
+                y_frac = y / img_height if img_height > 0 else 0.0
+                w_frac = w / img_width if img_width > 0 else 0.0
+                h_frac = h / img_height if img_height > 0 else 0.0
+                
+                text_display = result.text[:28] + ".." if len(result.text) > 30 else result.text
+                f.write(f"{text_display:<30} | {x_frac:>8.4f} | {y_frac:>8.4f} | {w_frac:>8.4f} | {h_frac:>8.4f} | {result.confidence:>6.1f}\n")
+        
+        log.debug(f"Saved debug text: {txt_path}")
+    except Exception as e:
+        log.error(f"Failed to save debug files: {e}")
 
 
 # ============================================================================
@@ -677,6 +723,9 @@ def scan_current_screen(rect: WindowRect, config: Config, ocr_reader=None) -> Tu
 
     try:
         frame = process_ocr(img, config, ocr_reader)
+        # Save debug files
+        if frame:
+            save_debug_files(img, frame, config)
         return img, frame
     except Exception as e:
         logging.getLogger(__name__).error(f"OCR failed: {e}")
