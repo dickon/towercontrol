@@ -319,45 +319,110 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
 # PURE FUNCTIONS - OCR
 # ============================================================================
 
-def preprocess_image(img: np.ndarray) -> np.ndarray:
-    """Enhance image for OCR. Pure function."""
+def preprocess_image(img: np.ndarray) -> List[np.ndarray]:
+    """Generate multiple preprocessed variants for OCR. Returns list of images to try."""
+    # Always upscale 2x - game text is small and tesseract needs it
     h, w = img.shape[:2]
-    scale = 2 if w < 800 else 1
-    if scale > 1:
-        img = cv2.resize(img, None, fx=scale, fy=scale,
-                        interpolation=cv2.INTER_CUBIC)
+    img = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    thresh = cv2.adaptiveThreshold(
+    variants = []
+
+    # Strategy 1: OTSU thresholding - good for bimodal histograms
+    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    variants.append(otsu)
+
+    # Strategy 2: Adaptive threshold - good for uneven lighting
+    adaptive = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY, 31, 10
     )
-    return cv2.medianBlur(thresh, 3)
+    variants.append(adaptive)
+
+    # Strategy 3: Inverted OTSU - catches light text on dark backgrounds
+    _, otsu_inv = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    variants.append(otsu_inv)
+
+    # Strategy 4: Sharpened grayscale (no threshold) - sometimes raw works best
+    sharp_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+    sharpened = cv2.filter2D(gray, -1, sharp_kernel)
+    variants.append(sharpened)
+
+    return variants
+
+
+def _bbox_overlap(a: Tuple[int,int,int,int], b: Tuple[int,int,int,int]) -> float:
+    """Compute IoU between two (x,y,w,h) bounding boxes."""
+    ax1, ay1, aw, ah = a
+    bx1, by1, bw, bh = b
+    ax2, ay2 = ax1 + aw, ay1 + ah
+    bx2, by2 = bx1 + bw, by1 + bh
+    
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    
+    inter = (ix2 - ix1) * (iy2 - iy1)
+    union = aw * ah + bw * bh - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _merge_ocr_results(all_results: List[List[OCRResult]]) -> List[OCRResult]:
+    """Merge OCR results from multiple preprocessing runs, deduplicating by bbox overlap."""
+    merged = []
+    
+    for results in all_results:
+        for r in results:
+            # Check if we already have a result overlapping this bbox
+            duplicate = False
+            for i, existing in enumerate(merged):
+                if _bbox_overlap(r.bbox, existing.bbox) > 0.4:
+                    # Keep the one with higher confidence
+                    if r.confidence > existing.confidence:
+                        merged[i] = r
+                    duplicate = True
+                    break
+            if not duplicate:
+                merged.append(r)
+    
+    return merged
 
 
 def run_pytesseract_ocr(img: np.ndarray, config: Config) -> List[OCRResult]:
-    """Run pytesseract OCR. Returns list of OCR results."""
+    """Run pytesseract OCR with multiple PSM modes. Returns list of OCR results."""
     if not pytesseract:
         return []
 
     pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
-    data = pytesseract.image_to_data(
-        img, lang=config.ocr_lang,
-        output_type=pytesseract.Output.DICT,
-        config="--psm 11"
-    )
+    all_results = []
 
-    results = []
-    n = len(data["text"])
-    for i in range(n):
-        txt = data["text"][i].strip()
-        conf = float(data["conf"][i])
-        if conf >= config.ocr_confidence and txt:
-            bbox = (data["left"][i], data["top"][i],
-                   data["width"][i], data["height"][i])
-            results.append(OCRResult(text=txt, bbox=bbox, confidence=conf))
+    # Try multiple page segmentation modes
+    for psm in [6, 11, 3]:  # 6=uniform block, 11=sparse, 3=auto
+        try:
+            data = pytesseract.image_to_data(
+                img, lang=config.ocr_lang,
+                output_type=pytesseract.Output.DICT,
+                config=f"--psm {psm}"
+            )
 
-    return results
+            results = []
+            n = len(data["text"])
+            for i in range(n):
+                txt = data["text"][i].strip()
+                conf = float(data["conf"][i])
+                if conf >= config.ocr_confidence and len(txt) >= 2:
+                    bbox = (data["left"][i], data["top"][i],
+                           data["width"][i], data["height"][i])
+                    results.append(OCRResult(text=txt, bbox=bbox, confidence=conf))
+            all_results.append(results)
+        except Exception:
+            continue
+
+    return _merge_ocr_results(all_results) if all_results else []
 
 
 def run_easyocr_ocr(img: np.ndarray, reader, config: Config) -> List[OCRResult]:
@@ -382,18 +447,41 @@ def run_easyocr_ocr(img: np.ndarray, reader, config: Config) -> List[OCRResult]:
 
 
 def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
-    """Run OCR pipeline on image. Pure function (except OCR side effects)."""
+    """Run OCR pipeline on image with multiple preprocessing strategies."""
     arr = image_to_bgr_array(img)
     h, w = arr.shape[:2]
-    processed = preprocess_image(arr)
+    variants = preprocess_image(arr)
 
     if config.ocr_engine == "easyocr" and ocr_reader:
-        results = run_easyocr_ocr(processed, ocr_reader, config)
+        # EasyOCR: just run on first variant
+        results = run_easyocr_ocr(variants[0], ocr_reader, config)
     else:
-        results = run_pytesseract_ocr(processed, config)
+        # Pytesseract: run on all variants and merge
+        all_variant_results = []
+        for variant in variants:
+            variant_results = run_pytesseract_ocr(variant, config)
+            all_variant_results.append(variant_results)
+        results = _merge_ocr_results(all_variant_results)
+
+    # Scale bboxes back to original image coords (we upscaled 2x)
+    scaled_results = []
+    for r in results:
+        x, y, bw, bh = r.bbox
+        scaled_results.append(OCRResult(
+            text=r.text,
+            bbox=(x // 2, y // 2, bw // 2, bh // 2),
+            confidence=r.confidence
+        ))
+
+    # Save preprocessed debug image (first variant)
+    try:
+        debug_path = config.debug_dir / "preprocessed.png"
+        cv2.imwrite(str(debug_path), variants[0])
+    except Exception:
+        pass
 
     return OCRFrame(
-        results=tuple(results),
+        results=tuple(scaled_results),
         image_size=(w, h)
     )
 
