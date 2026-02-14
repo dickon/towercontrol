@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, NamedTuple
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 # Third-party dependencies
 import mss
@@ -119,6 +119,7 @@ class WindowRect:
     top: int
     width: int
     height: int
+    hwnd: int = 0  # Window handle for focus control
 
     @property
     def right(self) -> int:
@@ -223,7 +224,7 @@ def find_window(title_pattern: str) -> Optional[WindowRect]:
                 left, top, right, bottom = win32gui.GetWindowRect(hwnd)
                 w, h = right - left, bottom - top
                 if w > 50 and h > 50:
-                    result = WindowRect(left, top, w, h)
+                    result = WindowRect(left, top, w, h, hwnd=hwnd)
                     return False
             except Exception:
                 pass
@@ -686,6 +687,7 @@ def check_known_markers(frame: OCRFrame) -> None:
 
 def build_screen_state(frame: OCRFrame) -> ScreenState:
     """Build ScreenState from OCR frame. Pure function."""
+    log = logging.getLogger(__name__)
     screen = identify_screen(frame)
     check_known_markers(frame)
     
@@ -698,6 +700,8 @@ def build_screen_state(frame: OCRFrame) -> ScreenState:
             elements.append(elem)
             if elem.element_type == "resource":
                 resources[elem.name] = elem.text
+            elif elem.element_type == "button":
+                log.debug(f"Button classified: '{elem.text}' at {elem.center}")
 
     return ScreenState(
         screen=screen,
@@ -794,18 +798,30 @@ def find_claimable_buttons(state: GameState) -> List[UIElement]:
     """Find all claim/collect buttons on current screen."""
     log = logging.getLogger(__name__)
     claimable = []
+    
+    # Log all buttons found for debugging
+    all_buttons = [elem for elem in state.current_screen.elements if elem.element_type == "button"]
+    if all_buttons:
+        log.debug(f"Found {len(all_buttons)} buttons: {[b.text for b in all_buttons]}")
+    
     for elem in state.current_screen.elements:
         if elem.element_type == "button":
             text_lower = elem.text.lower()
             # Match claim, collect, gather, etc.
-            if text_lower == 'claim':
+            if any(word in text_lower for word in ["claim", "collect", "gather"]):
                 claimable.append(elem)
-                log.info('claimable button found: "%s" at (%d, %d)', elem.text, elem.center[0], elem.center[1])
+                log.info('Claimable button found: "%s" at (%d, %d)', elem.text, elem.center[0], elem.center[1])
+    
+    if not claimable and all_buttons:
+        log.debug('No claimable buttons found among: %s', [b.text for b in all_buttons])
+    
     return claimable
 
 
 def decide_action(state: GameState, config: Config, enabled: bool = True) -> Action:
     """Strategy decision function. Pure function."""
+    log = logging.getLogger(__name__)
+    
     if not enabled:
         return Action(action_type=ActionType.WAIT, duration=1.0, reason="Strategy disabled")
 
@@ -827,8 +843,8 @@ def decide_action(state: GameState, config: Config, enabled: bool = True) -> Act
                 reason=f"Clicking {button.text} button",
                 priority=10
             )
-    else:
-        log.info('no claims found')
+        else:
+            log.debug(f"Cooldown active: {time_since_last_claim:.1f}s since last click")
 
     # Priority 2: Check if full scan needed
     if time.time() - state.last_full_scan > config.full_scan_interval:
@@ -847,11 +863,51 @@ def to_absolute_coords(rel_x: int, rel_y: int, rect: WindowRect) -> Tuple[int, i
     return (rect.left + rel_x, rect.top + rel_y)
 
 
-def execute_click(x: int, y: int, rect: WindowRect, config: Config, enabled: bool) -> bool:
+def execute_click(x: int, y: int, rect: WindowRect, config: Config) -> bool:
     """Execute click action. Side effect."""
-    if not enabled:
-        return False
     log = logging.getLogger(__name__)
+    
+    # Capture debug screenshot with crosshairs BEFORE clicking
+    try:
+        debug_img = capture_window(rect)
+        if debug_img:
+            draw = ImageDraw.Draw(debug_img)
+            # Draw crosshairs at click location
+            crosshair_size = 40
+            crosshair_color = (0, 255, 0)  # Green
+            crosshair_width = 3
+            
+            # Horizontal line
+            draw.line([(x - crosshair_size, y), (x + crosshair_size, y)], 
+                     fill=crosshair_color, width=crosshair_width)
+            # Vertical line
+            draw.line([(x, y - crosshair_size), (x, y + crosshair_size)], 
+                     fill=crosshair_color, width=crosshair_width)
+            # Center circle
+            draw.ellipse([(x-5, y-5), (x+5, y+5)], outline=crosshair_color, width=crosshair_width)
+            
+            # Add text annotation
+            draw.text((x + crosshair_size + 10, y), 
+                     f"Click: ({x},{y})\nAbs: ({rect.left + x},{rect.top + y})",
+                     fill=crosshair_color)
+            
+            # Save debug image
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            debug_path = config.debug_dir / f"click_debug_{timestamp}.png"
+            debug_img.save(debug_path)
+            log.info(f"Debug screenshot saved: {debug_path}")
+    except Exception as e:
+        log.warning(f"Could not create debug screenshot: {e}")
+    
+    # Bring window to foreground before clicking
+    if rect.hwnd and win32gui:
+        try:
+            win32gui.SetForegroundWindow(rect.hwnd)
+            time.sleep(0.1)  # Brief delay for window to come to front
+            log.debug(f"Brought window to foreground (hwnd={rect.hwnd})")
+        except Exception as e:
+            log.warning(f"Could not bring window to foreground: {e}")
+    
     ax, ay = to_absolute_coords(x, y, rect)
     log.info(f"click({x}, {y}) → abs({ax}, {ay})")
     pyautogui.click(ax, ay, interval=config.click_pause)
@@ -882,7 +938,7 @@ def execute_swipe(x: int, y: int, distance: int, direction: str,
 
 
 def execute_action(action: Action, rect: Optional[WindowRect],
-                  config: Config, enabled: bool,
+                  config: Config,
                   scanner_fn: Callable, full_scan_fn: Callable) -> None:
     """Execute an action. Side effect dispatcher."""
     log = logging.getLogger(__name__)
@@ -890,15 +946,15 @@ def execute_action(action: Action, rect: Optional[WindowRect],
 
     if action.action_type == ActionType.CLICK and rect:
         log.info('clicking at (%d, %d) relative to window', action.x, action.y)
-        execute_click(action.x, action.y, rect, config, enabled)
+        execute_click(action.x, action.y, rect, config)
 
     elif action.action_type == ActionType.SWIPE_UP and rect:
         execute_swipe(action.x, action.y, action.amount or 300,
-                     "up", rect, config, enabled)
+                     "up", rect, config)
 
     elif action.action_type == ActionType.SWIPE_DOWN and rect:
         execute_swipe(action.x, action.y, action.amount or 300,
-                     "down", rect, config, enabled)
+                     "down", rect, config)
 
     elif action.action_type == ActionType.WAIT:
         log.info('sleeping for %.2f seconds', action.duration)
@@ -1011,7 +1067,7 @@ def automation_loop_tick(ctx: RuntimeContext):
     log.info('next action: %s – %s', action.action_type.name, action.reason)
     # Execute action
     execute_action(
-        action, ctx.window_rect, ctx.config, ctx.input_enabled,
+        action, ctx.window_rect, ctx.config,
         scanner_fn=ctx.scan_current,
         full_scan_fn=ctx.full_scan
     )
