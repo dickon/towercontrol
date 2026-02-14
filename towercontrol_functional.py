@@ -732,66 +732,19 @@ def scan_current_screen(rect: WindowRect, config: Config, ocr_reader=None) -> Tu
         return img, None
 
 
-def perform_tab_scan(tab_name: str, tab_pos: Tuple[int, int],
-                    rect: WindowRect, config: Config,
-                    ocr_reader=None, enabled: bool = False) -> List[ScreenState]:
-    """Scan a single tab by clicking it and scrolling. Returns list of screen states."""
-    log = logging.getLogger(__name__)
-    log.info(f"Scanning tab: {tab_name}")
-
-    states = []
-
-    # Click tab
-    if enabled:
-        execute_click(tab_pos[0], tab_pos[1], rect, config, enabled)
-        time.sleep(0.6)
-
-    # Initial capture
-    img, frame = scan_current_screen(rect, config, ocr_reader)
-    if frame:
-        states.append(build_screen_state(frame))
-
-    # Scroll and capture
-    rx, ry, rw, rh = config.scroll_region
-    center_x = rx + rw // 2
-    center_y = ry + rh // 2
-
-    for _ in range(6):
-        if enabled:
-            execute_swipe(center_x, center_y, rh // 2, "up", rect, config, enabled)
-            time.sleep(0.5)
-
-        img, frame = scan_current_screen(rect, config, ocr_reader)
-        if frame:
-            states.append(build_screen_state(frame))
-
-    # Scroll back
-    for _ in range(7):
-        if enabled:
-            execute_swipe(center_x, center_y, rh // 2, "down", rect, config, enabled)
-    
-    if enabled:
-        time.sleep(0.3)
-
-    return states
-
-
 def perform_full_scan(rect: WindowRect, config: Config,
                      ocr_reader=None, enabled: bool = False) -> Dict[str, ScreenState]:
-    """Perform full UI scan of all tabs. Returns dict of tab states."""
+    """Perform full UI scan (simplified - just scans current screen)."""
     log = logging.getLogger(__name__)
-    log.info("── Full UI scan starting ──")
+    log.info("── Full scan (current screen) ──")
 
-    tab_states = {}
+    # Just scan current screen, no tab navigation
+    img, frame = scan_current_screen(rect, config, ocr_reader)
+    if frame:
+        current_state = build_screen_state(frame)
+        return {"current": current_state}
     
-    for tab_name, tab_pos in config.tab_positions.items():
-        states = perform_tab_scan(tab_name, tab_pos, rect, config, ocr_reader, enabled)
-        # Merge all states from this tab
-        if states:
-            tab_states[tab_name] = states[0]  # Simplified: just use first
-
-    log.info(f"── Full UI scan complete ({len(tab_states)} tabs) ──")
-    return tab_states
+    return {}
 
 
 # ============================================================================
@@ -884,12 +837,10 @@ class RuntimeContext:
         if not self.window_rect:
             return
 
-        tab_states = perform_full_scan(
-            self.window_rect, self.config, self.ocr_reader, self.input_enabled
-        )
+        # Just do a regular scan and update timestamp
+        self.scan_current()
         self.game_state = replace(
             self.game_state,
-            tab_states=tab_states,
             last_full_scan=time.time()
         )
 
