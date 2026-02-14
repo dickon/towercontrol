@@ -68,3 +68,5 @@ strategy/__pycache__/__init__.cpython-313.pyc
 strategy/__pycache__/base.cpython-313.pyc
 strategy/__pycache__/tower_idle.cpython-313.pyc
 web/__pycache__/server.cpython-313.pyc
+debug/capture.png
+debug/capture.txt
