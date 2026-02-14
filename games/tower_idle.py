@@ -32,8 +32,7 @@ class TowerIdleGame(GameDefinition):
     TAB_Y = 920
     TAB_POSITIONS = {
         "battle":  (70,  TAB_Y),
-        "heroes":  (170, TAB_Y),
-        "skills":  (270, TAB_Y),
+        "upgrades": (170, TAB_Y),
         "shop":    (370, TAB_Y),
         "more":    (470, TAB_Y),
     }
@@ -56,9 +55,8 @@ class TowerIdleGame(GameDefinition):
 
     def get_screen_keywords(self) -> Dict[Screen, List[str]]:
         return {
-            Screen.MAIN:         ["wave", "stage", "floor", "damage", "dps"],
-            Screen.HEROES:       ["heroes", "hero", "level", "upgrade"],
-            Screen.SKILLS:       ["skills", "skill", "cooldown", "activate"],
+            Screen.MAIN:         ["wave", "damage", "dps", "floor"],
+            Screen.UPGRADES:     ["upgrade", "level", "cost"],
             Screen.SHOP:         ["shop", "buy", "purchase", "gems", "offer"],
             Screen.DIALOG:       ["ok", "cancel", "close", "confirm", "collect"],
             Screen.IDLE_REWARDS: ["idle", "rewards", "offline", "collect"],
@@ -70,7 +68,7 @@ class TowerIdleGame(GameDefinition):
         return [
             ResourcePattern("gold",  r"(?:gold|coins?)[:\s]*([0-9,.]+[kmbtKMBT]?)"),
             ResourcePattern("gems",  r"(?:gems?|diamonds?)[:\s]*([0-9,.]+)"),
-            ResourcePattern("stage", r"(?:stage|floor|wave)[:\s]*([0-9,]+)"),
+            ResourcePattern("wave",  r"(?:wave|w)[:\s]*([0-9,]+)"),
             ResourcePattern("dps",   r"(?:dps|damage)[:\s]*([0-9,.]+[kmbtKMBT]?)"),
         ]
 
@@ -92,7 +90,7 @@ class TowerIdleGame(GameDefinition):
                 )
 
         # ── Tab labels ──────────────────────────────────────────────────
-        tab_words = {"battle", "heroes", "skills", "shop", "more",
+        tab_words = {"battle", "upgrades", "shop", "more",
                      "settings", "home", "inventory"}
         if lower in tab_words:
             return UIElement(

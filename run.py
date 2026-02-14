@@ -35,17 +35,9 @@ def build_components(args):
     from capture.window import WindowCapture
     from ocr.engine import OCREngine
     from input.controller import InputController
-    from state.machine import StateMachine
+    from state.machine import StateMachine, Screen
     from scanner.ui_scanner import UIScanner
     from automation.loop import AutomationLoop
-
-    # ── Game definition ─────────────────────────────────────────────────
-    if args.game == "tower_idle":
-        from games.tower_idle import TowerIdleGame
-        game = TowerIdleGame()
-    else:
-        log.error("Unknown game: %s", args.game)
-        sys.exit(1)
 
     # ── Strategy ────────────────────────────────────────────────────────
     if args.game == "tower_idle":
@@ -67,13 +59,22 @@ def build_components(args):
                     confidence_threshold=args.confidence)
     controller = InputController(capture)
     sm = StateMachine()
-    game.register_with(sm)
-    scanner = UIScanner(capture, ocr, controller, sm, game)
+    
+    # Register Tower Idle screen keywords
+    sm.register_screen(Screen.MAIN, ["wave", "damage", "dps", "floor"])
+    sm.register_screen(Screen.UPGRADES, ["upgrade", "level", "cost"])
+    sm.register_screen(Screen.SHOP, ["shop", "buy", "purchase", "gems", "offer"])
+    sm.register_screen(Screen.DIALOG, ["ok", "cancel", "close", "confirm", "collect"])
+    sm.register_screen(Screen.IDLE_REWARDS, ["idle", "rewards", "offline", "collect"])
+    sm.register_screen(Screen.SETTINGS, ["settings", "options", "sound", "music"])
+    sm.register_screen(Screen.LOADING, ["loading", "connecting"])
+    
+    scanner = UIScanner(capture, ocr, controller, sm)
 
     loop = AutomationLoop(
         capture=capture, ocr=ocr, controller=controller,
         state_machine=sm, scanner=scanner, strategy=strategy,
-        game=game, tick=args.tick,
+        tick=args.tick,
     )
 
     return loop

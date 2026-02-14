@@ -64,6 +64,7 @@ function handleState(s) {
 
   // Screen & element info
   setText("currentScreen", s.current_screen || "—");
+  setText("currentWave",   s.wave || "—");
   setText("elementCount",  s.element_count ?? "—");
   setText("tabsScanned",   (s.tabs_scanned || []).join(", ") || "—");
   setText("errorCount",    s.error_count ?? 0);

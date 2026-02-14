@@ -28,11 +28,13 @@ class InputController:
 
     def __init__(self, capture: WindowCapture,
                  click_pause: float = 0.08,
-                 input_delay: float = 0.15):
+                 input_delay: float = 0.15,
+                 drag_enabled: bool = False):
         self.capture = capture
         self.click_pause = click_pause
         self.input_delay = input_delay
-        self._enabled = True
+        self._enabled = False   # disabled by default – enable via web UI
+        self.drag_enabled = drag_enabled
 
     # ── enable / disable (web override) ─────────────────────────────────
 
@@ -98,7 +100,9 @@ class InputController:
     def drag(self, from_x: int, from_y: int,
              to_x: int, to_y: int, duration: float = 0.3) -> bool:
         """Drag from one position to another (relative coords)."""
-        if not self._enabled:
+        if not self._enabled or not self.drag_enabled:
+            if not self.drag_enabled:
+                log.debug("drag suppressed (drag_enabled=False)")
             return False
         src = self._abs(from_x, from_y)
         dst = self._abs(to_x, to_y)
