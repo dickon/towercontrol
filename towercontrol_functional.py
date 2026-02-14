@@ -44,7 +44,7 @@ PERK_CHOICES = [
     r'Black Hole Duration \+[\d\.]+s',
     r'Spotlight Damage Bonus x[\d\.]+',
     r'Defense percent \+[\d\.]+%',
-    r'x[\d\.]+ Health Regen',
+    r'Health Regen x[\d\.]+',
     r'x[\d\.]+ Max Health',
     r'x[\d\.]+ Cash Bonus',
     r'Chrono Field Duration \+[\d\.]s',
@@ -802,15 +802,20 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
             log.info(f"Clicking perk at row {best_row} (choice: '{best_choice}') at ({click_x_frac:.4f}, {click_y_frac:.4f}) -> pixels ({click_x}, {click_y})")
             if window_rect and config:
                 execute_click(click_x, click_y, window_rect, config)
+            close_perks(window_rect, config, log, w, h)
         
     if perks_mode and not choose:
-        click_x_frac = 0.878
-        click_y_frac =0.100            
-        click_x = int(click_x_frac * w)
-        click_y = int(click_y_frac * h)
-        log.info(f'closing perks mode by clicking at ({click_x_frac:.4f}, {click_y_frac:.4f}) -> pixels ({click_x}, {click_y})')
-        if window_rect and config:
-            execute_click(click_x, click_y, window_rect, config)
+
+        close_perks(window_rect, config, log, w, h)
+
+def close_perks(window_rect, config, log, w, h):
+    click_x_frac = 0.878
+    click_y_frac =0.100            
+    click_x = int(click_x_frac * w)
+    click_y = int(click_y_frac * h)
+    log.info(f'closing perks mode by clicking at ({click_x_frac:.4f}, {click_y_frac:.4f}) -> pixels ({click_x}, {click_y})')
+    if window_rect and config:
+        execute_click(click_x, click_y, window_rect, config)
 
 
 
