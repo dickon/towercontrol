@@ -635,8 +635,8 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
     return None, None
 
 
-def check_known_markers(frame: OCRFrame) -> None:
-    """Log known UI markers when detected at expected positions."""
+def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = None, config: Optional[Config] = None) -> None:
+    """Detect known UI markers and click on them directly."""
     log = logging.getLogger(__name__)
     w, h = frame.image_size
     if w == 0 or h == 0:
@@ -654,9 +654,20 @@ def check_known_markers(frame: OCRFrame) -> None:
     for r in frame.results:
         cx, cy = r.center
         fx, fy = cx / w, cy / h
-        # Check for Perk button
-        if r.text.lower() == "perk" and abs(fx - 0.6194) < 0.05 and abs(fy - 0.0418) < 0.05:
-            log.info(f"'Perk' detected at ({fx:.4f}, {fy:.4f})")
+        
+        # Check for Perk button - CLICK IT
+        if r.text.lower() == "perk":
+            log.info(f"'Perk' detected at ({fx:.4f}, {fy:.4f}) - clicking!")
+
+            if abs(fx - 0.6194) < 0.05 and abs(fy - 0.0418) < 0.05:
+                log.info('poisition accepted')
+                execute_click(cx, cy, window_rect, config)
+        
+        # Check for CLAIM button - CLICK IT
+        if r.text.lower() == "claim":
+            log.info(f"'CLAIM' detected at ({fx:.4f}, {fy:.4f}) - clicking!")
+            if window_rect and config:
+                execute_click(cx, cy, window_rect, config)
         
         # Check for perk threshold near position
         if abs(fx - 0.6341) < 0.05 and abs(fy - 0.0436) < 0.05:
@@ -685,11 +696,11 @@ def check_known_markers(frame: OCRFrame) -> None:
                     
                 
 
-def build_screen_state(frame: OCRFrame) -> ScreenState:
+def build_screen_state(frame: OCRFrame, window_rect: Optional[WindowRect] = None, config: Optional[Config] = None) -> ScreenState:
     """Build ScreenState from OCR frame. Pure function."""
     log = logging.getLogger(__name__)
     screen = identify_screen(frame)
-    check_known_markers(frame)
+    check_known_markers(frame, window_rect, config)
     
     elements = []
     resources = {}
@@ -1089,7 +1100,7 @@ def perform_full_scan(rect: WindowRect, config: Config,
     # Just scan current screen, no tab navigation
     img, frame = scan_current_screen(rect, config, ocr_reader)
     if frame:
-        current_state = build_screen_state(frame)
+        current_state = build_screen_state(frame, rect, config)
         return {"current": current_state}
     
     return {}
@@ -1127,7 +1138,16 @@ class RuntimeContext:
         img, frame = scan_current_screen(self.window_rect, self.config, self.ocr_reader)
         if img and frame:
             self.latest_image = img
-            screen_state = build_screen_state(frame)
+            
+            # Check for floating gem and click it directly
+            if self.gem_template is not None:
+                gem_pos = detect_floating_gem(img, self.gem_template, self.config)
+                if gem_pos:
+                    log = logging.getLogger(__name__)
+                    log.info(f"Floating gem detected at {gem_pos} - clicking!")
+                    execute_click(gem_pos[0], gem_pos[1], self.window_rect, self.config)
+            
+            screen_state = build_screen_state(frame, self.window_rect, self.config)
             self.game_state = update_game_state(self.game_state, screen_state, frame)
 
     def full_scan(self):
@@ -1152,21 +1172,8 @@ def automation_loop_tick(ctx: RuntimeContext):
         ctx.status = "no_window"
         return
 
-    # Scan current screen
+    # Scan current screen (this now handles all clicking logic directly)
     ctx.scan_current()
-
-    # Strategy decides
-    action = decide_action(ctx.game_state, ctx.config, ctx.latest_image, ctx.gem_template)
-    log.info('next action: %s – %s', action.action_type.name, action.reason)
-    # Execute action
-    execute_action(
-        action, ctx.window_rect, ctx.config,
-        scanner_fn=ctx.scan_current,
-        full_scan_fn=ctx.full_scan
-    )
-
-    # Record action
-    ctx.game_state = record_action_in_state(ctx.game_state, action)
 
 
 def automation_loop_run(ctx: RuntimeContext):
