@@ -716,7 +716,6 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
     texts: tuple[str, float, float] = [ (r.text, r.center[0]/w, r.center[1]/h) for r in frame.results]
     perks_mode = [t for t in texts if t[0] == 'Perks' and abs(t[1]-0.612) < 0.05 and abs(t[2]-0.098) < 0.05]
     choose = [t for t in texts if t[0] == 'Choose' and abs(t[1]-0.522) < 0.05 and abs(t[2]-0.206) < 0.05]
-    print('perks_mode:', perks_mode, 'choose', choose)
     if perks_mode and choose:
         log.info("Perks mode found")
         mode = 'perks'        
@@ -758,7 +757,7 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
                     threshold_num = int(text_clean)
                     # Check if it's similar to wave number (within reasonable range)
                     if wave_num and abs(threshold_num - wave_num) < 10000:
-                        log.info(f"Perk threshold detected: {r.text} at ({fx:.4f}, {fy:.4f}) [wave: {wave_num_str}]")
+                        log.debug(f"Perk threshold detected: {r.text} at ({fx:.4f}, {fy:.4f}) [wave: {wave_num_str}]")
                 except ValueError:
                     pass
         
@@ -1185,7 +1184,7 @@ def execute_action(action: Action, rect: Optional[WindowRect],
                      "down", rect, config)
 
     elif action.action_type == ActionType.WAIT:
-        log.info('sleeping for %.2f seconds', action.duration)
+        log.trace('sleeping for %.2f seconds', action.duration)
         time.sleep(action.duration)
 
     elif action.action_type == ActionType.SCAN_CURRENT:
@@ -1319,7 +1318,7 @@ def automation_loop_run(ctx: RuntimeContext):
 
         elapsed = time.time() - t0
         sleep_time = max(0, ctx.config.loop_tick - elapsed)
-        log.info('sleeping for %.2f seconds', sleep_time)
+        log.debug('sleeping for %.2f seconds', sleep_time)
         time.sleep(sleep_time)
 
     log.info("Automation loop stopped")
