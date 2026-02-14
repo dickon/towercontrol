@@ -669,6 +669,23 @@ def check_known_markers(frame: OCRFrame) -> None:
                         log.info(f"Perk threshold detected: {r.text} at ({fx:.4f}, {fy:.4f}) [wave: {wave_num_str}]")
                 except ValueError:
                     pass
+        
+        # Check for coins at position
+        if abs(fx - 0.3132) < 0.05 and abs(fy - 0.0819) < 0.05:
+            # Parse number with suffix (K, M, B, T)
+            match = re.match(r'^([0-9.]+)\s*([KMBT])?$', r.text.strip(), re.IGNORECASE)
+            if match:
+                try:
+                    value = float(match.group(1))
+                    suffix = match.group(2).upper() if match.group(2) else ''
+                    
+                    multipliers = {'K': 1_000, 'M': 1_000_000, 'B': 1_000_000_000, 'T': 1_000_000_000_000}
+                    multiplier = multipliers.get(suffix, 1)
+                    coins = value * multiplier
+                    
+                    log.info(f"Current coins: {r.text} ({coins:,.0f}) at ({fx:.4f}, {fy:.4f})")
+                except (ValueError, AttributeError):
+                    pass
 
 
 def build_screen_state(frame: OCRFrame) -> ScreenState:
