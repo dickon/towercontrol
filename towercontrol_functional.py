@@ -60,7 +60,7 @@ class Config:
     tesseract_cmd: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
     click_pause: float = 0.08
     input_delay: float = 0.15
-    loop_tick: float = 1.0
+    loop_tick: float = 20.0
     full_scan_interval: float = 30.0
     web_host: str = "127.0.0.1"
     web_port: int = 7700
@@ -633,9 +633,48 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
     return None, None
 
 
+def check_known_markers(frame: OCRFrame) -> None:
+    """Log known UI markers when detected at expected positions."""
+    log = logging.getLogger(__name__)
+    w, h = frame.image_size
+    if w == 0 or h == 0:
+        return
+    
+    # Extract wave number for comparison
+    wave_num_str, _ = extract_wave_from_frame(frame)
+    wave_num = None
+    if wave_num_str:
+        try:
+            wave_num = int(wave_num_str.replace(',', ''))
+        except ValueError:
+            pass
+    
+    for r in frame.results:
+        cx, cy = r.center
+        fx, fy = cx / w, cy / h
+        
+        # Check for Perk button
+        if r.text.lower() == "perk" and abs(fx - 0.6194) < 0.05 and abs(fy - 0.0418) < 0.05:
+            log.info(f"'Perk' detected at ({fx:.4f}, {fy:.4f})")
+        
+        # Check for perk threshold near position
+        if abs(fx - 0.6341) < 0.05 and abs(fy - 0.0436) < 0.05:
+            # Try to parse as number
+            text_clean = r.text.replace(',', '').strip()
+            if re.match(r'^\d+$', text_clean):
+                try:
+                    threshold_num = int(text_clean)
+                    # Check if it's similar to wave number (within reasonable range)
+                    if wave_num and abs(threshold_num - wave_num) < 10000:
+                        log.info(f"Perk threshold detected: {r.text} at ({fx:.4f}, {fy:.4f}) [wave: {wave_num_str}]")
+                except ValueError:
+                    pass
+
+
 def build_screen_state(frame: OCRFrame) -> ScreenState:
     """Build ScreenState from OCR frame. Pure function."""
     screen = identify_screen(frame)
+    check_known_markers(frame)
     
     elements = []
     resources = {}
@@ -908,6 +947,7 @@ def automation_loop_run(ctx: RuntimeContext):
 
         elapsed = time.time() - t0
         sleep_time = max(0, ctx.config.loop_tick - elapsed)
+        log.info('sleeping for %.2f seconds', sleep_time)
         time.sleep(sleep_time)
 
     log.info("Automation loop stopped")
