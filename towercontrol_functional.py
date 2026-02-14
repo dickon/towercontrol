@@ -942,10 +942,6 @@ def decide_action(state: GameState, config: Config, latest_image: Optional[Image
         else:
             log.debug(f"Cooldown active: {time_since_last_claim:.1f}s since last click")
 
-    # Priority 2: Check if full scan needed
-    if time.time() - state.last_full_scan > config.full_scan_interval:
-        return Action(action_type=ActionType.FULL_SCAN, reason="Periodic full scan")
-
     # Default: observe current screen
     return Action(action_type=ActionType.SCAN_CURRENT, duration=1.0, reason="Observing")
 
