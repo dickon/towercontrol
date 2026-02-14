@@ -11,17 +11,13 @@ Usage:
 """
 
 import argparse
-import asyncio
-import base64
 import datetime
 import io
 import logging
 import re
-import threading
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from functools import partial, reduce
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, NamedTuple
 
@@ -32,10 +28,6 @@ from PIL import Image
 # Third-party dependencies
 import mss
 import pyautogui
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 # OCR
 try:
@@ -92,14 +84,6 @@ class Config:
         d = self.base_dir / "debug"
         d.mkdir(exist_ok=True)
         return d
-
-    @property
-    def templates_dir(self) -> Path:
-        return self.base_dir / "web" / "templates"
-
-    @property
-    def static_dir(self) -> Path:
-        return self.base_dir / "web" / "static"
 
 
 # ============================================================================
@@ -836,70 +820,20 @@ def perform_full_scan(rect: WindowRect, config: Config,
 
 
 # ============================================================================
-# RENDERING
-# ============================================================================
-
-def annotate_image(img: Image.Image, frame: OCRFrame) -> np.ndarray:
-    """Draw OCR boxes on image. Pure function (creates new array)."""
-    arr = image_to_bgr_array(img)
-    for r in frame.results:
-        x, y, w, h = r.bbox
-        cv2.rectangle(arr, (x, y), (x + w, y + h), (0, 255, 0), 1)
-        cv2.putText(arr, r.text[:30], (x, y - 4),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
-    return arr
-
-
-def image_to_base64_jpeg(img: np.ndarray) -> str:
-    """Convert BGR image to base64 JPEG string. Pure function."""
-    _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
-    return base64.b64encode(buf.tobytes()).decode("ascii")
-
-
-def state_to_dict(state: GameState, status: str, rect: Optional[WindowRect]) -> Dict[str, Any]:
-    """Convert GameState to dict for web API. Pure function."""
-    return {
-        "current_screen": state.current_screen.screen.name,
-        "wave": state.wave,
-        "resources": state.resources,
-        "element_count": len(state.current_screen.elements),
-        "elements": [
-            {"name": e.name, "type": e.element_type, "text": e.text, "bbox": e.bbox}
-            for e in state.current_screen.elements
-        ],
-        "raw_texts": list(state.current_screen.raw_texts[:60]),
-        "tabs_scanned": list(state.tab_states.keys()),
-        "last_full_scan": state.last_full_scan,
-        "recent_actions": list(state.action_history[-20:]),
-        "error_count": state.error_count,
-        "bot_status": status,
-        "window_found": rect is not None,
-        "window_rect": {
-            "left": rect.left, "top": rect.top,
-            "width": rect.width, "height": rect.height
-        } if rect else None,
-    }
-
-
-# ============================================================================
-# STATEFUL RUNTIME CONTEXT (Minimal mutable state container)
+# STATEFUL RUNTIME CONTEXT
 # ============================================================================
 
 @dataclass
 class RuntimeContext:
-    """Container for mutable runtime state - minimized to what's essential."""
+    """Container for mutable runtime state."""
     config: Config
     ocr_reader: Any = None
     game_state: GameState = field(default_factory=GameState)
     window_rect: Optional[WindowRect] = None
     latest_image: Optional[Image.Image] = None
-    latest_annotated: Optional[np.ndarray] = None
     running: bool = False
-    paused: bool = False
     input_enabled: bool = False
     status: str = "stopped"
-    override_action: Optional[Action] = None
-    lock: threading.Lock = field(default_factory=threading.Lock)
     last_window_check: float = 0.0
 
     def update_window(self):
@@ -918,7 +852,6 @@ class RuntimeContext:
             self.latest_image = img
             screen_state = build_screen_state(frame)
             self.game_state = update_game_state(self.game_state, screen_state, frame)
-            self.latest_annotated = annotate_image(img, frame)
 
     def full_scan(self):
         """Perform full scan and update state."""
@@ -934,7 +867,7 @@ class RuntimeContext:
 
 
 def automation_loop_tick(ctx: RuntimeContext):
-    """Single tick of automation loop. Mostly pure with controlled side effects."""
+    """Single tick of automation loop."""
     # Update window rect
     ctx.update_window()
     if not ctx.window_rect:
@@ -944,16 +877,8 @@ def automation_loop_tick(ctx: RuntimeContext):
     # Scan current screen
     ctx.scan_current()
 
-    # Check for override action
-    action = None
-    with ctx.lock:
-        if ctx.override_action:
-            action = ctx.override_action
-            ctx.override_action = None
-
-    # Strategy decides (always enabled - input_enabled only affects execution)
-    if action is None:
-        action = decide_action(ctx.game_state, ctx.config)
+    # Strategy decides
+    action = decide_action(ctx.game_state, ctx.config)
 
     # Execute action
     execute_action(
@@ -967,15 +892,11 @@ def automation_loop_tick(ctx: RuntimeContext):
 
 
 def automation_loop_run(ctx: RuntimeContext):
-    """Main loop runner - runs in separate thread."""
+    """Main loop runner."""
     log = logging.getLogger(__name__)
     log.info("Automation loop started")
 
     while ctx.running:
-        if ctx.paused:
-            time.sleep(0.5)
-            continue
-
         t0 = time.time()
         try:
             automation_loop_tick(ctx)
@@ -990,124 +911,6 @@ def automation_loop_run(ctx: RuntimeContext):
         time.sleep(sleep_time)
 
     log.info("Automation loop stopped")
-
-
-# ============================================================================
-# WEB API
-# ============================================================================
-
-def create_web_app(ctx: RuntimeContext) -> FastAPI:
-    """Create FastAPI app with routes. Returns configured app."""
-    app = FastAPI(title="TowerControl", version="0.1.0")
-
-    # Mount static files if they exist
-    if ctx.config.static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(ctx.config.static_dir)), name="static")
-
-    if ctx.config.templates_dir.exists():
-        templates = Jinja2Templates(directory=str(ctx.config.templates_dir))
-    else:
-        templates = None
-
-    @app.get("/", response_class=HTMLResponse)
-    async def dashboard(request: Request):
-        if templates:
-            return templates.TemplateResponse("index.html", {
-                "request": request,
-                "title": "TowerControl",
-            })
-        return HTMLResponse("<h1>TowerControl</h1><p>Dashboard template not found</p>")
-
-    @app.get("/api/state")
-    async def get_state():
-        return state_to_dict(ctx.game_state, ctx.status, ctx.window_rect)
-
-    @app.get("/api/image")
-    async def get_image():
-        if ctx.latest_annotated is not None:
-            b64 = image_to_base64_jpeg(ctx.latest_annotated)
-            return {"image": b64}
-        return {"image": None}
-
-    @app.post("/api/start")
-    async def start():
-        if not ctx.running:
-            ctx.running = True
-            ctx.paused = False
-            ctx.status = "running"
-            thread = threading.Thread(
-                target=lambda: automation_loop_run(ctx),
-                daemon=True,
-                name="AutomationLoop"
-            )
-            thread.start()
-        return {"status": "started"}
-
-    @app.post("/api/stop")
-    async def stop():
-        ctx.running = False
-        ctx.status = "stopped"
-        return {"status": "stopped"}
-
-    @app.post("/api/pause")
-    async def pause():
-        ctx.paused = True
-        ctx.status = "paused"
-        return {"status": "paused"}
-
-    @app.post("/api/resume")
-    async def resume():
-        ctx.paused = False
-        ctx.status = "running"
-        return {"status": "resumed"}
-
-    @app.post("/api/click")
-    async def inject_click(request: Request):
-        body = await request.json()
-        x = int(body.get("x", 0))
-        y = int(body.get("y", 0))
-        with ctx.lock:
-            ctx.override_action = Action(
-                action_type=ActionType.CLICK, x=x, y=y,
-                reason="web UI click", priority=99
-            )
-        return {"status": "click queued", "x": x, "y": y}
-
-    @app.post("/api/scan")
-    async def trigger_scan():
-        with ctx.lock:
-            ctx.override_action = Action(
-                action_type=ActionType.FULL_SCAN,
-                reason="web UI triggered scan", priority=99
-            )
-        return {"status": "scan queued"}
-
-    @app.post("/api/enable_input")
-    async def enable_input(request: Request):
-        body = await request.json()
-        ctx.input_enabled = bool(body.get("enabled", False))
-        return {"status": "updated", "input_enabled": ctx.input_enabled}
-
-    @app.websocket("/ws")
-    async def websocket_endpoint(ws: WebSocket):
-        await ws.accept()
-        log = logging.getLogger(__name__)
-        log.info("WebSocket client connected")
-        try:
-            while True:
-                payload = state_to_dict(ctx.game_state, ctx.status, ctx.window_rect)
-                if ctx.latest_annotated is not None:
-                    payload["image"] = image_to_base64_jpeg(ctx.latest_annotated)
-                else:
-                    payload["image"] = None
-                await ws.send_json(payload)
-                await asyncio.sleep(0.8)
-        except WebSocketDisconnect:
-            log.info("WebSocket client disconnected")
-        except Exception as exc:
-            log.warning(f"WebSocket error: {exc}")
-
-    return app
 
 
 # ============================================================================
@@ -1149,12 +952,6 @@ def parse_args() -> argparse.Namespace:
                        help="OCR backend (default: pytesseract)")
     parser.add_argument("--lang", default="eng",
                        help="OCR language (default: eng)")
-    parser.add_argument("--port", type=int, default=7700,
-                       help="Web server port (default: 7700)")
-    parser.add_argument("--host", default="127.0.0.1",
-                       help="Web server host (default: 127.0.0.1)")
-    parser.add_argument("--no-auto", action="store_true",
-                       help="Don't auto-start the bot")
     return parser.parse_args()
 
 
@@ -1163,51 +960,38 @@ def parse_args() -> argparse.Namespace:
 # ============================================================================
 
 def main():
-    """Main entry point - composition of pure and effectful functions."""
+    """Main entry point."""
     setup_logging()
     log = logging.getLogger(__name__)
 
     args = parse_args()
     
-    # Create immutable config
     config = Config(
         window_title=args.window_title,
         ocr_engine=args.ocr,
         ocr_lang=args.lang,
-        web_host=args.host,
-        web_port=args.port,
     )
 
-    log.info(f"TowerControl Functional starting (ocr={config.ocr_engine}, port={config.web_port})")
+    log.info(f"TowerControl starting (ocr={config.ocr_engine})")
 
     # Initialize OCR
     ocr_reader = initialize_ocr_backend(config)
 
-    # Create runtime context (minimal mutable state)
+    # Create runtime context
     ctx = RuntimeContext(
         config=config,
         ocr_reader=ocr_reader,
+        running=True,
+        status="running",
+        input_enabled=False,
     )
 
-    # Auto-start unless suppressed
-    if not args.no_auto:
-        ctx.running = True
-        ctx.status = "running"
-        ctx.input_enabled = False  # Disabled by default for safety
-        thread = threading.Thread(
-            target=lambda: automation_loop_run(ctx),
-            daemon=True,
-            name="AutomationLoop"
-        )
-        thread.start()
-
-    # Create and run web app
-    app = create_web_app(ctx)
-    
-    log.info(f"Dashboard: http://{config.web_host}:{config.web_port}")
-    
-    import uvicorn
-    uvicorn.run(app, host=config.web_host, port=config.web_port, log_level="warning")
+    # Run automation loop on main thread
+    try:
+        automation_loop_run(ctx)
+    except KeyboardInterrupt:
+        log.info("Interrupted by user")
+        ctx.running = False
 
 
 if __name__ == "__main__":
