@@ -786,6 +786,84 @@ def record_action_in_state(state: GameState, action: Action) -> GameState:
 # PURE FUNCTIONS - STRATEGY
 # ============================================================================
 
+def load_gem_template(config: Config) -> Optional[np.ndarray]:
+    """Load gem template image for detection."""
+    gem_path = config.base_dir / "gem.png"
+    if not gem_path.exists():
+        logging.getLogger(__name__).warning(f"Gem template not found: {gem_path}")
+        return None
+    
+    try:
+        template = cv2.imread(str(gem_path), cv2.IMREAD_UNCHANGED)
+        if template is None:
+            return None
+        # Convert to grayscale for template matching
+        if len(template.shape) == 3:
+            template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+        return template
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Failed to load gem template: {e}")
+        return None
+
+
+def detect_floating_gem(img: Optional[Image.Image], gem_template: Optional[np.ndarray], 
+                       config: Config) -> Optional[Tuple[int, int]]:
+    """Detect floating gem at any rotation near middle of screen. Returns (x, y) or None."""
+    if img is None or gem_template is None:
+        return None
+    
+    log = logging.getLogger(__name__)
+    
+    try:
+        # Convert PIL to cv2
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+        h, w = img_cv.shape
+        
+        # Define middle region (center 60% of screen)
+        middle_margin_x = int(w * 0.2)
+        middle_margin_y = int(h * 0.2)
+        middle_region = img_cv[middle_margin_y:h-middle_margin_y, middle_margin_x:w-middle_margin_x]
+        
+        best_match = None
+        best_val = 0.0
+        threshold = 0.6  # Matching threshold
+        
+        # Try multiple rotations (0, 90, 180, 270 degrees)
+        for angle in [0, 90, 180, 270]:
+            # Rotate template
+            if angle == 0:
+                rotated = gem_template
+            else:
+                center = (gem_template.shape[1] // 2, gem_template.shape[0] // 2)
+                matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+                rotated = cv2.warpAffine(gem_template, matrix, 
+                                        (gem_template.shape[1], gem_template.shape[0]))
+            
+            # Skip if template is larger than search region
+            if rotated.shape[0] > middle_region.shape[0] or rotated.shape[1] > middle_region.shape[1]:
+                continue
+            
+            # Template matching
+            result = cv2.matchTemplate(middle_region, rotated, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            
+            if max_val > best_val:
+                best_val = max_val
+                # Convert back to full image coordinates
+                best_match = (max_loc[0] + middle_margin_x + rotated.shape[1] // 2,
+                            max_loc[1] + middle_margin_y + rotated.shape[0] // 2)
+        
+        if best_val >= threshold and best_match:
+            log.info(f"Floating gem detected at ({best_match[0]}, {best_match[1]}) with confidence {best_val:.2f}")
+            return best_match
+        
+        return None
+        
+    except Exception as e:
+        log.warning(f"Gem detection failed: {e}")
+        return None
+
+
 def get_last_action_time(state: GameState, action_type: ActionType) -> float:
     """Get timestamp of last action of given type. Returns 0 if not found."""
     for entry in reversed(state.action_history):
@@ -818,12 +896,30 @@ def find_claimable_buttons(state: GameState) -> List[UIElement]:
     return claimable
 
 
-def decide_action(state: GameState, config: Config, enabled: bool = True) -> Action:
+def decide_action(state: GameState, config: Config, latest_image: Optional[Image.Image] = None, 
+                 gem_template: Optional[np.ndarray] = None, enabled: bool = True) -> Action:
     """Strategy decision function. Pure function."""
     log = logging.getLogger(__name__)
     
     if not enabled:
         return Action(action_type=ActionType.WAIT, duration=1.0, reason="Strategy disabled")
+
+    # Priority 0: Click on floating gem (highest priority, with cooldown)
+    if latest_image is not None and gem_template is not None:
+        gem_pos = detect_floating_gem(latest_image, gem_template, config)
+        if gem_pos:
+            last_click_time = get_last_action_time(state, ActionType.CLICK)
+            time_since_last_click = time.time() - last_click_time
+            
+            # Cooldown: at least 1 second between clicks
+            if time_since_last_click > 1.0:
+                return Action(
+                    action_type=ActionType.CLICK,
+                    x=gem_pos[0],
+                    y=gem_pos[1],
+                    reason="Clicking floating gem",
+                    priority=100
+                )
 
     # Priority 1: Click on claim/collect buttons (with cooldown)
     claimable = find_claimable_buttons(state)
@@ -1012,6 +1108,7 @@ class RuntimeContext:
     """Container for mutable runtime state."""
     config: Config
     ocr_reader: Any = None
+    gem_template: Optional[np.ndarray] = None
     game_state: GameState = field(default_factory=GameState)
     window_rect: Optional[WindowRect] = None
     latest_image: Optional[Image.Image] = None
@@ -1063,7 +1160,7 @@ def automation_loop_tick(ctx: RuntimeContext):
     ctx.scan_current()
 
     # Strategy decides
-    action = decide_action(ctx.game_state, ctx.config)
+    action = decide_action(ctx.game_state, ctx.config, ctx.latest_image, ctx.gem_template)
     log.info('next action: %s – %s', action.action_type.name, action.reason)
     # Execute action
     execute_action(
@@ -1164,10 +1261,18 @@ def main():
     # Initialize OCR
     ocr_reader = initialize_ocr_backend(config)
 
+    # Load gem template for floating gem detection
+    gem_template = load_gem_template(config)
+    if gem_template is not None:
+        log.info(f"Loaded gem template: {gem_template.shape}")
+    else:
+        log.warning("Gem template not loaded - floating gem detection disabled")
+
     # Create runtime context
     ctx = RuntimeContext(
         config=config,
         ocr_reader=ocr_reader,
+        gem_template=gem_template,
         running=True,
         status="running",
         input_enabled=False,
