@@ -16,6 +16,7 @@ import io
 import logging
 import re
 import time
+import pprint
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from pathlib import Path
@@ -270,14 +271,37 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
         # Fixed filenames that overwrite
         img_path = config.debug_dir / f"{prefix}.png"
         txt_path = config.debug_dir / f"{prefix}.txt"
+        annotated_path = config.debug_dir / f"{prefix}_annotated.png"
         
-        # Save image
+        # Save original image
         img.save(img_path)
         log.debug(f"Saved debug image: {img_path}")
         
-        # Create text table
+        # Create annotated image with boxes and coordinates
+        annotated_img = img.copy()
+        draw = ImageDraw.Draw(annotated_img)
         img_width, img_height = frame.image_size
         
+        for result in frame.results:
+            x, y, w, h = result.bbox
+            cx, cy = result.center
+            x_frac = cx / img_width if img_width > 0 else 0.0
+            y_frac = cy / img_height if img_height > 0 else 0.0
+            
+            # Draw bounding box
+            box_color = (0, 255, 0) if result.confidence >= 80 else (255, 165, 0)  # Green for high conf, orange for lower
+            draw.rectangle([x, y, x + w, y + h], outline=box_color, width=2)
+            
+            # Draw text and fractional coordinates
+            label = f"{result.text}\n({x_frac:.3f}, {y_frac:.3f})"
+            # Position label above the box if there's room, otherwise below
+            label_y = max(0, y - 25) if y > 30 else y + h + 2
+            draw.text((x, label_y), label, fill=box_color)
+        
+        annotated_img.save(annotated_path)
+        log.debug(f"Saved annotated debug image: {annotated_path}")
+        
+        # Create text table
         with open(txt_path, 'w', encoding='utf-8') as f:
             f.write(f"Debug Capture: {timestamp}\n")
             f.write(f"Image Size: {img_width} x {img_height}\n")
@@ -333,6 +357,16 @@ def preprocess_image(img: np.ndarray) -> List[np.ndarray]:
     sharp_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
     sharpened = cv2.filter2D(gray, -1, sharp_kernel)
     variants.append(sharpened)
+    
+    # Strategy 5: Blue channel extraction - good for white text on blue backgrounds
+    # Extract blue channel and invert (white text becomes dark on light background)
+    blue_channel = img[:, :, 0]  # BGR format, so index 0 is blue
+    _, blue_thresh = cv2.threshold(blue_channel, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    variants.append(blue_thresh)
+    
+    # Strategy 6: High threshold for light text - specifically targets white/light text
+    _, high_thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    variants.append(high_thresh)
 
     return variants
 
@@ -651,12 +685,25 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
         except ValueError:
             pass
     
+    texts: tuple[str, float, float] = [ (r.text, r.center[0]/w, r.center[1]/h) for r in frame.results]
+    perks_mode = [t for t in texts if t[0] == 'Perks' and abs(t[1]-0.612) < 0.05 and abs(t[2]-0.098) < 0.05]
+    choose = [t for t in texts if t[0] == 'Choose' and abs(t[1]-0.522) < 0.05 and abs(t[2]-0.206) < 0.05]
+    print('perks_mode:', perks_mode, 'choose', choose)
+    if perks_mode and choose:
+        log.info("Perks mode found")
+        mode = 'perks'
+    else:
+        mode = 'main'
     for r in frame.results:
         cx, cy = r.center
         fx, fy = cx / w, cy / h
         
+        
+        lowertext = r.text.lower()
+        # if it is Perks near 0.5519, 0.0872 with width about 0.1194
+            
         # Check for Perk button - CLICK IT
-        if r.text.lower() == "perk":
+        if mode == 'main' and  r.text.lower() in ["perk", "perk:"]:
             log.info(f"'Perk' detected at ({fx:.4f}, {fy:.4f}) - clicking!")
 
             if abs(fx - 0.6194) < 0.05 and abs(fy - 0.0418) < 0.05:
@@ -664,7 +711,7 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
                 execute_click(cx, cy, window_rect, config)
         
         # Check for CLAIM button - CLICK IT
-        if r.text.lower() == "claim":
+        if mode == 'main' and  r.text.lower() == "claim":
             log.info(f"'CLAIM' detected at ({fx:.4f}, {fy:.4f}) - clicking!")
             if window_rect and config:
                 execute_click(cx, cy, window_rect, config)
