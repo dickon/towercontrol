@@ -182,6 +182,7 @@ class GameState:
     resources: Dict[str, str] = field(default_factory=dict)
     wave: Optional[str] = None
     wave_pos: Optional[Tuple[float, float]] = None
+    wave_history: Tuple[Tuple[int, float], ...] = ()  # (wave_number, timestamp)
     last_full_scan: float = 0.0
     action_history: Tuple[Dict[str, Any], ...] = ()
     error_count: int = 0
@@ -714,6 +715,7 @@ def build_screen_state(frame: OCRFrame) -> ScreenState:
 
 def update_game_state(state: GameState, screen_state: ScreenState, frame: OCRFrame) -> GameState:
     """Update game state with new screen state. Pure function."""
+    log = logging.getLogger(__name__)
     wave, wave_pos = extract_wave_from_frame(frame)
     
     # Also check if wave was classified as a resource
@@ -726,12 +728,42 @@ def update_game_state(state: GameState, screen_state: ScreenState, frame: OCRFra
     
     new_resources = {**state.resources, **screen_state.resources}
     
+    # Track wave progress and calculate rate
+    new_wave_history = state.wave_history
+    if wave and wave != state.wave:
+        try:
+            wave_num = int(wave.replace(',', ''))
+            current_time = time.time()
+            new_wave_history = (*state.wave_history, (wave_num, current_time))
+            
+            # Keep only last 100 waves
+            if len(new_wave_history) > 100:
+                new_wave_history = new_wave_history[-100:]
+            
+            # Calculate waves per hour if we have enough history
+            if len(new_wave_history) >= 2:
+                first_wave, first_time = new_wave_history[0]
+                last_wave, last_time = new_wave_history[-1]
+                time_diff_hours = (last_time - first_time) / 3600.0
+                
+                if time_diff_hours > 0:
+                    waves_diff = last_wave - first_wave
+                    waves_per_hour = waves_diff / time_diff_hours
+                    log.info(f"Wave progress: {wave} | Rate: {waves_per_hour:.1f} waves/hour (based on {len(new_wave_history)} samples over {time_diff_hours*60:.1f} min)")
+                else:
+                    log.info(f"Wave progress: {wave}")
+            else:
+                log.info(f"Wave progress: {wave} (collecting data...)")
+        except (ValueError, TypeError):
+            pass
+    
     return replace(
         state,
         current_screen=screen_state,
         resources=new_resources,
         wave=wave or state.wave,
-        wave_pos=wave_pos or state.wave_pos
+        wave_pos=wave_pos or state.wave_pos,
+        wave_history=new_wave_history
     )
 
 
@@ -760,13 +792,6 @@ def decide_action(state: GameState, config: Config, enabled: bool = True) -> Act
     if not enabled:
         return Action(action_type=ActionType.WAIT, duration=1.0, reason="Strategy disabled")
 
-    # Log wave (with position info)
-    if state.wave:
-        pos_str = ""
-        if state.wave_pos:
-            pos_str = f" @ ({state.wave_pos[0]:.3f}, {state.wave_pos[1]:.3f})"
-        logging.getLogger(__name__).info(f"Wave: {state.wave}{pos_str}")
-
     # Check if full scan needed
     if time.time() - state.last_full_scan > config.full_scan_interval:
         return Action(action_type=ActionType.FULL_SCAN, reason="Periodic full scan")
@@ -791,7 +816,10 @@ def execute_click(x: int, y: int, rect: WindowRect, config: Config, enabled: boo
     ax, ay = to_absolute_coords(x, y, rect)
     logging.getLogger(__name__).info(f"click({x}, {y}) → abs({ax}, {ay})")
     pyautogui.click(ax, ay, interval=config.click_pause)
+    log.info(f"Clicked at ({ax}, {ay})")
+    log.info('sleep for %.2f seconds', config.click_pause)
     time.sleep(config.click_pause)
+
     return True
 
 
@@ -807,6 +835,8 @@ def execute_swipe(x: int, y: int, distance: int, direction: str,
     logging.getLogger(__name__).info(f"swipe_{direction}({x}, {y}, {distance})")
     pyautogui.moveTo(ax, ay)
     pyautogui.drag(0, offset, duration=0.3)
+    log.info(f"Swiped {direction} from ({ax}, {ay}) by {offset} pixels")
+    log.info('sleep for %.2f seconds', config.click_pause)
     time.sleep(config.click_pause)
     return True
 
@@ -830,6 +860,7 @@ def execute_action(action: Action, rect: Optional[WindowRect],
                      "down", rect, config, enabled)
 
     elif action.action_type == ActionType.WAIT:
+        log.info('sleeping for %.2f seconds', action.duration)
         time.sleep(action.duration)
 
     elif action.action_type == ActionType.SCAN_CURRENT:
@@ -960,6 +991,7 @@ def automation_loop_run(ctx: RuntimeContext):
             log.error(f"Loop tick error: {exc}", exc_info=True)
             ctx.game_state = replace(ctx.game_state,
                                     error_count=ctx.game_state.error_count + 1)
+            log.info('sleeping for 2 seconds after error')
             time.sleep(2)
 
         elapsed = time.time() - t0
