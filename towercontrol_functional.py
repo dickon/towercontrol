@@ -450,10 +450,23 @@ def classify_ocr_result(ocr: OCRResult, screen: Screen) -> Optional[UIElement]:
 
 def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tuple[float, float]]]:
     """Extract wave number and position. Pure function."""
+    log = logging.getLogger(__name__)
     w, h = frame.image_size
     if w == 0 or h == 0:
         return None, None
 
+    # Strategy 1: Check if "wave" or "w" appears with a number in the same OCR result
+    for r in frame.results:
+        text = r.text.strip()
+        # Match patterns like "Wave 123", "W 123", "Wave: 123", "w:123", etc.
+        match = re.search(r'(?:wave|w)[:\s]*([0-9,]+)', text, re.IGNORECASE)
+        if match:
+            wave_num = match.group(1).replace(',', '')
+            cx, cy = r.center
+            log.debug(f"Wave detected (strategy 1): '{wave_num}' from text '{text}' at ({cx/w:.3f}, {cy/h:.3f})")
+            return wave_num, (cx / w, cy / h)
+
+    # Strategy 2: Find standalone "wave"/"w" label and number to the right
     for r in frame.results:
         text_lower = r.text.lower().strip()
         if text_lower in ("wave", "w"):
@@ -466,19 +479,38 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
             best_dist = 999999
 
             for candidate in frame.results:
-                if re.match(r'^[0-9]+$', candidate.text.strip()):
+                if re.match(r'^[0-9,]+$', candidate.text.strip()):
                     cand_x = candidate.bbox[0]
                     cand_y = candidate.bbox[1] + candidate.bbox[3] // 2
-                    if cand_x > label_x and abs(cand_y - label_y) < 20:
+                    if cand_x > label_x and abs(cand_y - label_y) < 50:
                         dist = cand_x - label_x
                         if dist < best_dist:
                             best_dist = dist
-                            best_num = candidate.text.strip()
+                            best_num = candidate.text.strip().replace(',', '')
                             best_candidate = candidate
 
             if best_num and best_candidate:
                 cx, cy = best_candidate.center
+                log.debug(f"Wave detected (strategy 2): '{best_num}' at ({cx/w:.3f}, {cy/h:.3f})")
                 return best_num, (cx / w, cy / h)
+
+    # Strategy 3: Look for any text starting with "wave" or "w" followed by digits
+    for r in frame.results:
+        text_lower = r.text.lower().strip()
+        if text_lower.startswith(('wave', 'w')):
+            # Extract any digits from the text
+            digits = re.findall(r'[0-9]+', r.text)
+            if digits:
+                wave_num = digits[0]
+                cx, cy = r.center
+                log.debug(f"Wave detected (strategy 3): '{wave_num}' from text '{r.text}' at ({cx/w:.3f}, {cy/h:.3f})")
+                return wave_num, (cx / w, cy / h)
+
+    # Debug: log all OCR results if wave not found (but only occasionally to avoid spam)
+    if len(frame.results) > 0:
+        import random
+        if random.random() < 0.05:  # 5% of the time
+            log.debug(f"Wave not found. OCR results: {[r.text for r in frame.results]}")
 
     return None, None
 
@@ -509,6 +541,14 @@ def build_screen_state(frame: OCRFrame) -> ScreenState:
 def update_game_state(state: GameState, screen_state: ScreenState, frame: OCRFrame) -> GameState:
     """Update game state with new screen state. Pure function."""
     wave, wave_pos = extract_wave_from_frame(frame)
+    
+    # Also check if wave was classified as a resource
+    if not wave and "wave" in screen_state.resources:
+        wave_text = screen_state.resources["wave"]
+        # Extract just the number from resource text like "Wave 123" or "123"
+        digits = re.findall(r'[0-9,]+', wave_text)
+        if digits:
+            wave = digits[0].replace(',', '')
     
     new_resources = {**state.resources, **screen_state.resources}
     
@@ -546,9 +586,12 @@ def decide_action(state: GameState, config: Config, enabled: bool = True) -> Act
     if not enabled:
         return Action(action_type=ActionType.WAIT, duration=1.0, reason="Strategy disabled")
 
-    # Log wave
+    # Log wave (with position info)
     if state.wave:
-        logging.getLogger(__name__).info(f"Wave: {state.wave}")
+        pos_str = ""
+        if state.wave_pos:
+            pos_str = f" @ ({state.wave_pos[0]:.3f}, {state.wave_pos[1]:.3f})"
+        logging.getLogger(__name__).info(f"Wave: {state.wave}{pos_str}")
 
     # Check if full scan needed
     if time.time() - state.last_full_scan > config.full_scan_interval:
@@ -820,9 +863,9 @@ def automation_loop_tick(ctx: RuntimeContext):
             action = ctx.override_action
             ctx.override_action = None
 
-    # Strategy decides
+    # Strategy decides (always enabled - input_enabled only affects execution)
     if action is None:
-        action = decide_action(ctx.game_state, ctx.config, enabled=ctx.input_enabled)
+        action = decide_action(ctx.game_state, ctx.config)
 
     # Execute action
     execute_action(
