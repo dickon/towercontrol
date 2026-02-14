@@ -52,7 +52,7 @@ PERK_CHOICES = [
     r'Extra Set Of Inner Mines',
     r'Free Upgrade Chancel for All \+[\d\.]+%',
     r'Orbs \+\d+',
-    r'x[\d\.]+ Defense Absolute',
+    r'x[\d\.]*\s*Defense Absolute',
     r'Land Mine Damage x[\d\.]+',
     r'Interest x[\d\.]+',    
 ]
