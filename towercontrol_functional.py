@@ -653,7 +653,6 @@ def check_known_markers(frame: OCRFrame) -> None:
     for r in frame.results:
         cx, cy = r.center
         fx, fy = cx / w, cy / h
-        
         # Check for Perk button
         if r.text.lower() == "perk" and abs(fx - 0.6194) < 0.05 and abs(fy - 0.0418) < 0.05:
             log.info(f"'Perk' detected at ({fx:.4f}, {fy:.4f})")
@@ -676,18 +675,14 @@ def check_known_markers(frame: OCRFrame) -> None:
             # Parse number with suffix (K, M, B, T)
             match = re.match(r'^([0-9.]+)\s*([KMBT])?$', r.text.strip(), re.IGNORECASE)
             if match:
-                try:
-                    value = float(match.group(1))
-                    suffix = match.group(2).upper() if match.group(2) else ''
+                value = float(match.group(1))
+                suffix = match.group(2).upper() if match.group(2) else ''
+                
+                multipliers = {'K': 1_000, 'M': 1_000_000, 'B': 1_000_000_000, 'T': 1_000_000_000_000}
+                multiplier = multipliers.get(suffix, 1)
+                coins = value * multiplier
                     
-                    multipliers = {'K': 1_000, 'M': 1_000_000, 'B': 1_000_000_000, 'T': 1_000_000_000_000}
-                    multiplier = multipliers.get(suffix, 1)
-                    coins = value * multiplier
-                    
-                    log.info(f"Current coins: {r.text} ({coins:,.0f}) at ({fx:.4f}, {fy:.4f})")
-                except (ValueError, AttributeError):
-                    pass
-
+                
 
 def build_screen_state(frame: OCRFrame) -> ScreenState:
     """Build ScreenState from OCR frame. Pure function."""
@@ -787,12 +782,55 @@ def record_action_in_state(state: GameState, action: Action) -> GameState:
 # PURE FUNCTIONS - STRATEGY
 # ============================================================================
 
+def get_last_action_time(state: GameState, action_type: ActionType) -> float:
+    """Get timestamp of last action of given type. Returns 0 if not found."""
+    for entry in reversed(state.action_history):
+        if entry.get("type") == action_type.name:
+            return entry.get("time", 0.0)
+    return 0.0
+
+
+def find_claimable_buttons(state: GameState) -> List[UIElement]:
+    """Find all claim/collect buttons on current screen."""
+    log = logging.getLogger(__name__)
+    claimable = []
+    for elem in state.current_screen.elements:
+        if elem.element_type == "button":
+            text_lower = elem.text.lower()
+            # Match claim, collect, gather, etc.
+            if text_lower == 'claim':
+                claimable.append(elem)
+                log.info('claimable button found: "%s" at (%d, %d)', elem.text, elem.center[0], elem.center[1])
+    return claimable
+
+
 def decide_action(state: GameState, config: Config, enabled: bool = True) -> Action:
     """Strategy decision function. Pure function."""
     if not enabled:
         return Action(action_type=ActionType.WAIT, duration=1.0, reason="Strategy disabled")
 
-    # Check if full scan needed
+    # Priority 1: Click on claim/collect buttons (with cooldown)
+    claimable = find_claimable_buttons(state)
+    if claimable:
+        last_claim_time = get_last_action_time(state, ActionType.CLICK)
+        time_since_last_claim = time.time() - last_claim_time
+        
+        # Cooldown: at least 2 seconds between claims
+        if time_since_last_claim > 2.0:
+            # Click the first claimable button found
+            button = claimable[0]
+            cx, cy = button.center
+            return Action(
+                action_type=ActionType.CLICK,
+                x=cx,
+                y=cy,
+                reason=f"Clicking {button.text} button",
+                priority=10
+            )
+    else:
+        log.info('no claims found')
+
+    # Priority 2: Check if full scan needed
     if time.time() - state.last_full_scan > config.full_scan_interval:
         return Action(action_type=ActionType.FULL_SCAN, reason="Periodic full scan")
 
@@ -813,8 +851,9 @@ def execute_click(x: int, y: int, rect: WindowRect, config: Config, enabled: boo
     """Execute click action. Side effect."""
     if not enabled:
         return False
+    log = logging.getLogger(__name__)
     ax, ay = to_absolute_coords(x, y, rect)
-    logging.getLogger(__name__).info(f"click({x}, {y}) → abs({ax}, {ay})")
+    log.info(f"click({x}, {y}) → abs({ax}, {ay})")
     pyautogui.click(ax, ay, interval=config.click_pause)
     log.info(f"Clicked at ({ax}, {ay})")
     log.info('sleep for %.2f seconds', config.click_pause)
@@ -829,10 +868,11 @@ def execute_swipe(x: int, y: int, distance: int, direction: str,
     if not enabled:
         return False
     
+    log = logging.getLogger(__name__)
     ax, ay = to_absolute_coords(x, y, rect)
     offset = -distance if direction == "up" else distance
     
-    logging.getLogger(__name__).info(f"swipe_{direction}({x}, {y}, {distance})")
+    log.info(f"swipe_{direction}({x}, {y}, {distance})")
     pyautogui.moveTo(ax, ay)
     pyautogui.drag(0, offset, duration=0.3)
     log.info(f"Swiped {direction} from ({ax}, {ay}) by {offset} pixels")
@@ -849,6 +889,7 @@ def execute_action(action: Action, rect: Optional[WindowRect],
     log.info(f"Action: {action.action_type.name} – {action.reason}")
 
     if action.action_type == ActionType.CLICK and rect:
+        log.info('clicking at (%d, %d) relative to window', action.x, action.y)
         execute_click(action.x, action.y, rect, config, enabled)
 
     elif action.action_type == ActionType.SWIPE_UP and rect:
@@ -956,6 +997,7 @@ class RuntimeContext:
 def automation_loop_tick(ctx: RuntimeContext):
     """Single tick of automation loop."""
     # Update window rect
+    log = logging.getLogger(__name__)
     ctx.update_window()
     if not ctx.window_rect:
         ctx.status = "no_window"
@@ -966,7 +1008,7 @@ def automation_loop_tick(ctx: RuntimeContext):
 
     # Strategy decides
     action = decide_action(ctx.game_state, ctx.config)
-
+    log.info('next action: %s – %s', action.action_type.name, action.reason)
     # Execute action
     execute_action(
         action, ctx.window_rect, ctx.config, ctx.input_enabled,
