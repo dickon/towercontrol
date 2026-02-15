@@ -55,6 +55,7 @@ PERK_CHOICES = [
     r'x[\d\.]*\s*Defense Absolute',
     r'Land Mine Damage x[\d\.]+',
     r'Interest x[\d\.]+',    
+    r'.*but boss.*',
 ]
 
 # OCR
@@ -183,7 +184,10 @@ class OCRResult:
     def is_near(self, target_fx: float, target_fy: float, tolerance: float = 0.05) -> bool:
         """Check if center is within tolerance of target fractional coordinates."""
         return abs(self.fx - target_fx) < tolerance and abs(self.fy - target_fy) < tolerance
-
+    def click(self, window_rect: WindowRect, config: Config, message: str = "Clicking OCR result"):
+        do_click(window_rect, config, logging.getLogger(__name__), window_rect.width, window_rect.height, message, self.fx, self.fy )
+    def __repr__(self):
+        return f'%.3f,%.3f "%s"' % (self.fx, self.fy, self.text)
 
 @dataclass(frozen=True)
 class OCRFrame:
@@ -355,7 +359,7 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
                 h_frac = h / img_height if img_height > 0 else 0.0
                 
                 text_display = result.text[:28] + ".." if len(result.text) > 30 else result.text
-                f.write(f"{text_display:<30} | {result.fx:>8.4f} | {result.fy:>8.4f} | {w_frac:>8.4f} | {h_frac:>8.4f} | {result.confidence:>6.1f}\n")
+                f.write(f"r.text == '{text_display}' and r.is_near({result.fx:>8.4f}, {result.fy:>8.4f})\n")
         
         log.debug(f"Saved debug text: {txt_path}")
     except Exception as e:
@@ -1013,7 +1017,7 @@ class RuntimeContext:
     input_enabled: bool = False
     status: str = "stopped"
     last_window_check: float = 0.0
-
+    last_seen_upgrades: float = 0.0
     def update_window(self):
         """Update window rect if needed."""
         if time.time() - self.last_window_check > 2.0:
@@ -1022,11 +1026,18 @@ class RuntimeContext:
             log.info('Window check: %s', self.window_rect)
             self.last_window_check = time.time()
 
+def click_if_present(window_rect, config, results, condition):
+    log = logging.getLogger(__name__)
+    marks = [r for r in results if condition(r)]
+    log.info(f'Marks found for condition: {marks}')
+    if marks:
+        log.info(f"Condition met for '{marks[0].text}' at ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking!")
+        execute_click(marks[0].center[0], marks[0].center[1], window_rect, config)
 
 def automation_loop_tick(ctx: RuntimeContext):
     """Single tick of automation loop."""
     log = logging.getLogger(__name__)
-    
+    log.info("----------------- TiCK")
     # Update window rect
     ctx.update_window()
     if not ctx.window_rect:
@@ -1068,119 +1079,132 @@ def automation_loop_tick(ctx: RuntimeContext):
     
     # Check known markers (inlined from check_known_markers)
     w, h = frame.image_size
-    if w > 0 and h > 0:
-        # Extract wave number for comparison
-        wave_num_str, _ = extract_wave_from_frame(frame)
-        wave_num = None
-        if wave_num_str:
-            try:
-                wave_num = int(wave_num_str.replace(',', ''))
-            except ValueError:
-                pass
-        
-        texts: tuple[str, float, float] = [(r.text, r.fx, r.fy) for r in frame.results]
-        perks_mode = [t for t in texts if t[0] == 'Perks' and abs(t[1]-0.612) < 0.05 and abs(t[2]-0.098) < 0.05]
-        choose = [t for t in texts if t[0] == 'Choose' and abs(t[1]-0.522) < 0.05 and abs(t[2]-0.206) < 0.05]
-        if perks_mode and choose:
-            log.info("Perks mode found")
-            mode = 'perks'        
+    if w <= 0 or h <= 0:
+        log.warning("Invalid image size from OCR frame: (%d, %d)", w, h)
+        return
+    # Extract wave number for comparison
+    wave_num_str, _ = extract_wave_from_frame(frame)
+    wave_num = None
+    if wave_num_str:
+        try:
+            wave_num = int(wave_num_str.replace(',', ''))
+        except ValueError:
+            pass
+    
+    texts: tuple[str, float, float] = [(r.text, r.fx, r.fy) for r in frame.results]
+    perks_mode = [t for t in texts if t[0] == 'Perks' and abs(t[1]-0.612) < 0.05 and abs(t[2]-0.098) < 0.05]
+    choose = [t for t in texts if t[0] == 'Choose' and abs(t[1]-0.522) < 0.05 and abs(t[2]-0.206) < 0.05]
+    if perks_mode and choose:
+        log.info("Perks mode found")
+        mode = 'perks'        
+    else:
+        mode = 'main'
+    log.info(f"Detected mode: {mode}")
+    perk_text = {}
+    near_perk = [r for r in frame.results if r.is_near(0.6056, 0.035, 0.1)]
+    log.info(f'near perk: {[ (r.fx, r.fy) for r in near_perk]}')
+    claim_marks = [r for r in frame.results if r.text.lower() == "claim" and r.is_near(0.6056, 0.035, 0.2)]
+    log.info(f'claim marks: {[ (r.fx, r.fy) for r in claim_marks]}')
+    for r in claim_marks:
+        log.info(f"'CLAIM' detected at ({r.fx:.4f}, {r.fy:.4f}) - clicking!")
+        if ctx.window_rect and ctx.config:
+            execute_click(r.center[0], r.center[1],  ctx.window_rect, ctx.config)
+
+    click_if_present(ctx.window_rect, ctx.config, frame.results, lambda r: r.text == 'BATTLE' and r.is_near(0.5945, 0.8168))
+    click_if_present(ctx.window_rect, ctx.config, frame.results, lambda r: r.text == 'HOME' and r.is_near(0.2605, 0.0975, 0.1))
+
+    defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
+    attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.329, 0.632, 0.1)]
+    utility_marks = [r for r in frame.results if r.text.lower() == "utility" and r.is_near(0.333, 0.632, 0.1)]
+    if mode == 'main':
+        if defense_marks:
+            seen = 'DEFENSE'
+            do_click(ctx.window_rect, ctx.config, log, w, h, "Seen defense, Clicking 'ATTACK'", 0.321, 0.985)
+        elif attack_marks:
+            seen = 'ATTACK'
+            do_click(ctx.window_rect, ctx.config, log, w, h, "Seen attack,Clicking 'UTILITY'", 0.7, 0.985)
+        elif utility_marks:
+            seen = 'UTILITY'
+            do_click(ctx.window_rect, ctx.config, log, w, h, "Seen utiliy, Clicking 'DEFENSE'", 0.5105, 0.985)
         else:
-            mode = 'main'
-        log.info(f"Detected mode: {mode}")
-        perk_text = {}
-        near_perk = [r for r in frame.results if r.is_near(0.6056, 0.035, 0.1)]
-        pprint.pprint(near_perk)
-        for r in frame.results:
-            cx, cy = r.center
+            seen = None
+        if seen:
+            ctx.last_seen_upgrades = time.time()
+        else:
+            delay = time.time() - ctx.last_seen_upgrades
+            log.info('Seen no upgrade mode selector for %.2f seconds', delay)
+            if delay > 60.0:
+                do_click(ctx.window_rect, ctx.config, log, w, h, "Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
             
-            lowertext = r.text.lower()
 
-            for (row, dy) in PERK_ROWS:
-                if abs(r.fy - dy) < 0.05 and r.fx > 0.54 and r.fx < 0.78:
-                    perk_text.setdefault(row, list())            
-                    perk_text[row].append(r.text)
+    for r in frame.results:
+        cx, cy = r.center
+        
+        lowertext = r.text.lower()
 
-            # Check for Perk button - CLICK IT
-            if mode == 'main' and r.is_near(0.6056, 0.035, 0.1):
-                log.info('text in perk area: ' + r.text)
-                if r.text.lower() in ["perk", "perk:", 'park', 'new perk']:
-                    log.info(f"'Perk' detected at ({r.fx:.4f}, {r.fy:.4f}) - clicking!")
-                    execute_click(cx, cy, ctx.window_rect, ctx.config)
+        for (row, dy) in PERK_ROWS:
+            if abs(r.fy - dy) < 0.05 and r.fx > 0.54 and r.fx < 0.78:
+                perk_text.setdefault(row, list())            
+                perk_text[row].append(r.text)
 
-            if mode == 'main':
-                seen = None
-                if r.text == 'DEFENSE' and r.is_near(0.343, 0.632, 0.1):
-                    seen = 'DEFENSE'
-                    do_click(ctx.window_rect, ctx.config, log, w, h, "Seen defense, Clicking 'ATTACK'", 0.321, 0.985)
-                if r.text == 'ATTACK' and r.is_near(0.329, 0.632, 0.1):
-                    seen = 'ATTACK'
-                    do_click(ctx.window_rect, ctx.config, log, w, h, "Seen attack,Clicking 'UTILITY'", 0.7, 0.985)
-
-                if r.text == 'UTILITY' and r.is_near(0.333, 0.632, 0.1):
-                    seen = 'UTILITY'
-                    do_click(ctx.window_rect, ctx.config, log, w, h, "Seen utiliy, Clicking 'DEFENSE'", 0.5105, 0.985)
-                if seen == None:
-                    log.info('Seen no upgrade mode selector')
-                    #do_click(ctx.window_rect, ctx.config, log, w, h, "Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
-                    time.sleep(10)
+        # Check for Perk button - CLICK IT
+        if mode == 'main' and r.is_near(0.6056, 0.035, 0.1):
+            log.info('text in perk area: ' + r.text)
+            if r.text.lower() in ["perk", "perk:", 'park', 'new perk']:
+                log.info(f"'Perk' detected at ({r.fx:.4f}, {r.fy:.4f}) - clicking!")
+                execute_click(cx, cy, ctx.window_rect, ctx.config)
 
 
-            # Check for CLAIM button - CLICK IT
-            if mode == 'main' and  r.text.lower() == "claim":
-                log.info(f"'CLAIM' detected at ({r.fx:.4f}, {r.fy:.4f}) - clicking!")
-                if ctx.window_rect and ctx.config:
-                    execute_click(cx, cy, ctx.window_rect, ctx.config)
-            
-            # Check for perk threshold near position
-            if r.is_near(0.6341, 0.0436, 0.05):
-                # Try to parse as number
-                text_clean = r.text.replace(',', '').strip()
-                if re.match(r'^\d+$', text_clean):
-                    try:
-                        threshold_num = int(text_clean)
-                        # Check if it's similar to wave number (within reasonable range)
-                        if wave_num and abs(threshold_num - wave_num) < 10000:
-                            log.debug(f"Perk threshold detected: {r.text} at ({r.fx:.4f}, {r.fy:.4f}) [wave: {wave_num_str}]")
-                    except ValueError:
-                        pass
-            
-            # Check for coins at position
-            if r.is_near(0.3132, 0.0819, 0.02):
-                # Parse number with suffix (K, M, B, T)
-                match = re.match(r'^([0-9.]+)\s*([KMBT])?$', r.text.strip(), re.IGNORECASE)
-                if match:
-                    value = float(match.group(1))
-                    suffix = match.group(2).upper() if match.group(2) else ''
-                    
-                    multipliers = {'K': 1_000, 'M': 1_000_000, 'B': 1_000_000_000, 'T': 1_000_000_000_000}
-                    multiplier = multipliers.get(suffix, 1)
-                    coins = value * multiplier
-        if mode == 'perks' and perk_text:
-            perk_text_join = {row: " ".join(texts) for row, texts in perk_text.items()}        
-            log.info(f"Perk text by row: {perk_text_join}")
-            # perk_text_priority defined as the keys in perk_text_join and the index in PERK_CHOICES that has a regexp that matches the value
-            perk_text_priority = []
-            for row, text in perk_text_join.items():
-                hit = False
-                for idx, choice_pattern in enumerate(PERK_CHOICES):
-                    if re.search(choice_pattern, text, re.IGNORECASE):
-                        perk_text_priority.append((row, choice_pattern, idx))
-                        hit = True
-                        break
-                if not hit:
-                    log.warning(f"No perk choice pattern matched for row {row} with text '{text}'")
-            perk_text_priority.sort(key=lambda x: x[2])  # Sort by choice index (priority)
-            # pick the row with the highest priority (lowest index)
-            if perk_text_priority:
-                best_row, best_choice, best_idx = perk_text_priority[0]
-                log.info(f"Best perk choice: '{best_choice}' in row {best_row} with text '{perk_text_join[best_row]}'")
-                # click the perk in that row
-                message = f"Clicking perk at row {best_row} (choice: '{best_choice}')"
-                do_click(ctx.window_rect, ctx.config, log, w, h, message,  0.671, PERK_ROWS[best_row][1])
-                close_perks(ctx.window_rect, ctx.config, log, w, h)
-            
-        if perks_mode and not choose:
+        # Check for perk threshold near position
+        if r.is_near(0.6341, 0.0436, 0.05):
+            # Try to parse as number
+            text_clean = r.text.replace(',', '').strip()
+            if re.match(r'^\d+$', text_clean):
+                try:
+                    threshold_num = int(text_clean)
+                    # Check if it's similar to wave number (within reasonable range)
+                    if wave_num and abs(threshold_num - wave_num) < 10000:
+                        log.debug(f"Perk threshold detected: {r.text} at ({r.fx:.4f}, {r.fy:.4f}) [wave: {wave_num_str}]")
+                except ValueError:
+                    pass
+        
+        # Check for coins at position
+        if r.is_near(0.3132, 0.0819, 0.02):
+            # Parse number with suffix (K, M, B, T)
+            match = re.match(r'^([0-9.]+)\s*([KMBT])?$', r.text.strip(), re.IGNORECASE)
+            if match:
+                value = float(match.group(1))
+                suffix = match.group(2).upper() if match.group(2) else ''
+                
+                multipliers = {'K': 1_000, 'M': 1_000_000, 'B': 1_000_000_000, 'T': 1_000_000_000_000}
+                multiplier = multipliers.get(suffix, 1)
+                coins = value * multiplier
+    if mode == 'perks' and perk_text:
+        perk_text_join = {row: " ".join(texts) for row, texts in perk_text.items()}        
+        log.info(f"Perk text by row: {perk_text_join}")
+        # perk_text_priority defined as the keys in perk_text_join and the index in PERK_CHOICES that has a regexp that matches the value
+        perk_text_priority = []
+        for row, text in perk_text_join.items():
+            hit = False
+            for idx, choice_pattern in enumerate(PERK_CHOICES):
+                if re.search(choice_pattern, text, re.IGNORECASE):
+                    perk_text_priority.append((row, choice_pattern, idx))
+                    hit = True
+                    break
+            if not hit:
+                log.warning(f"No perk choice pattern matched for row {row} with text '{text}'")
+        perk_text_priority.sort(key=lambda x: x[2])  # Sort by choice index (priority)
+        # pick the row with the highest priority (lowest index)
+        if perk_text_priority:
+            best_row, best_choice, best_idx = perk_text_priority[0]
+            log.info(f"Best perk choice: '{best_choice}' in row {best_row} with text '{perk_text_join[best_row]}'")
+            # click the perk in that row
+            message = f"Clicking perk at row {best_row} (choice: '{best_choice}')"
+            do_click(ctx.window_rect, ctx.config, log, w, h, message,  0.671, PERK_ROWS[best_row][1])
             close_perks(ctx.window_rect, ctx.config, log, w, h)
+        
+    if perks_mode and not choose:
+        close_perks(ctx.window_rect, ctx.config, log, w, h)
     
     elements = []
     resources = {}
