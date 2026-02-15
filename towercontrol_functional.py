@@ -33,13 +33,13 @@ import pyautogui
 PERK_ROWS = [ (0, 0.273), (1, 0.373), (2, 0.473), (3, 0.573), (4, 0.673) ]
 PERK_CHOICES = [
     r'Peak Wave Requirement -[\d\.]+%',
-    r'Increase Max Game Speed by \-[\d\.]+',
+    r'(Increase )?Max Game Speed( by \-[\d\.]+)?',
     r'x[\d\.]+ All Coins Bonuses',
     r'Chain Lightning Damage x[\d\.]+',
     r'Golden Tower Bonus x[\d\.]+',
     r'x[\d\.]+ Damage',
-    r'\d+ More Smart Missiles',
-    r'\d+ Wave On Death Wave',
+    r'\d*\s*More Smart Missiles',
+    r'\d*\s*(Wave )?On Death Wave',
     r'Bounce Shot \+\d+',
     r'Black Hole Duration \+[\d\.]+s',
     r'Spotlight Damage Bonus x[\d\.]+',
@@ -1160,6 +1160,10 @@ def automation_loop_tick():
                 multipliers = {'K': 1_000, 'M': 1_000_000, 'B': 1_000_000_000, 'T': 1_000_000_000_000}
                 multiplier = multipliers.get(suffix, 1)
                 coins = value * multiplier
+    for i in range(5):
+        if ' '.join(perk_text.get(i, [])).startswith('Selected'):
+            perk_text = { k:v for k,v in perk_text.items() if k < i }
+            
     if mode == 'perks' and perk_text:
         perk_text_join = {row: " ".join(texts) for row, texts in perk_text.items()}        
         log.info(f"Perk text by row: {perk_text_join}")
@@ -1167,6 +1171,7 @@ def automation_loop_tick():
         perk_text_priority = []
         for row, text in perk_text_join.items():
             hit = False
+
             for idx, choice_pattern in enumerate(PERK_CHOICES):
                 if re.search(choice_pattern, text, re.IGNORECASE):
                     perk_text_priority.append((row, choice_pattern, idx))
