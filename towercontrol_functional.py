@@ -1027,11 +1027,11 @@ class RuntimeContext:
             log.info('Window check: %s', self.window_rect)
             self.last_window_check = time.time()
 
-def click_if_present(condition):
+def click_if_present(name, condition):
     global ctx
     log = logging.getLogger(__name__)
     marks = [r for r in ctx.frame.results if condition(r)]
-    log.info(f'Marks found for condition: {marks}')
+    log.info(f'Marks found for condition "{name}"   : {marks}')
     if marks:
         log.info(f"Condition met for '{marks[0].text}' at ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking!")
         execute_click(marks[0].center[0], marks[0].center[1], ctx.window_rect, ctx.config)
@@ -1052,12 +1052,17 @@ def automation_loop_tick():
     log.info(f"Capturing window: {ctx.window_rect.width} x {ctx.window_rect.height} at ({ctx.window_rect.left}, {ctx.window_rect.top})")
     
     img = capture_window(ctx.window_rect)
+    log.info(f'Capture done')
     if not img:
         log.warning("Failed to capture window")
         return
 
+    # time OCR
     try:
+        ocr_t0 = time.time()
         frame = process_ocr(img, ctx.config, ctx.ocr_reader)
+        ocr_t1 = time.time()
+        log.info(f"OCR completed in {ocr_t1 - ocr_t0:.2f} seconds with {len(frame.results)} results")
         if frame:
             save_debug_files(img, frame, ctx.config)
         else:
@@ -1107,15 +1112,9 @@ def automation_loop_tick():
     perk_text = {}
     near_perk = [r for r in frame.results if r.is_near(0.6056, 0.035, 0.1)]
     log.info(f'near perk: {[ (r.fx, r.fy) for r in near_perk]}')
-    claim_marks = [r for r in frame.results if r.text.lower() == "claim" and r.is_near(0.6056, 0.035, 0.2)]
-    log.info(f'claim marks: {[ (r.fx, r.fy) for r in claim_marks]}')
-    for r in claim_marks:
-        log.info(f"'CLAIM' detected at ({r.fx:.4f}, {r.fy:.4f}) - clicking!")
-        if ctx.window_rect and ctx.config:
-            execute_click(r.center[0], r.center[1],  ctx.window_rect, ctx.config)
-
-    click_if_present(lambda r: r.text == 'BATTLE' and r.is_near(0.5945, 0.8168))
-    click_if_present(lambda r: r.text == 'HOME' and r.is_near(0.2605, 0.0975, 0.1))
+    click_if_present('claim', lambda r: r.text.lower() == "claim" and r.is_near(0.6056, 0.035, 0.2))
+    click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(0.5945, 0.8168))
+    click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429))
 
     defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
     attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.329, 0.632, 0.1)]
@@ -1140,7 +1139,7 @@ def automation_loop_tick():
             if delay > 60.0:
                 do_click(ctx.window_rect, ctx.config, log, w, h, "Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
             
-
+        click_if_present('perk', lambda r: r.text.lower() in ["perk", "perk:", 'park', 'new perk'] and r.is_near(0.6056, 0.035, 0.1))
     for r in frame.results:
         cx, cy = r.center
         
@@ -1151,13 +1150,7 @@ def automation_loop_tick():
                 perk_text.setdefault(row, list())            
                 perk_text[row].append(r.text)
 
-        # Check for Perk button - CLICK IT
-        if mode == 'main' and r.is_near(0.6056, 0.035, 0.1):
-            log.info('text in perk area: ' + r.text)
-            if r.text.lower() in ["perk", "perk:", 'park', 'new perk']:
-                log.info(f"'Perk' detected at ({r.fx:.4f}, {r.fy:.4f}) - clicking!")
-                execute_click(cx, cy, ctx.window_rect, ctx.config)
-
+    
 
         # Check for perk threshold near position
         if r.is_near(0.6341, 0.0436, 0.05):
@@ -1290,7 +1283,7 @@ def automation_loop_run(ctx: RuntimeContext):
     while ctx.running:
         t0 = time.time()
         try:
-            automation_loop_tick(ctx)
+            automation_loop_tick()
         except Exception as exc:
             log.error(f"Loop tick error: {exc}", exc_info=True)
             ctx.game_state = replace(ctx.game_state,
@@ -1354,6 +1347,7 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     """Main entry point."""
+    global ctx
     setup_logging()
     log = logging.getLogger(__name__)
 
