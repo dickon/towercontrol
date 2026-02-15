@@ -90,7 +90,6 @@ class Config:
     click_pause: float = 5.0
     input_delay: float = 0.15
     loop_tick: float = 20.0
-    full_scan_interval: float = 30.0
     web_host: str = "127.0.0.1"
     web_port: int = 7700
     tab_y: int = 920
@@ -137,8 +136,6 @@ class ActionType(Enum):
     SWIPE_DOWN = auto()
     TAP_KEY = auto()
     WAIT = auto()
-    SCAN_CURRENT = auto()
-    FULL_SCAN = auto()
     NONE = auto()
 
 
@@ -230,7 +227,6 @@ class GameState:
     wave: Optional[str] = None
     wave_pos: Optional[Tuple[float, float]] = None
     wave_history: Tuple[Tuple[int, float], ...] = ()  # (wave_number, timestamp)
-    last_full_scan: float = 0.0
     action_history: Tuple[Dict[str, Any], ...] = ()
     error_count: int = 0
 
@@ -1069,8 +1065,8 @@ def decide_action(state: GameState, config: Config, latest_image: Optional[Image
         else:
             log.debug(f"Cooldown active: {time_since_last_claim:.1f}s since last click")
 
-    # Default: observe current screen
-    return Action(action_type=ActionType.SCAN_CURRENT, duration=1.0, reason="Observing")
+    # Default: no action needed (scanning happens automatically)
+    return Action(action_type=ActionType.NONE, reason="Observing")
 
 
 # ============================================================================
@@ -1180,8 +1176,7 @@ def execute_swipe(x: int, y: int, distance: int, direction: str,
 
 
 def execute_action(action: Action, rect: Optional[WindowRect],
-                  config: Config,
-                  scanner_fn: Callable, full_scan_fn: Callable) -> None:
+                  config: Config) -> None:
     """Execute an action. Side effect dispatcher."""
     log = logging.getLogger(__name__)
     log.info(f"Action: {action.action_type.name} – {action.reason}")
@@ -1201,36 +1196,6 @@ def execute_action(action: Action, rect: Optional[WindowRect],
     elif action.action_type == ActionType.WAIT:
         log.trace('sleeping for %.2f seconds', action.duration)
         time.sleep(action.duration)
-
-    elif action.action_type == ActionType.SCAN_CURRENT:
-        scanner_fn()
-
-    elif action.action_type == ActionType.FULL_SCAN:
-        full_scan_fn()
-
-
-# ============================================================================
-# SIDE-EFFECT FUNCTIONS - SCANNING
-# ============================================================================
-
-def scan_current_screen(rect: WindowRect, config: Config, ocr_reader=None) -> Tuple[Optional[Image.Image], Optional[OCRFrame]]:
-    """Capture and OCR current screen. Returns image and OCR frame."""
-    log = logging.getLogger(__name__)
-    log.info(f"Capturing window: {rect.width} x {rect.height} at ({rect.left}, {rect.top})")
-    
-    img = capture_window(rect)
-    if not img:
-        return None, None
-
-    try:
-        frame = process_ocr(img, config, ocr_reader)
-        # Save debug files
-        if frame:
-            save_debug_files(img, frame, config)
-        return img, frame
-    except Exception as e:
-        logging.getLogger(__name__).error(f"OCR failed: {e}")
-        return img, None
 
 
 # ============================================================================
@@ -1257,61 +1222,50 @@ class RuntimeContext:
             self.window_rect = find_window(self.config.window_title)
             self.last_window_check = time.time()
 
-    def scan_current(self):
-        """Scan current screen and update state."""
-        if not self.window_rect:
-            return
-
-        img, frame = scan_current_screen(self.window_rect, self.config, self.ocr_reader)
-        if img and frame:
-            self.latest_image = img
-            
-            # Check for floating gem and click it directly
-            if self.gem_template is not None:
-                gem_pos = detect_floating_gem(img, self.gem_template, self.config)
-                if gem_pos:
-                    log = logging.getLogger(__name__)
-                    log.info(f"Floating gem detected at {gem_pos} - clicking!")
-                    execute_click(gem_pos[0], gem_pos[1], self.window_rect, self.config)
-            else:
-                log.warning("Gem template not available - skipping floating gem detection")
-            screen_state = build_screen_state(frame, self.window_rect, self.config)
-            self.game_state = update_game_state(self.game_state, screen_state, frame)
-        else:
-            log = logging.getLogger(__name__)
-            log.warning("Failed to scan current screen")
-    def full_scan(self):
-        """Perform full scan and update state."""
-        if not self.window_rect:
-            return
-
-        # Just do a regular scan and update timestamp
-        self.scan_current()
-        self.game_state = replace(
-            self.game_state,
-            last_full_scan=time.time()
-        )
-
 
 def automation_loop_tick(ctx: RuntimeContext):
     """Single tick of automation loop."""
-    # Update window rect
     log = logging.getLogger(__name__)
+    
+    # Update window rect
     ctx.update_window()
     if not ctx.window_rect:
         log.warning("Window not found: '%s'", ctx.config.window_title)
         ctx.status = "no_window"
         return
 
-    # Update window rect after resize to get new dimensions
-    ctx.window_rect = find_window(ctx.config.window_title)
-    if not ctx.window_rect:
-        log.warning("Window not found: '%s'", ctx.config.window_title)
-        ctx.status = "no_window"
+    # Capture and OCR current screen
+    log.info(f"Capturing window: {ctx.window_rect.width} x {ctx.window_rect.height} at ({ctx.window_rect.left}, {ctx.window_rect.top})")
+    
+    img = capture_window(ctx.window_rect)
+    if not img:
+        log.warning("Failed to capture window")
         return
 
-    # Scan current screen (this now handles all clicking logic directly)
-    ctx.scan_current()
+    try:
+        frame = process_ocr(img, ctx.config, ctx.ocr_reader)
+        if frame:
+            save_debug_files(img, frame, ctx.config)
+        else:
+            log.warning("OCR processing failed")
+            return
+    except Exception as e:
+        log.error(f"OCR failed: {e}")
+        return
+
+    # Update state
+    ctx.latest_image = img
+    
+    # Check for floating gem and click it directly
+    if ctx.gem_template is not None:
+        gem_pos = detect_floating_gem(img, ctx.gem_template, ctx.config)
+        if gem_pos:
+            log.info(f"Floating gem detected at {gem_pos} - clicking!")
+            execute_click(gem_pos[0], gem_pos[1], ctx.window_rect, ctx.config)
+    
+    screen_state = build_screen_state(frame, ctx.window_rect, ctx.config)
+    ctx.game_state = update_game_state(ctx.game_state, screen_state, frame)
+    ctx.status = "running"
 
 
 def automation_loop_run(ctx: RuntimeContext):
