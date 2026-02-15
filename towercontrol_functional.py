@@ -1013,6 +1013,7 @@ class RuntimeContext:
     game_state: GameState = field(default_factory=GameState)
     window_rect: Optional[WindowRect] = None
     latest_image: Optional[Image.Image] = None
+    frame: Optional[OCRFrame] = None
     running: bool = False
     input_enabled: bool = False
     status: str = "stopped"
@@ -1026,16 +1027,18 @@ class RuntimeContext:
             log.info('Window check: %s', self.window_rect)
             self.last_window_check = time.time()
 
-def click_if_present(window_rect, config, results, condition):
+def click_if_present(condition):
+    global ctx
     log = logging.getLogger(__name__)
-    marks = [r for r in results if condition(r)]
+    marks = [r for r in ctx.frame.results if condition(r)]
     log.info(f'Marks found for condition: {marks}')
     if marks:
         log.info(f"Condition met for '{marks[0].text}' at ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking!")
-        execute_click(marks[0].center[0], marks[0].center[1], window_rect, config)
+        execute_click(marks[0].center[0], marks[0].center[1], ctx.window_rect, ctx.config)
 
-def automation_loop_tick(ctx: RuntimeContext):
+def automation_loop_tick():
     """Single tick of automation loop."""
+    global ctx
     log = logging.getLogger(__name__)
     log.info("----------------- TiCK")
     # Update window rect
@@ -1066,6 +1069,7 @@ def automation_loop_tick(ctx: RuntimeContext):
 
     # Update state
     ctx.latest_image = img
+    ctx.frame = frame
     
     # Check for floating gem and click it directly
     if ctx.gem_template is not None:
@@ -1110,8 +1114,8 @@ def automation_loop_tick(ctx: RuntimeContext):
         if ctx.window_rect and ctx.config:
             execute_click(r.center[0], r.center[1],  ctx.window_rect, ctx.config)
 
-    click_if_present(ctx.window_rect, ctx.config, frame.results, lambda r: r.text == 'BATTLE' and r.is_near(0.5945, 0.8168))
-    click_if_present(ctx.window_rect, ctx.config, frame.results, lambda r: r.text == 'HOME' and r.is_near(0.2605, 0.0975, 0.1))
+    click_if_present(lambda r: r.text == 'BATTLE' and r.is_near(0.5945, 0.8168))
+    click_if_present(lambda r: r.text == 'HOME' and r.is_near(0.2605, 0.0975, 0.1))
 
     defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
     attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.329, 0.632, 0.1)]
