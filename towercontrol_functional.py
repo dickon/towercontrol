@@ -164,11 +164,28 @@ class OCRResult:
     text: str
     bbox: Tuple[int, int, int, int]  # (x, y, w, h)
     confidence: float
+    image_size: Tuple[int, int] = (0, 0)  # (width, height) of the frame
 
     @property
     def center(self) -> Tuple[int, int]:
         x, y, w, h = self.bbox
         return (x + w // 2, y + h // 2)
+    
+    @property
+    def fx(self) -> float:
+        """Fractional X coordinate (0.0 to 1.0)"""
+        cx, _ = self.center
+        return cx / self.image_size[0] if self.image_size[0] > 0 else 0.0
+    
+    @property
+    def fy(self) -> float:
+        """Fractional Y coordinate (0.0 to 1.0)"""
+        _, cy = self.center
+        return cy / self.image_size[1] if self.image_size[1] > 0 else 0.0
+    
+    def is_near(self, target_fx: float, target_fy: float, tolerance: float = 0.05) -> bool:
+        """Check if center is within tolerance of target fractional coordinates."""
+        return abs(self.fx - target_fx) < tolerance and abs(self.fy - target_fy) < tolerance
 
 
 @dataclass(frozen=True)
@@ -313,15 +330,13 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
         for result in frame.results:
             x, y, w, h = result.bbox
             cx, cy = result.center
-            x_frac = cx / img_width if img_width > 0 else 0.0
-            y_frac = cy / img_height if img_height > 0 else 0.0
             
             # Draw bounding box
             box_color = (0, 255, 0) if result.confidence >= 80 else (255, 165, 0)  # Green for high conf, orange for lower
             draw.rectangle([x, y, x + w, y + h], outline=box_color, width=2)
             
             # Draw text and fractional coordinates
-            label = f"{result.text}\n({x_frac:.3f}, {y_frac:.3f})"
+            label = f"{result.text}\n({result.fx:.3f}, {result.fy:.3f})"
             # Position label above the box if there's room, otherwise below
             label_y = max(0, y - 25) if y > 30 else y + h + 2
             draw.text((x, label_y), label, fill=box_color)
@@ -340,13 +355,11 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
             
             for result in frame.results:
                 x, y, w, h = result.bbox
-                x_frac = x / img_width if img_width > 0 else 0.0
-                y_frac = y / img_height if img_height > 0 else 0.0
                 w_frac = w / img_width if img_width > 0 else 0.0
                 h_frac = h / img_height if img_height > 0 else 0.0
                 
                 text_display = result.text[:28] + ".." if len(result.text) > 30 else result.text
-                f.write(f"{text_display:<30} | {x_frac:>8.4f} | {y_frac:>8.4f} | {w_frac:>8.4f} | {h_frac:>8.4f} | {result.confidence:>6.1f}\n")
+                f.write(f"{text_display:<30} | {result.fx:>8.4f} | {result.fy:>8.4f} | {w_frac:>8.4f} | {h_frac:>8.4f} | {result.confidence:>6.1f}\n")
         
         log.debug(f"Saved debug text: {txt_path}")
     except Exception as e:
@@ -518,7 +531,8 @@ def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
         scaled_results.append(OCRResult(
             text=r.text,
             bbox=(x // 2, y // 2, bw // 2, bh // 2),
-            confidence=r.confidence
+            confidence=r.confidence,
+            image_size=(w, h)
         ))
 
     # Save preprocessed debug image (first variant)
@@ -616,9 +630,8 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
         match = re.search(r'(?:wave|w)[:\s]*([0-9,]+)', text, re.IGNORECASE)
         if match:
             wave_num = match.group(1).replace(',', '')
-            cx, cy = r.center
-            log.debug(f"Wave detected (strategy 1): '{wave_num}' from text '{text}' at ({cx/w:.3f}, {cy/h:.3f})")
-            return wave_num, (cx / w, cy / h)
+            log.debug(f"Wave detected (strategy 1): '{wave_num}' from text '{text}' at ({r.fx:.3f}, {r.fy:.3f})")
+            return wave_num, (r.fx, r.fy)
 
     # Strategy 2: Find standalone "wave"/"w" label and number to the right
     for r in frame.results:
@@ -644,9 +657,8 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
                             best_candidate = candidate
 
             if best_num and best_candidate:
-                cx, cy = best_candidate.center
-                log.debug(f"Wave detected (strategy 2): '{best_num}' at ({cx/w:.3f}, {cy/h:.3f})")
-                return best_num, (cx / w, cy / h)
+                log.debug(f"Wave detected (strategy 2): '{best_num}' at ({best_candidate.fx:.3f}, {best_candidate.fy:.3f})")
+                return best_num, (best_candidate.fx, best_candidate.fy)
 
     # Strategy 3: Look for any text starting with "wave" or "w" followed by digits
     for r in frame.results:
@@ -656,9 +668,8 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
             digits = re.findall(r'[0-9]+', r.text)
             if digits:
                 wave_num = digits[0]
-                cx, cy = r.center
-                log.debug(f"Wave detected (strategy 3): '{wave_num}' from text '{r.text}' at ({cx/w:.3f}, {cy/h:.3f})")
-                return wave_num, (cx / w, cy / h)
+                log.debug(f"Wave detected (strategy 3): '{wave_num}' from text '{r.text}' at ({r.fx:.3f}, {r.fy:.3f})")
+                return wave_num, (r.fx, r.fy)
 
     # Debug: log all OCR results if wave not found (but only occasionally to avoid spam)
     if len(frame.results) > 0:
@@ -685,7 +696,7 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
         except ValueError:
             pass
     
-    texts: tuple[str, float, float] = [ (r.text, r.center[0]/w, r.center[1]/h) for r in frame.results]
+    texts: tuple[str, float, float] = [(r.text, r.fx, r.fy) for r in frame.results]
     perks_mode = [t for t in texts if t[0] == 'Perks' and abs(t[1]-0.612) < 0.05 and abs(t[2]-0.098) < 0.05]
     choose = [t for t in texts if t[0] == 'Choose' and abs(t[1]-0.522) < 0.05 and abs(t[2]-0.206) < 0.05]
     if perks_mode and choose:
@@ -695,37 +706,35 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
         mode = 'main'
     log.info(f"Detected mode: {mode}")
     perk_text = {}
-    near_perk = [r for r in frame.results if abs((r.center[0]/w) - 0.6056) < 0.1 and abs((r.center[1]/h) - 0.035) < 0.1]
+    near_perk = [r for r in frame.results if r.is_near(0.6056, 0.035, 0.1)]
     pprint.pprint(near_perk)
     for r in frame.results:
         cx, cy = r.center
-        fx, fy = cx / w, cy / h
-        
         
         lowertext = r.text.lower()
 
         for (row, dy) in PERK_ROWS:
-            if abs(fy-dy) < 0.05 and fx > 0.54 and fx < 0.78:
+            if abs(r.fy - dy) < 0.05 and r.fx > 0.54 and r.fx < 0.78:
                 perk_text.setdefault(row, list())            
                 perk_text[row].append(r.text)
 
         # Check for Perk button - CLICK IT
-        if mode == 'main' and abs(fx - 0.6056) < 0.1 and abs(fy - 0.035) < 0.1:
+        if mode == 'main' and r.is_near(0.6056, 0.035, 0.1):
             log.info('text in perk area: ' + r.text)
             if r.text.lower() in ["perk", "perk:", 'park', 'new perk']:
-                log.info(f"'Perk' detected at ({fx:.4f}, {fy:.4f}) - clicking!")
+                log.info(f"'Perk' detected at ({r.fx:.4f}, {r.fy:.4f}) - clicking!")
                 execute_click(cx, cy, window_rect, config)
 
         if mode == 'main':
             seen = None
-            if r.text == 'DEFENSE' and abs(fx - 0.343) < 0.1 and abs(fy - 0.632) < 0.04:
+            if r.text == 'DEFENSE' and r.is_near(0.343, 0.632, 0.1):
                 seen = 'DEFENSE'
                 do_click(window_rect, config, log, w, h, "Seen defense, Clicking 'ATTACK'", 0.321, 0.985)
-            if r.text == 'ATTACK' and abs(fx - 0.329) < 0.1 and abs(fy - 0.632) < 0.04:
+            if r.text == 'ATTACK' and r.is_near(0.329, 0.632, 0.1):
                 seen = 'ATTACK'
                 do_click(window_rect, config, log, w, h, "Seen attack,Clicking 'UTILITY'", 0.7, 0.985)
 
-            if r.text == 'UTILITY' and abs(fx - 0.333) < 0.1 and abs(fy - 0.632) < 0.04:
+            if r.text == 'UTILITY' and r.is_near(0.333, 0.632, 0.1):
                 seen = 'UTILITY'
                 do_click(window_rect, config, log, w, h, "Seen utiliy, Clicking 'DEFENSE'", 0.5105, 0.985)
             if seen == None:
@@ -736,12 +745,12 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
 
         # Check for CLAIM button - CLICK IT
         if mode == 'main' and  r.text.lower() == "claim":
-            log.info(f"'CLAIM' detected at ({fx:.4f}, {fy:.4f}) - clicking!")
+            log.info(f"'CLAIM' detected at ({r.fx:.4f}, {r.fy:.4f}) - clicking!")
             if window_rect and config:
                 execute_click(cx, cy, window_rect, config)
         
         # Check for perk threshold near position
-        if abs(fx - 0.6341) < 0.05 and abs(fy - 0.0436) < 0.05:
+        if r.is_near(0.6341, 0.0436, 0.05):
             # Try to parse as number
             text_clean = r.text.replace(',', '').strip()
             if re.match(r'^\d+$', text_clean):
@@ -749,12 +758,12 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
                     threshold_num = int(text_clean)
                     # Check if it's similar to wave number (within reasonable range)
                     if wave_num and abs(threshold_num - wave_num) < 10000:
-                        log.debug(f"Perk threshold detected: {r.text} at ({fx:.4f}, {fy:.4f}) [wave: {wave_num_str}]")
+                        log.debug(f"Perk threshold detected: {r.text} at ({r.fx:.4f}, {r.fy:.4f}) [wave: {wave_num_str}]")
                 except ValueError:
                     pass
         
         # Check for coins at position
-        if abs(fx - 0.3132) < 0.02 and abs(fy - 0.0819) < 0.02:
+        if r.is_near(0.3132, 0.0819, 0.02):
             # Parse number with suffix (K, M, B, T)
             match = re.match(r'^([0-9.]+)\s*([KMBT])?$', r.text.strip(), re.IGNORECASE)
             if match:
@@ -810,6 +819,7 @@ def close_perks(window_rect, config, log, w, h):
 def build_screen_state(frame: OCRFrame, window_rect: Optional[WindowRect] = None, config: Optional[Config] = None) -> ScreenState:
     """Build ScreenState from OCR frame. Pure function."""
     log = logging.getLogger(__name__)
+    log.info('build screen state')
     check_known_markers(frame, window_rect, config)
     
     elements = []
@@ -1307,12 +1317,14 @@ def automation_loop_tick(ctx: RuntimeContext):
     log = logging.getLogger(__name__)
     ctx.update_window()
     if not ctx.window_rect:
+        log.warning("Window not found: '%s'", ctx.config.window_title)
         ctx.status = "no_window"
         return
 
     # Update window rect after resize to get new dimensions
     ctx.window_rect = find_window(ctx.config.window_title)
     if not ctx.window_rect:
+        log.warning("Window not found: '%s'", ctx.config.window_title)
         ctx.status = "no_window"
         return
 
