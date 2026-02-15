@@ -538,35 +538,7 @@ def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
 # PURE FUNCTIONS - STATE MACHINE
 # ============================================================================
 
-SCREEN_KEYWORDS = {
-    Screen.MAIN: ["wave", "damage", "dps", "floor"],
-    Screen.UPGRADES: ["upgrade", "level", "cost"],
-    Screen.SHOP: ["shop", "buy", "purchase", "gems", "offer"],
-    Screen.DIALOG: ["ok", "cancel", "close", "confirm", "collect"],
-    Screen.IDLE_REWARDS: ["idle", "rewards", "offline", "collect"],
-    Screen.SETTINGS: ["settings", "options", "sound", "music"],
-    Screen.LOADING: ["loading", "connecting"],
-}
-
-
-def identify_screen(frame: OCRFrame) -> Screen:
-    """Determine screen from OCR results. Pure function."""
-    texts_lower = [r.text.lower() for r in frame.results]
-    all_text = " ".join(texts_lower)
-
-    best_screen = Screen.UNKNOWN
-    best_score = 0
-
-    for screen, keywords in SCREEN_KEYWORDS.items():
-        score = sum(1 for kw in keywords if kw in all_text)
-        if score > best_score:
-            best_score = score
-            best_screen = screen
-
-    return best_screen
-
-
-def classify_ocr_result(ocr: OCRResult, screen: Screen) -> Optional[UIElement]:
+def classify_ocr_result(ocr: OCRResult) -> Optional[UIElement]:
     """Classify an OCR result into a UI element. Pure function."""
     text = ocr.text.strip()
     lower = text.lower()
@@ -838,14 +810,13 @@ def close_perks(window_rect, config, log, w, h):
 def build_screen_state(frame: OCRFrame, window_rect: Optional[WindowRect] = None, config: Optional[Config] = None) -> ScreenState:
     """Build ScreenState from OCR frame. Pure function."""
     log = logging.getLogger(__name__)
-    screen = identify_screen(frame)
     check_known_markers(frame, window_rect, config)
     
     elements = []
     resources = {}
     
     for ocr in frame.results:
-        elem = classify_ocr_result(ocr, screen)
+        elem = classify_ocr_result(ocr)
         if elem:
             elements.append(elem)
             if elem.element_type == "resource":
@@ -854,7 +825,6 @@ def build_screen_state(frame: OCRFrame, window_rect: Optional[WindowRect] = None
                 log.debug(f"Button classified: '{elem.text}' at {elem.center}")
 
     return ScreenState(
-        screen=screen,
         elements=tuple(elements),
         resources=resources,
         raw_texts=tuple(r.text for r in frame.results),
@@ -1311,10 +1281,13 @@ class RuntimeContext:
                     log = logging.getLogger(__name__)
                     log.info(f"Floating gem detected at {gem_pos} - clicking!")
                     execute_click(gem_pos[0], gem_pos[1], self.window_rect, self.config)
-            
+            else:
+                log.warning("Gem template not available - skipping floating gem detection")
             screen_state = build_screen_state(frame, self.window_rect, self.config)
             self.game_state = update_game_state(self.game_state, screen_state, frame)
-
+        else:
+            log = logging.getLogger(__name__)
+            log.warning("Failed to scan current screen")
     def full_scan(self):
         """Perform full scan and update state."""
         if not self.window_rect:

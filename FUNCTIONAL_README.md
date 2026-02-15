@@ -12,7 +12,7 @@ This is a complete rewrite of the TowerControl game automation system in functio
 ### Functional Programming Principles Applied
 
 1. **Pure Functions**: Most logic is in pure functions that don't modify state
-   - `identify_screen()`, `classify_ocr_result()`, `build_screen_state()`
+   - `classify_ocr_result()`, `build_screen_state()`
    - `decide_action()`, `annotate_image()`, `state_to_dict()`
 
 2. **Immutable Data**: Uses `@dataclass(frozen=True)` and tuple collections
@@ -43,7 +43,7 @@ towercontrol_functional.py (single file organized into sections):
 ├── Pure Functions
 │   ├── Window Capture (find_window, capture_window)
 │   ├── OCR (preprocess_image, run_*_ocr, process_ocr)
-│   ├── State Machine (identify_screen, classify_ocr_result, etc.)
+│   ├── State Machine (classify_ocr_result, etc.)
 │   ├── Strategy (decide_action)
 │   └── Rendering (annotate_image, state_to_dict)
 ├── Side-Effect Functions
