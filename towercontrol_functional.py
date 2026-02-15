@@ -58,6 +58,15 @@ PERK_CHOICES = [
     r'.*but boss.*',
 ]
 
+UPGRADE_PRIORITY = [
+    ('Utility', 'Enemy Attack level Skip', 1e6, True),
+    ('Utility', 'Enemy Health level Skip', 1e6, True),
+    ('Attack', 'Damage', None, False),
+    ('Defense', 'Health', None, False),
+    ('Defense', 'Health Regen', None, False),
+    ('Defense', 'Defense Absoslute', None, False)
+]
+
 # OCR
 try:
     import pytesseract
@@ -718,6 +727,26 @@ def load_gem_template(config: Config) -> Optional[np.ndarray]:
         return None
 
 
+def load_claim_template(config: Config) -> Optional[np.ndarray]:
+    """Load CLAIM button template image for detection."""
+    claim_path = config.base_dir / "claim_button.png"
+    if not claim_path.exists():
+        logging.getLogger(__name__).debug(f"CLAIM template not found: {claim_path}")
+        return None
+    
+    try:
+        template = cv2.imread(str(claim_path), cv2.IMREAD_UNCHANGED)
+        if template is None:
+            return None
+        # Convert to grayscale for template matching
+        if len(template.shape) == 3:
+            template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+        return template
+    except Exception as e:
+        logging.getLogger(__name__).debug(f"Failed to load CLAIM template: {e}")
+        return None
+
+
 def detect_floating_gem(img: Optional[Image.Image], gem_template: Optional[np.ndarray], 
                        config: Config) -> Optional[Tuple[int, int]]:
     """Detect floating gem at any rotation near middle of screen. Returns (x, y) or None."""
@@ -773,6 +802,55 @@ def detect_floating_gem(img: Optional[Image.Image], gem_template: Optional[np.nd
         
     except Exception as e:
         log.warning(f"Gem detection failed: {e}")
+        return None
+
+
+def detect_claim_button(img: Optional[Image.Image], claim_template: Optional[np.ndarray], 
+                       config: Config) -> Optional[Tuple[int, int]]:
+    """Detect CLAIM button in middle-left region. Returns (x, y) or None.
+    
+    This supplements OCR-based detection for improved reliability without OCR cost.
+    Focuses on middle-left area where CLAIM buttons typically appear.
+    """
+    if img is None or claim_template is None:
+        return None
+    
+    log = logging.getLogger(__name__)
+    
+    try:
+        # Convert PIL to cv2
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+        h, w = img_cv.shape
+        
+        # Define middle-left region (left 40%, middle 60% vertically)
+        # This focuses on where CLAIM buttons commonly appear
+        x_start = int(w * 0.05)
+        x_end = int(w * 0.45)
+        y_start = int(h * 0.2)
+        y_end = int(h * 0.8)
+        search_region = img_cv[y_start:y_end, x_start:x_end]
+        
+        # Skip if template is larger than search region
+        if claim_template.shape[0] > search_region.shape[0] or claim_template.shape[1] > search_region.shape[1]:
+            return None
+        
+        # Template matching with normalized cross-correlation
+        result = cv2.matchTemplate(search_region, claim_template, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+        
+        threshold = 0.65  # Slightly higher threshold for button matching
+        
+        if max_val >= threshold:
+            # Convert back to full image coordinates
+            match_x = max_loc[0] + x_start + claim_template.shape[1] // 2
+            match_y = max_loc[1] + y_start + claim_template.shape[0] // 2
+            log.info(f"CLAIM button detected at ({match_x}, {match_y}) with confidence {max_val:.2f}")
+            return (match_x, match_y)
+        
+        return None
+        
+    except Exception as e:
+        log.debug(f"CLAIM button detection failed: {e}")
         return None
 
 
@@ -994,6 +1072,7 @@ class RuntimeContext:
     config: Config
     ocr_reader: Any = None
     gem_template: Optional[np.ndarray] = None
+    claim_template: Optional[np.ndarray] = None
     game_state: GameState = field(default_factory=GameState)
     window_rect: Optional[WindowRect] = None
     latest_image: Optional[Image.Image] = None
@@ -1067,6 +1146,25 @@ def automation_loop_tick():
             log.info(f"Floating gem detected at {gem_pos} - clicking!")
             execute_click(gem_pos[0], gem_pos[1], ctx.window_rect, ctx.config)
     
+    # Check for CLAIM button via template matching (supplements OCR detection)
+    if ctx.claim_template is not None:
+        claim_pos = detect_claim_button(img, ctx.claim_template, ctx.config)
+        if claim_pos:
+            # Add cooldown to avoid clicking too frequently
+            last_claim_time = get_last_action_time(ctx.game_state, ActionType.CLICK)
+            if time.time() - last_claim_time > 2.0:
+                log.info(f"CLAIM button detected via template at {claim_pos} - clicking!")
+                execute_click(claim_pos[0], claim_pos[1], ctx.window_rect, ctx.config)
+                # Update action history
+                action = Action(
+                    action_type=ActionType.CLICK,
+                    x=claim_pos[0],
+                    y=claim_pos[1],
+                    reason="Clicking CLAIM button (template match)",
+                    priority=90
+                )
+                ctx.game_state = record_action_in_state(ctx.game_state, action)
+    
     # Build screen state (inlined from build_screen_state)
     log.info('build screen state')
     
@@ -1106,13 +1204,15 @@ def automation_loop_tick():
     if mode == 'main':
         if defense_marks:
             seen = 'DEFENSE'
-            do_click(ctx.window_rect, ctx.config, log, w, h, "Seen defense, Clicking 'ATTACK'", 0.321, 0.985)
+            
+            #do_click(ctx.window_rect, ctx.config, log, w, h, "Seen defense, Clicking 'ATTACK'", 0.321, 0.985)
         elif attack_marks:
             seen = 'ATTACK'
-            do_click(ctx.window_rect, ctx.config, log, w, h, "Seen attack,Clicking 'UTILITY'", 0.7, 0.985)
+            
+            #do_click(ctx.window_rect, ctx.config, log, w, h, "Seen attack,Clicking 'UTILITY'", 0.7, 0.985)
         elif utility_marks:
             seen = 'UTILITY'
-            do_click(ctx.window_rect, ctx.config, log, w, h, "Seen utiliy, Clicking 'DEFENSE'", 0.5105, 0.985)
+            #do_click(ctx.window_rect, ctx.config, log, w, h, "Seen utiliy, Clicking 'DEFENSE'", 0.5105, 0.985)
         else:
             seen = None
         if seen:
@@ -1360,11 +1460,19 @@ def main():
     else:
         log.warning("Gem template not loaded - floating gem detection disabled")
 
+    # Load CLAIM button template for improved recognition
+    claim_template = load_claim_template(config)
+    if claim_template is not None:
+        log.info(f"Loaded CLAIM template: {claim_template.shape}")
+    else:
+        log.info("CLAIM template not found - using OCR-only detection")
+
     # Create runtime context
     ctx = RuntimeContext(
         config=config,
         ocr_reader=ocr_reader,
         gem_template=gem_template,
+        claim_template=claim_template,
         running=True,
         status="running",
         input_enabled=False,
