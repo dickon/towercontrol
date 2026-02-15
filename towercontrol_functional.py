@@ -1653,11 +1653,37 @@ def initialize_ocr_backend(config: Config):
 
 def setup_logging():
     """Configure logging."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s  %(name)-24s  %(levelname)-7s  %(message)s",
-        datefmt="%H:%M:%S",
+    # Create logs directory
+    log_dir = Path(__file__).resolve().parent / "logs"
+    log_dir.mkdir(exist_ok=True)
+    
+    # Create log filename with timestamp
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"towercontrol_{timestamp}.log"
+    
+    # Create formatters
+    formatter = logging.Formatter(
+        "%(asctime)s  %(name)-24s  %(levelname)-7s  %(message)s",
+        datefmt="%H:%M:%S"
     )
+    
+    # Setup root logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # File handler
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)  # Log more detail to file
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    
+    logging.getLogger(__name__).info(f"Logging to file: {log_file}")
 
 
 def parse_args() -> argparse.Namespace:
