@@ -31,40 +31,81 @@ import mss
 import pyautogui
 
 PERK_ROWS = [ (0, 0.273), (1, 0.373), (2, 0.473), (3, 0.573), (4, 0.673) ]
+
+# Upgrade button positions (6 buttons in 3 rows × 2 columns)
+# Format: (index, y_fraction, x_range)
+UPGRADE_BUTTON_ROWS = [
+    (0, 0.71, (0.23, 0.50)),  # Row 1, Left column
+    (1, 0.71, (0.60, 0.85)),  # Row 1, Right column
+    (2, 0.81, (0.23, 0.50)),  # Row 2, Left column
+    (3, 0.81, (0.60, 0.85)),  # Row 2, Right column
+    (4, 0.91, (0.23, 0.50)),  # Row 3, Left column
+    (5, 0.91, (0.60, 0.85)),  # Row 3, Right column
+]
+
+# Attack upgrade labels
+ATTACK_UPGRADES = [
+    'Damage', 'Attack Speed', 'Critical Chance', 'Critical Factor', 'Range',
+    'Damage Per Meter', 'Multishot Chance', 'Multishot Targets',
+    'Rapid Fire Chance', 'Rapid Fire Duration', 'Bounce Shot Chance',
+    'Bounce Shot Targets', 'Bounce Shot Range', 'Super Crit Chance',
+    'Super Crit Mult', 'Rend Armor Chance', 'Rend Armor Mult'
+]
+
+# Defense upgrade labels
+DEFENSE_UPGRADES = [
+    'Health', 'Health Regen', 'Defense %', 'Defense Absolute', 'Thorn Damage',
+    'Lifesteal', 'Knockback Chance', 'Knockback Force', 'Orb Speed', 'Orbs',
+    'Shockwave Size', 'Shockwave Frequency', 'Land Mine Chance',
+    'Land Mine Damage', 'Land Mine Radius', 'Death Defy', 'Wall Health',
+    'Wall Rebuild'
+]
+
+# Utility upgrade labels
+UTILITY_UPGRADES = [
+    'Cash Bonus', 'Cash / Wave', 'Coins / Kill Bonus', 'Coins/Wave',
+    'Free Attack Upgrade', 'Free Defense Upgrade', 'Free Utility Upgrade',
+    'Interest / Wave', 'Recovery Amount', 'Max Recovery', 'Package Chance',
+    'Enemy Attack Level Skip', 'Enemy Health Level Skip'
+]
+
+# Combined list for matching
+ALL_UPGRADE_LABELS = ATTACK_UPGRADES + DEFENSE_UPGRADES + UTILITY_UPGRADES
+
 PERK_CHOICES = [
-    r'Peak Wave Requirement -[\d\.]+%',
+    r'Perk Wave Requirement( -[\d\.]+%)?',
     r'(Increase )?Max Game Speed( by \-[\d\.]+)?',
-    r'x[\d\.]+ All Coins Bonuses',
-    r'Chain Lightning Damage x[\d\.]+',
-    r'Golden Tower Bonus x[\d\.]+',
-    r'x[\d\.]+ Damage',
-    r'\d*\s*More Smart Missiles',
-    r'\d*\s*(Wave )?On Death Wave',
-    r'Bounce Shot \+\d+',
-    r'Black Hole Duration \+[\d\.]+s',
-    r'Spotlight Damage Bonus x[\d\.]+',
-    r'Defense percent \+[\d\.]+%',
-    r'Health Regen x[\d\.]+',
-    r'x[\d\.]+ Max Health',
-    r'x[\d\.]+ Cash Bonus',
-    r'Chrono Field Duration \+[\d\.]s',
-    r'Swamp Radius x[\d\.]+',
+    r'(x[\d\.]+ )?All Coins Bonuses',
+    r'Chain Lightning Damage( x[\d\.]+)?',
+    r'Golden Tower Bonus( x[\d\.]+)?',
+    r'(x[\d\.]+ )?Damage',
+    r'(\d*\s*)?More Smart Missiles',
+    r'(\d*\s*)?(Wave )?On Death Wave',
+    r'Bounce Shot( \+\d+)?',
+    r'Black Hole Duration( \+[\d\.]+s)?',
+    r'Spotlight Damage Bonus( x[\d\.]+)?',
+    r'Defense percent( \+[\d\.]+%)?',
+    r'Health Regen( x[\d\.]+)?',
+    r'(x[\d\.]+ )?Max Health',
+    r'(x[\d\.]+ )?Cash Bonus',
+    r'Chrono Field Duration( \+[\d\.]+s)?',
+    r'Swamp Radius( x[\d\.]+)?',
     r'Extra Set Of Inner Mines',
-    r'Free Upgrade Chancel for All \+[\d\.]+%',
-    r'Orbs \+\d+',
-    r'x[\d\.]*\s*Defense Absolute',
-    r'Land Mine Damage x[\d\.]+',
-    r'Interest x[\d\.]+',    
+    r'Free Upgrade Chancel for All( \+[\d\.]+%)?',
+    r'Orbs( \+\d+)?',
+    r'(x[\d\.]*\s*)?Defense Absolute',
+    r'Land Mine Damage( x[\d\.]+)?',
+    r'Interest( x[\d\.]+)?',    
     r'.*but boss.*',
 ]
 
 UPGRADE_PRIORITY = [
-    ('Utility', 'Enemy Attack level Skip', 1e6, True),
-    ('Utility', 'Enemy Health level Skip', 1e6, True),
-    ('Attack', 'Damage', None, False),
-    ('Defense', 'Health', None, False),
-    ('Defense', 'Health Regen', None, False),
-    ('Defense', 'Defense Absoslute', None, False)
+    ('UTILITY', 'Enemy Attack level Skip', 1e6, True),
+    ('UTILITY', 'Enemy Health level Skip', 1e6, True),
+    ('ATTACK', 'Damage', None, False),
+    ('DEFENSE', 'Health', None, False),
+    ('DEFENSE', 'Health Regen', None, False),
+    ('DEFENSE', 'Defense Absoslute', None, False)
 ]
 
 # OCR
@@ -703,6 +744,180 @@ def record_action_in_state(state: GameState, action: Action) -> GameState:
     return replace(state, action_history=new_history)
 
 
+def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max: float, 
+                  y_tolerance: float = 0.08) -> bool:
+    """Check if a button region is predominantly red (indicating MAX status).
+    
+    Args:
+        img: PIL Image to analyze
+        y_frac: Fractional Y position of button center (0.0-1.0)
+        x_min: Fractional X start of button region (0.0-1.0)
+        x_max: Fractional X end of button region (0.0-1.0)
+        y_tolerance: Vertical tolerance for button region
+    
+    Returns:
+        True if button region contains significant red color
+    """
+    if img is None:
+        return False
+    
+    try:
+        # Convert to numpy array
+        img_array = np.array(img)
+        h, w = img_array.shape[:2]
+        
+        # Calculate pixel coordinates
+        y_center = int(y_frac * h)
+        y_start = max(0, int((y_frac - y_tolerance) * h))
+        y_end = min(h, int((y_frac + y_tolerance) * h))
+        x_start = max(0, int(x_min * w))
+        x_end = min(w, int(x_max * w))
+        
+        # Extract button region
+        region = img_array[y_start:y_end, x_start:x_end]
+        
+        if region.size == 0:
+            return False
+        
+        # Convert to HSV for better color detection
+        region_hsv = cv2.cvtColor(region, cv2.COLOR_RGB2HSV)
+        
+        # Define red color range in HSV
+        # Red wraps around in HSV, so we need two ranges
+        lower_red1 = np.array([0, 100, 100])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([160, 100, 100])
+        upper_red2 = np.array([180, 255, 255])
+        
+        # Create masks for red color
+        mask1 = cv2.inRange(region_hsv, lower_red1, upper_red1)
+        mask2 = cv2.inRange(region_hsv, lower_red2, upper_red2)
+        red_mask = cv2.bitwise_or(mask1, mask2)
+        
+        # Calculate percentage of red pixels
+        red_pixels = np.count_nonzero(red_mask)
+        total_pixels = region.shape[0] * region.shape[1]
+        red_percentage = (red_pixels / total_pixels) * 100
+        
+        # Consider button red if more than 15% of pixels are red
+        is_red = red_percentage > 15.0
+        
+        if is_red:
+            logging.getLogger(__name__).debug(
+                f"Red button detected at y={y_frac:.3f}, x=[{x_min:.3f}-{x_max:.3f}]: {red_percentage:.1f}% red pixels"
+            )
+        
+        return is_red
+        
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Red detection failed: {e}")
+        return False
+
+
+def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -> List[Tuple[str, str, OCRResult]]:
+    """Detect upgrade buttons and their costs/status.
+    
+    Returns list of tuples: (label, cost_or_max, representative_ocr_result)
+    Only matches against known upgrade labels from Attack/Defense/Utility categories.
+    
+    Args:
+        frame: OCRFrame with detected text
+        img: Optional PIL Image for color detection (to detect red MAX buttons)
+    """
+    log = logging.getLogger(__name__)
+    upgrades = []
+    
+    for idx, y_frac, (x_min, x_max) in UPGRADE_BUTTON_ROWS:
+        # Find all OCR results in this upgrade button region
+        y_tolerance = 0.08  # Vertical tolerance for grouping
+        region_results = [
+            r for r in frame.results
+            if abs(r.fy - y_frac) < y_tolerance and x_min <= r.fx <= x_max
+        ]
+        
+        # Check if button is red (MAX status)
+        is_red_button = is_button_red(img, y_frac, x_min, x_max, y_tolerance)
+        
+        if not region_results and not is_red_button:
+            continue
+        
+        # Categorize results in this region
+        label = None
+        cost_or_max = None
+        representative = None
+        label_parts = []  # Collect text fragments that might form a label
+        
+        # If button is red, it's at MAX
+        if is_red_button:
+            cost_or_max = "MAX"
+            log.debug(f"Button {idx} detected as MAX via red color")
+        
+        for r in region_results:
+            text = r.text.strip()
+            text_lower = text.lower()
+            
+            # Check for "Max" status (button at max level)
+            if text_lower == "max":
+                cost_or_max = "MAX"
+                representative = r
+                continue
+            
+            # Check for cost (number with optional K/M/B/T suffix)
+            cost_match = re.match(r'^([0-9,.]+)\s*([KMBT])?$', text, re.IGNORECASE)
+            if cost_match:
+                cost_or_max = text
+                representative = r
+                continue
+            
+            # Collect potential label fragments
+            if len(text) >= 2 and text_lower not in ['buy', 'lvl', 'lv']:
+                label_parts.append((text, r))
+        
+        # Try to match collected text against known upgrade labels
+        # First try individual parts
+        for text, r in label_parts:
+            for known_label in ALL_UPGRADE_LABELS:
+                if text.lower() == known_label.lower():
+                    label = known_label
+                    representative = representative or r
+                    break
+            if label:
+                break
+        
+        # If no exact match, try combining adjacent parts
+        if not label and len(label_parts) >= 1:
+            # Sort by x position to combine left-to-right
+            label_parts_sorted = sorted(label_parts, key=lambda x: x[1].fx)
+            combined_text = ' '.join(text for text, _ in label_parts_sorted)
+            
+            for known_label in ALL_UPGRADE_LABELS:
+                # Normalize both strings for comparison (remove spaces, slashes, etc.)
+                known_normalized = known_label.lower().replace('/', '').replace(' ', '')
+                combined_normalized = combined_text.lower().replace('/', '').replace(' ', '')
+                
+                # Try exact normalized match
+                if combined_normalized == known_normalized:
+                    label = known_label
+                    representative = representative or label_parts_sorted[0][1]
+                    break
+                # Try fuzzy match (contains or partial)
+                elif known_normalized in combined_normalized or combined_normalized in known_normalized:
+                    # Only accept if substantial overlap
+                    if len(combined_normalized) >= len(known_normalized) * 0.6:
+                        label = known_label
+                        representative = representative or label_parts_sorted[0][1]
+                        break
+        
+        # Only add if we found a valid known label and/or cost
+        if label and (cost_or_max or representative):
+            cost_or_max = cost_or_max or "???"
+            representative = representative or region_results[0]
+            upgrades.append((label, cost_or_max, representative))
+            log.debug(f"Upgrade {idx}: '{label}' - {cost_or_max} at ({representative.fx:.3f}, {representative.fy:.3f})")
+    
+    return upgrades
+
+
 # ============================================================================
 # PURE FUNCTIONS - STRATEGY
 # ============================================================================
@@ -761,8 +976,8 @@ def detect_floating_gem(img: Optional[Image.Image], gem_template: Optional[np.nd
         h, w = img_cv.shape
         
         # Define middle region (center 60% of screen)
-        middle_margin_x = int(w * 0.2)
-        middle_margin_y = int(h * 0.2)
+        middle_margin_x = int(w * 0.3)
+        middle_margin_y = int(h * 0.3)
         middle_region = img_cv[middle_margin_y:h-middle_margin_y, middle_margin_x:w-middle_margin_x]
         
         best_match = None
@@ -1082,6 +1297,7 @@ class RuntimeContext:
     status: str = "stopped"
     last_window_check: float = 0.0
     last_seen_upgrades: float = 0.0
+    upgrade_state: int = 0
     def update_window(self):
         """Update window rect if needed."""
         if time.time() - self.last_window_check > 2.0:
@@ -1090,7 +1306,14 @@ class RuntimeContext:
             log.info('Window check: %s', self.window_rect)
             self.last_window_check = time.time()
 
-def click_if_present(name, condition):
+def mark_battle_start():
+    global ctx
+    log = logging.getLogger(__name__)
+    log.info("Battle start detected - marking in state")
+    ctx.game_state = replace(ctx.game_state, battle_start_time=time.time())
+    ctx.upgrade_state = 0
+
+def click_if_present(name, condition, callback=None):
     global ctx
     log = logging.getLogger(__name__)
     marks = [r for r in ctx.frame.results if condition(r)]
@@ -1098,6 +1321,8 @@ def click_if_present(name, condition):
     if marks:
         log.info(f"Condition met for '{marks[0].text}' at ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking!")
         execute_click(marks[0].center[0], marks[0].center[1], ctx.window_rect, ctx.config)
+        if callback:
+            callback()
 
 def automation_loop_tick():
     """Single tick of automation loop."""
@@ -1195,7 +1420,7 @@ def automation_loop_tick():
     near_perk = [r for r in frame.results if r.is_near(0.6056, 0.035, 0.1)]
     log.info(f'near perk: {[ (r.fx, r.fy) for r in near_perk]}')
     click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281)))
-    click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(0.5945, 0.8168))
+    click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(0.5945, 0.8168), mark_battle_start)
     click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429))
 
     defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
@@ -1215,6 +1440,17 @@ def automation_loop_tick():
             #do_click(ctx.window_rect, ctx.config, log, w, h, "Seen utiliy, Clicking 'DEFENSE'", 0.5105, 0.985)
         else:
             seen = None
+        log.info('Seen upgrade mode selector: %s', seen)
+        want_upgrades = UPGRADE_PRIORITY[ctx.upgrade_state][0] if ctx.upgrade_state < len(UPGRADE_PRIORITY) else None   
+
+        if want_upgrades and seen != want_upgrades and False:
+            log.info(f"Upgrade mode selector seen: {seen}, but want: {want_upgrades}")
+            if want_upgrades == 'ATTACK':
+                do_click(ctx.window_rect, ctx.config, log, w, h, "Clicking 'ATTACK' for upgrades", 0.321, 0.985)
+            elif want_upgrades == 'UTILITY':
+                do_click(ctx.window_rect, ctx.config, log, w, h, "Clicking 'UTILITY' for upgrades", 0.7, 0.985)
+            elif want_upgrades == 'DEFENSE':
+                do_click(ctx.window_rect, ctx.config, log, w, h, "Clicking 'DEFENSE' for upgrades", 0.5105, 0.985)  
         if seen:
             ctx.last_seen_upgrades = time.time()
         else:
@@ -1230,7 +1466,7 @@ def automation_loop_tick():
         lowertext = r.text.lower()
 
         for (row, dy) in PERK_ROWS:
-            if abs(r.fy - dy) < 0.05 and r.fx > 0.54 and r.fx < 0.78:
+            if abs(r.fy - dy) < 0.05 and r.fx > 0.45 and r.fx < 0.78:
                 perk_text.setdefault(row, list())            
                 perk_text[row].append(r.text)
 
@@ -1291,6 +1527,13 @@ def automation_loop_tick():
         
     if perks_mode and not choose:
         close_perks(ctx.window_rect, ctx.config, log, w, h)
+    
+    # Detect and log upgrade buttons
+    upgrade_buttons = detect_upgrade_buttons(frame, img)
+    if upgrade_buttons:
+        log.info(f"Detected {len(upgrade_buttons)} upgrade buttons:")
+        for label, cost, ocr_result in upgrade_buttons:
+            log.info(f"  - '{label}': {cost} @ ({ocr_result.fx:.3f}, {ocr_result.fy:.3f})")
     
     elements = []
     resources = {}
