@@ -721,7 +721,10 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
         mode = 'perks'        
     else:
         mode = 'main'
+    log.info(f"Detected mode: {mode}")
     perk_text = {}
+    near_perk = [r for r in frame.results if abs((r.center[0]/w) - 0.6056) < 0.1 and abs((r.center[1]/h) - 0.035) < 0.1]
+    pprint.pprint(near_perk)
     for r in frame.results:
         cx, cy = r.center
         fx, fy = cx / w, cy / h
@@ -735,11 +738,10 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
                 perk_text[row].append(r.text)
 
         # Check for Perk button - CLICK IT
-        if mode == 'main' and  r.text.lower() in ["perk", "perk:"]:
-            log.info(f"'Perk' detected at ({fx:.4f}, {fy:.4f}) - clicking!")
-
-            if abs(fx - 0.650) < 0.05 and abs(fy - 0.051) < 0.05:
-                log.info('poisition accepted')
+        if mode == 'main' and abs(fx - 0.6056) < 0.1 and abs(fy - 0.035) < 0.1:
+            log.info('text in perk area: ' + r.text)
+            if r.text.lower() in ["perk", "perk:", 'park', 'new perk']:
+                log.info(f"'Perk' detected at ({fx:.4f}, {fy:.4f}) - clicking!")
                 execute_click(cx, cy, window_rect, config)
 
         if mode == 'main':
@@ -755,7 +757,8 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
                 seen = 'UTILITY'
                 do_click(window_rect, config, log, w, h, "Seen utiliy, Clicking 'DEFENSE'", 0.5105, 0.985)
             if seen == None:
-                do_click(window_rect, config, log, w, h, "Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
+                log.info('Seen no upgrade mode selector')
+                #do_click(window_rect, config, log, w, h, "Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
                 time.sleep(10)
 
 
@@ -1160,6 +1163,7 @@ def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_fro
         log.warning(f"Could not create debug screenshot: {e}")
     
     # Bring window to foreground before clicking
+    assert not bring_to_front, "Bringing to front is currently disabled to avoid issues. Set bring_to_front=True to enable (use with caution)."
     if bring_to_front:
         if rect.hwnd and win32gui:
             try:
