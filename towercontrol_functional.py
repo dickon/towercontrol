@@ -1220,6 +1220,8 @@ class RuntimeContext:
         """Update window rect if needed."""
         if time.time() - self.last_window_check > 2.0:
             self.window_rect = find_window(self.config.window_title)
+            log = logging.getLogger(__name__)
+            log.info('Window check: %s', self.window_rect)
             self.last_window_check = time.time()
 
 
@@ -1263,8 +1265,79 @@ def automation_loop_tick(ctx: RuntimeContext):
             log.info(f"Floating gem detected at {gem_pos} - clicking!")
             execute_click(gem_pos[0], gem_pos[1], ctx.window_rect, ctx.config)
     
-    screen_state = build_screen_state(frame, ctx.window_rect, ctx.config)
-    ctx.game_state = update_game_state(ctx.game_state, screen_state, frame)
+    # Build screen state (inlined from build_screen_state)
+    log.info('build screen state')
+    check_known_markers(frame, ctx.window_rect, ctx.config)
+    
+    elements = []
+    resources = {}
+    
+    for ocr in frame.results:
+        elem = classify_ocr_result(ocr)
+        if elem:
+            elements.append(elem)
+            if elem.element_type == "resource":
+                resources[elem.name] = elem.text
+            elif elem.element_type == "button":
+                log.debug(f"Button classified: '{elem.text}' at {elem.center}")
+
+    screen_state = ScreenState(
+        elements=tuple(elements),
+        resources=resources,
+        raw_texts=tuple(r.text for r in frame.results),
+        timestamp=time.time()
+    )
+    
+    # Update game state (inlined from update_game_state)
+    wave, wave_pos = extract_wave_from_frame(frame)
+    
+    # Also check if wave was classified as a resource
+    if not wave and "wave" in screen_state.resources:
+        wave_text = screen_state.resources["wave"]
+        # Extract just the number from resource text like "Wave 123" or "123"
+        digits = re.findall(r'[0-9,]+', wave_text)
+        if digits:
+            wave = digits[0].replace(',', '')
+    
+    new_resources = {**ctx.game_state.resources, **screen_state.resources}
+    
+    # Track wave progress and calculate rate
+    new_wave_history = ctx.game_state.wave_history
+    if wave and wave != ctx.game_state.wave:
+        try:
+            wave_num = int(wave.replace(',', ''))
+            current_time = time.time()
+            new_wave_history = (*ctx.game_state.wave_history, (wave_num, current_time))
+            
+            # Keep only last 100 waves
+            if len(new_wave_history) > 100:
+                new_wave_history = new_wave_history[-100:]
+            
+            # Calculate waves per hour if we have enough history
+            if len(new_wave_history) >= 2:
+                first_wave, first_time = new_wave_history[0]
+                last_wave, last_time = new_wave_history[-1]
+                time_diff_hours = (last_time - first_time) / 3600.0
+                
+                if time_diff_hours > 0:
+                    waves_diff = last_wave - first_wave
+                    waves_per_hour = waves_diff / time_diff_hours
+                    log.info(f"Wave progress: {wave} | Rate: {waves_per_hour:.1f} waves/hour (based on {len(new_wave_history)} samples over {time_diff_hours*60:.1f} min)")
+                else:
+                    log.info(f"Wave progress: {wave}")
+            else:
+                log.info(f"Wave progress: {wave} (collecting data...)")
+        except (ValueError, TypeError):
+            pass
+    
+    ctx.game_state = replace(
+        ctx.game_state,
+        current_screen=screen_state,
+        resources=new_resources,
+        wave=wave or ctx.game_state.wave,
+        wave_pos=wave_pos or ctx.game_state.wave_pos,
+        wave_history=new_wave_history
+    )
     ctx.status = "running"
 
 
