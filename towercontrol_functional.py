@@ -371,43 +371,28 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
 # ============================================================================
 
 def preprocess_image(img: np.ndarray) -> List[np.ndarray]:
-    """Generate multiple preprocessed variants for OCR. Returns list of images to try."""
-    # Always upscale 2x - game text is small and tesseract needs it
+    """Generate optimized preprocessed variants for OCR. Returns list of images to try."""
+    # Upscale 1.5x instead of 2x - good balance between quality and speed
     h, w = img.shape[:2]
-    img = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    img = cv2.resize(img, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     variants = []
 
-    # Strategy 1: OTSU thresholding - good for bimodal histograms
-    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    variants.append(otsu)
-
-    # Strategy 2: Adaptive threshold - good for uneven lighting
+    # Strategy 1: Adaptive threshold - best all-around performer for game UI
+    # Faster than OTSU and handles uneven lighting well
     adaptive = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY, 31, 10
     )
     variants.append(adaptive)
 
-    # Strategy 3: Inverted OTSU - catches light text on dark backgrounds
-    _, otsu_inv = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    variants.append(otsu_inv)
-
-    # Strategy 4: Sharpened grayscale (no threshold) - sometimes raw works best
-    sharp_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+    # Strategy 2: Simple sharpening with high-contrast threshold
+    # Good for crisp game text, faster than OTSU
+    sharp_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])  # Lighter sharpening kernel
     sharpened = cv2.filter2D(gray, -1, sharp_kernel)
-    variants.append(sharpened)
-    
-    # Strategy 5: Blue channel extraction - good for white text on blue backgrounds
-    # Extract blue channel and invert (white text becomes dark on light background)
-    blue_channel = img[:, :, 0]  # BGR format, so index 0 is blue
-    _, blue_thresh = cv2.threshold(blue_channel, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    variants.append(blue_thresh)
-    
-    # Strategy 6: High threshold for light text - specifically targets white/light text
-    _, high_thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
-    variants.append(high_thresh)
+    _, sharp_thresh = cv2.threshold(sharpened, 127, 255, cv2.THRESH_BINARY)
+    variants.append(sharp_thresh)
 
     return variants
 
@@ -454,36 +439,33 @@ def _merge_ocr_results(all_results: List[List[OCRResult]]) -> List[OCRResult]:
 
 
 def run_pytesseract_ocr(img: np.ndarray, config: Config) -> List[OCRResult]:
-    """Run pytesseract OCR with multiple PSM modes. Returns list of OCR results."""
+    """Run pytesseract OCR with optimized single PSM mode. Returns list of OCR results."""
     if not pytesseract:
         return []
 
     pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
-    all_results = []
 
-    # Try multiple page segmentation modes
-    for psm in [6, 11, 3]:  # 6=uniform block, 11=sparse, 3=auto
-        try:
-            data = pytesseract.image_to_data(
-                img, lang=config.ocr_lang,
-                output_type=pytesseract.Output.DICT,
-                config=f"--psm {psm}"
-            )
+    # Use PSM 11 (sparse text) - best for game UI elements
+    # Single mode is much faster than trying multiple modes
+    try:
+        data = pytesseract.image_to_data(
+            img, lang=config.ocr_lang,
+            output_type=pytesseract.Output.DICT,
+            config="--psm 11 --oem 3"  # OEM 3 = default (LSTM + legacy)
+        )
 
-            results = []
-            n = len(data["text"])
-            for i in range(n):
-                txt = data["text"][i].strip()
-                conf = float(data["conf"][i])
-                if conf >= config.ocr_confidence and len(txt) >= 2:
-                    bbox = (data["left"][i], data["top"][i],
-                           data["width"][i], data["height"][i])
-                    results.append(OCRResult(text=txt, bbox=bbox, confidence=conf))
-            all_results.append(results)
-        except Exception:
-            continue
-
-    return _merge_ocr_results(all_results) if all_results else []
+        results = []
+        n = len(data["text"])
+        for i in range(n):
+            txt = data["text"][i].strip()
+            conf = float(data["conf"][i])
+            if conf >= config.ocr_confidence and len(txt) >= 2:
+                bbox = (data["left"][i], data["top"][i],
+                       data["width"][i], data["height"][i])
+                results.append(OCRResult(text=txt, bbox=bbox, confidence=conf))
+        return results
+    except Exception:
+        return []
 
 
 def run_easyocr_ocr(img: np.ndarray, reader, config: Config) -> List[OCRResult]:
@@ -508,7 +490,7 @@ def run_easyocr_ocr(img: np.ndarray, reader, config: Config) -> List[OCRResult]:
 
 
 def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
-    """Run OCR pipeline on image with multiple preprocessing strategies."""
+    """Run OCR pipeline on image with optimized preprocessing strategies."""
     arr = image_to_bgr_array(img)
     h, w = arr.shape[:2]
     variants = preprocess_image(arr)
@@ -517,20 +499,22 @@ def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
         # EasyOCR: just run on first variant
         results = run_easyocr_ocr(variants[0], ocr_reader, config)
     else:
-        # Pytesseract: run on all variants and merge
+        # Pytesseract: run on both variants and merge
         all_variant_results = []
         for variant in variants:
             variant_results = run_pytesseract_ocr(variant, config)
             all_variant_results.append(variant_results)
         results = _merge_ocr_results(all_variant_results)
 
-    # Scale bboxes back to original image coords (we upscaled 2x)
+    # Scale bboxes back to original image coords (we upscaled 1.5x)
+    scale_factor = 1.5
     scaled_results = []
     for r in results:
         x, y, bw, bh = r.bbox
         scaled_results.append(OCRResult(
             text=r.text,
-            bbox=(x // 2, y // 2, bw // 2, bh // 2),
+            bbox=(int(x / scale_factor), int(y / scale_factor), 
+                  int(bw / scale_factor), int(bh / scale_factor)),
             confidence=r.confidence,
             image_size=(w, h)
         ))
@@ -1112,7 +1096,7 @@ def automation_loop_tick():
     perk_text = {}
     near_perk = [r for r in frame.results if r.is_near(0.6056, 0.035, 0.1)]
     log.info(f'near perk: {[ (r.fx, r.fy) for r in near_perk]}')
-    click_if_present('claim', lambda r: r.text.lower() == "claim" and r.is_near(0.6056, 0.035, 0.2))
+    click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281)))
     click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(0.5945, 0.8168))
     click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429))
 
