@@ -1027,12 +1027,9 @@ def find_claimable_buttons(state: GameState) -> List[UIElement]:
 
 
 def decide_action(state: GameState, config: Config, latest_image: Optional[Image.Image] = None, 
-                 gem_template: Optional[np.ndarray] = None, enabled: bool = True) -> Action:
+                 gem_template: Optional[np.ndarray] = None) -> Action:
     """Strategy decision function. Pure function."""
     log = logging.getLogger(__name__)
-    
-    if not enabled:
-        return Action(action_type=ActionType.WAIT, duration=1.0, reason="Strategy disabled")
 
     # Priority 0: Click on floating gem (highest priority, with cooldown)
     if latest_image is not None and gem_template is not None:
@@ -1234,21 +1231,6 @@ def scan_current_screen(rect: WindowRect, config: Config, ocr_reader=None) -> Tu
     except Exception as e:
         logging.getLogger(__name__).error(f"OCR failed: {e}")
         return img, None
-
-
-def perform_full_scan(rect: WindowRect, config: Config,
-                     ocr_reader=None, enabled: bool = False) -> Dict[str, ScreenState]:
-    """Perform full UI scan (simplified - just scans current screen)."""
-    log = logging.getLogger(__name__)
-    log.info("── Full scan (current screen) ──")
-
-    # Just scan current screen, no tab navigation
-    img, frame = scan_current_screen(rect, config, ocr_reader)
-    if frame:
-        current_state = build_screen_state(frame, rect, config)
-        return {"current": current_state}
-    
-    return {}
 
 
 # ============================================================================
