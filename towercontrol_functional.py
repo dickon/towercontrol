@@ -87,7 +87,7 @@ class Config:
     ocr_lang: str = "eng"
     ocr_confidence: float = 40.0
     tesseract_cmd: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-    click_pause: float = 0.08
+    click_pause: float = 5.0
     input_delay: float = 0.15
     loop_tick: float = 20.0
     full_scan_interval: float = 30.0
@@ -738,10 +738,27 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
         if mode == 'main' and  r.text.lower() in ["perk", "perk:"]:
             log.info(f"'Perk' detected at ({fx:.4f}, {fy:.4f}) - clicking!")
 
-            if abs(fx - 0.6194) < 0.05 and abs(fy - 0.0418) < 0.05:
+            if abs(fx - 0.650) < 0.05 and abs(fy - 0.051) < 0.05:
                 log.info('poisition accepted')
                 execute_click(cx, cy, window_rect, config)
-        
+
+        if mode == 'main':
+            seen = None
+            if r.text == 'DEFENSE' and abs(fx - 0.343) < 0.1 and abs(fy - 0.632) < 0.04:
+                seen = 'DEFENSE'
+                do_click(window_rect, config, log, w, h, "Seen defense, Clicking 'ATTACK'", 0.321, 0.985)
+            if r.text == 'ATTACK' and abs(fx - 0.329) < 0.1 and abs(fy - 0.632) < 0.04:
+                seen = 'ATTACK'
+                do_click(window_rect, config, log, w, h, "Seen attack,Clicking 'UTILITY'", 0.7, 0.985)
+
+            if r.text == 'UTILITY' and abs(fx - 0.333) < 0.1 and abs(fy - 0.632) < 0.04:
+                seen = 'UTILITY'
+                do_click(window_rect, config, log, w, h, "Seen utiliy, Clicking 'DEFENSE'", 0.5105, 0.985)
+            if seen == None:
+                do_click(window_rect, config, log, w, h, "Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
+                time.sleep(10)
+
+
         # Check for CLAIM button - CLICK IT
         if mode == 'main' and  r.text.lower() == "claim":
             log.info(f"'CLAIM' detected at ({fx:.4f}, {fy:.4f}) - clicking!")
@@ -793,11 +810,13 @@ def check_known_markers(frame: OCRFrame, window_rect: Optional[WindowRect] = Non
             log.info(f"Best perk choice: '{best_choice}' in row {best_row} with text '{perk_text_join[best_row]}'")
             # click the perk in that row
             message = f"Clicking perk at row {best_row} (choice: '{best_choice}')"
-            do_click(window_rect, config, log, w, h, best_row, message,  0.671, PERK_ROWS[best_row][1])
+            do_click(window_rect, config, log, w, h, message,  0.671, PERK_ROWS[best_row][1])
             close_perks(window_rect, config, log, w, h)
         
     if perks_mode and not choose:
         close_perks(window_rect, config, log, w, h)
+
+        
 
 def do_click(window_rect, config, log, w, h, message,  click_x_frac, click_y_frac):
     click_x = int(click_x_frac * w)
@@ -1083,7 +1102,25 @@ def to_absolute_coords(rel_x: int, rel_y: int, rect: WindowRect) -> Tuple[int, i
     return (rect.left + rel_x, rect.top + rel_y)
 
 
-def execute_click(x: int, y: int, rect: WindowRect, config: Config) -> bool:
+def cleanup_old_click_debug_files(config: Config, keep_count: int = 20) -> None:
+    """Keep only the last N click_debug files, delete older ones."""
+    log = logging.getLogger(__name__)
+    try:
+        # Find all click_debug files
+        pattern = config.debug_dir / "click_debug_*.png"
+        files = sorted(config.debug_dir.glob("click_debug_*.png"), key=lambda p: p.stat().st_mtime)
+        
+        # Delete older files if we have more than keep_count
+        if len(files) > keep_count:
+            to_delete = files[:-keep_count]
+            for f in to_delete:
+                f.unlink()
+            log.debug(f"Cleaned up {len(to_delete)} old click_debug files")
+    except Exception as e:
+        log.warning(f"Failed to cleanup old click_debug files: {e}")
+
+
+def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_front: bool = False) -> bool:
     """Execute click action. Side effect."""
     log = logging.getLogger(__name__)
     
@@ -1116,23 +1153,27 @@ def execute_click(x: int, y: int, rect: WindowRect, config: Config) -> bool:
             debug_path = config.debug_dir / f"click_debug_{timestamp}.png"
             debug_img.save(debug_path)
             log.info(f"Debug screenshot saved: {debug_path}")
+            
+            # Cleanup old files - keep only last 20
+            cleanup_old_click_debug_files(config, keep_count=20)
     except Exception as e:
         log.warning(f"Could not create debug screenshot: {e}")
     
     # Bring window to foreground before clicking
-    if rect.hwnd and win32gui:
-        try:
-            win32gui.SetForegroundWindow(rect.hwnd)
-            time.sleep(0.1)  # Brief delay for window to come to front
-            log.debug(f"Brought window to foreground (hwnd={rect.hwnd})")
-        except Exception as e:
-            log.warning(f"Could not bring window to foreground: {e}")
-    
+    if bring_to_front:
+        if rect.hwnd and win32gui:
+            try:
+                win32gui.SetForegroundWindow(rect.hwnd)
+                time.sleep(0.1)  # Brief delay for window to come to front
+                log.debug(f"Brought window to foreground (hwnd={rect.hwnd})")
+            except Exception as e:
+                log.warning(f"Could not bring window to foreground: {e}")
+        
     ax, ay = to_absolute_coords(x, y, rect)
-    log.info(f"click({x}, {y}) → abs({ax}, {ay})")
+    log.debug(f"click({x}, {y}) → abs({ax}, {ay})")
     pyautogui.click(ax, ay, interval=config.click_pause)
-    log.info(f"Clicked at ({ax}, {ay})")
-    log.info('sleep for %.2f seconds', config.click_pause)
+    log.debug(f"Clicked at ({ax}, {ay})")
+    log.debug('sleep for %.2f seconds', config.click_pause)
     time.sleep(config.click_pause)
 
     return True
@@ -1193,6 +1234,9 @@ def execute_action(action: Action, rect: Optional[WindowRect],
 
 def scan_current_screen(rect: WindowRect, config: Config, ocr_reader=None) -> Tuple[Optional[Image.Image], Optional[OCRFrame]]:
     """Capture and OCR current screen. Returns image and OCR frame."""
+    log = logging.getLogger(__name__)
+    log.info(f"Capturing window: {rect.width} x {rect.height} at ({rect.left}, {rect.top})")
+    
     img = capture_window(rect)
     if not img:
         return None, None
@@ -1285,6 +1329,12 @@ def automation_loop_tick(ctx: RuntimeContext):
     # Update window rect
     log = logging.getLogger(__name__)
     ctx.update_window()
+    if not ctx.window_rect:
+        ctx.status = "no_window"
+        return
+
+    # Update window rect after resize to get new dimensions
+    ctx.window_rect = find_window(ctx.config.window_title)
     if not ctx.window_rect:
         ctx.status = "no_window"
         return
