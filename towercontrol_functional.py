@@ -973,19 +973,22 @@ def record_action_in_state(state: GameState, action: Action) -> GameState:
     return replace(state, action_history=new_history)
 
 
-def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max: float, 
+def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max: float,
                   y_tolerance: float = 0.08) -> bool:
-    """Check if a button region is predominantly red (indicating MAX status).
-    
+    """Check if a button region is predominantly dark red (indicating MAX status).
+
+    Detects dark red buttons using HSV color space to identify MAX upgrade buttons
+    that may have clipped or unreadable text.
+
     Args:
         img: PIL Image to analyze
         y_frac: Fractional Y position of button center (0.0-1.0)
         x_min: Fractional X start of button region (0.0-1.0)
         x_max: Fractional X end of button region (0.0-1.0)
         y_tolerance: Vertical tolerance for button region
-    
+
     Returns:
-        True if button region contains significant red color
+        True if button region contains significant dark red color
     """
     if img is None:
         return False
@@ -1011,11 +1014,12 @@ def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max
         # Convert to HSV for better color detection
         region_hsv = cv2.cvtColor(region, cv2.COLOR_RGB2HSV)
         
-        # Define red color range in HSV
+        # Define red color range in HSV for dark red MAX buttons
         # Red wraps around in HSV, so we need two ranges
-        lower_red1 = np.array([0, 100, 100])
+        # Lowered Value (brightness) threshold from 100 to 50 to catch dark red
+        lower_red1 = np.array([0, 80, 50])  # Hue 0-10, Saturation 80+, Value 50+
         upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([160, 100, 100])
+        lower_red2 = np.array([160, 80, 50])  # Hue 160-180, Saturation 80+, Value 50+
         upper_red2 = np.array([180, 255, 255])
         
         # Create masks for red color
@@ -1027,13 +1031,14 @@ def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max
         red_pixels = np.count_nonzero(red_mask)
         total_pixels = region.shape[0] * region.shape[1]
         red_percentage = (red_pixels / total_pixels) * 100
-        
-        # Consider button red if more than 15% of pixels are red
-        is_red = red_percentage > 15.0
+
+        # Consider button red (MAX) if more than 10% of pixels are dark red
+        # Lowered from 15% to 10% to better catch dark red MAX buttons
+        is_red = red_percentage > 10.0
         
         if is_red:
             logging.getLogger(__name__).debug(
-                f"Red button detected at y={y_frac:.3f}, x=[{x_min:.3f}-{x_max:.3f}]: {red_percentage:.1f}% red pixels"
+                f"Dark red MAX button detected at y={y_frac:.3f}, x=[{x_min:.3f}-{x_max:.3f}]: {red_percentage:.1f}% red pixels"
             )
         
         return is_red
