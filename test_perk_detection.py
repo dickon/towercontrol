@@ -198,11 +198,11 @@ class TestPerkDetectionWithImage(unittest.TestCase):
         cls.config = Config()
         cls.ocr_reader = initialize_ocr_backend(cls.config)
         cls.img = Image.open(cls.IMAGE_PATH).convert("RGB")
+        cls.frame = process_ocr(cls.img, cls.config, cls.ocr_reader)
 
     def test_ocr_produces_results(self):
         """OCR pipeline returns non-empty results for the test image."""
-        frame = process_ocr(self.img, self.config, self.ocr_reader)
-        self.assertGreater(len(frame.results), 0, "OCR should detect text in image")
+        self.assertGreater(len(self.frame.results), 0, "OCR should detect text in image")
 
     def test_perk_detection_from_image(self):
         """Full pipeline: image -> OCR -> perk detection finds expected perks.
@@ -212,8 +212,7 @@ class TestPerkDetectionWithImage(unittest.TestCase):
           - Slot 1: x1.94 Health Regen  (OCR currently misses the "x1.94" prefix)
         Verified against the debug JSON recorded at capture time.
         """
-        frame = process_ocr(self.img, self.config, self.ocr_reader)
-        result = detect_perks(frame)
+        result = detect_perks(self.frame)
 
         perk_join = result["perk_text_join"]
         print(f"\nOCR detected perk text by slot: {perk_join}")
@@ -257,12 +256,10 @@ class TestPerkDetectionWithImage(unittest.TestCase):
 
     def test_ocr_results_in_perk_region(self):
         """OCR results exist in the expected perk y-band with valid x-range."""
-        frame = process_ocr(self.img, self.config, self.ocr_reader)
-
         perk_region_results = []
-        for r in frame.results:
+        for r in self.frame.results:
             for row, dy in PERK_ROWS:
-                if abs(r.fy - dy) < 0.05 and 0.45 < r.fx < 0.78:
+                if abs(r.fy - dy) < 0.05 and 0.45 < r.fx < 0.82:
                     perk_region_results.append((row, r.text, r.fx, r.fy))
 
         self.assertGreater(
@@ -278,10 +275,13 @@ class TestPerkDetectionWithImage(unittest.TestCase):
 class TestPerkDetectionImage130242(unittest.TestCase):
     """Test OCR + perk detection on perk_rows_20260216_130242.png.
 
-    Known contents:
-      - Slot 0: Golden towner bonus x.15   (OCR misreads 'Tower' as 'towner')
+    Known contents (ground truth):
+      - Slot 0: Golden tower bonus x1.5
       - Slot 1: Defense percent +4.44%
       - Slot 2: Unlock Chrono Field
+
+    Slots 0 and 1 have white/light text on dark backgrounds, which
+    requires the per-row inverted OCR recovery pass to detect.
     """
 
     IMAGE_PATH = TEST_IMAGES_DIR / "perk_rows_20260216_130242.png"
@@ -293,59 +293,60 @@ class TestPerkDetectionImage130242(unittest.TestCase):
         cls.config = Config()
         cls.ocr_reader = initialize_ocr_backend(cls.config)
         cls.img = Image.open(cls.IMAGE_PATH).convert("RGB")
+        cls.frame = process_ocr(cls.img, cls.config, cls.ocr_reader)
 
     def test_ocr_produces_results(self):
         """OCR pipeline returns non-empty results for the test image."""
-        frame = process_ocr(self.img, self.config, self.ocr_reader)
-        self.assertGreater(len(frame.results), 0, "OCR should detect text in image")
+        self.assertGreater(len(self.frame.results), 0, "OCR should detect text in image")
 
     def test_perk_detection_from_image(self):
         """Full pipeline: image -> OCR -> perk detection finds expected perks.
 
         Expected OCR output:
-          - Slot 0: Golden towner bonus x.15
+          - Slot 0: Golden tower bonus x1.5
           - Slot 1: Defense percent +4.44%
           - Slot 2: Unlock Chrono Field
         """
-        frame = process_ocr(self.img, self.config, self.ocr_reader)
-        result = detect_perks(frame)
+        result = detect_perks(self.frame)
 
         perk_join = result["perk_text_join"]
         print(f"\nOCR detected perk text by slot: {perk_join}")
 
-        # --- Slot 0: Golden towner bonus x.15 ---
-        self.assertIn(0, perk_join, "Slot 0 should be detected")
+        # --- Slot 0: Golden tower bonus x1.5 ---
+        self.assertIn(0, perk_join, "Slot 0 should be detected (white-on-dark recovery)")
         self.assertTrue(
             re.search(r"Golden", perk_join[0], re.IGNORECASE),
             f"Slot 0 text should contain 'Golden', got: '{perk_join[0]}'",
         )
         self.assertTrue(
+            re.search(r"tower", perk_join[0], re.IGNORECASE),
+            f"Slot 0 text should contain 'tower', got: '{perk_join[0]}'",
+        )
+        self.assertTrue(
             re.search(r"bonus", perk_join[0], re.IGNORECASE),
             f"Slot 0 text should contain 'bonus', got: '{perk_join[0]}'",
         )
-        # OCR misreads 'Tower' as 'towner'; note the gap
-        if not re.search(r"Tower", perk_join[0], re.IGNORECASE):
-            print(
-                f"  ⚠ Known OCR gap: slot 0 expected 'Golden Tower bonus x.15' "
-                f"but got '{perk_join[0]}' ('Tower' misread)"
-            )
 
         # --- Slot 1: Defense percent +4.44% ---
-        self.assertIn(1, perk_join, "Slot 1 should be detected")
+        self.assertIn(1, perk_join, "Slot 1 should be detected (white-on-dark recovery)")
         self.assertTrue(
-            re.search(r"Defense percent", perk_join[1], re.IGNORECASE),
-            f"Slot 1 text should contain 'Defense percent', got: '{perk_join[1]}'",
+            re.search(r"Defense", perk_join[1], re.IGNORECASE),
+            f"Slot 1 text should contain 'Defense', got: '{perk_join[1]}'",
+        )
+        self.assertTrue(
+            re.search(r"percent", perk_join[1], re.IGNORECASE),
+            f"Slot 1 text should contain 'percent', got: '{perk_join[1]}'",
         )
 
         # --- Slot 2: Unlock Chrono Field ---
         self.assertIn(2, perk_join, "Slot 2 should be detected")
         self.assertTrue(
-            re.search(r"Chrono Field", perk_join[2], re.IGNORECASE),
-            f"Slot 2 text should contain 'Chrono Field', got: '{perk_join[2]}'",
-        )
-        self.assertTrue(
             re.search(r"Unlock", perk_join[2], re.IGNORECASE),
             f"Slot 2 text should contain 'Unlock', got: '{perk_join[2]}'",
+        )
+        self.assertTrue(
+            re.search(r"Chrono Field", perk_join[2], re.IGNORECASE),
+            f"Slot 2 text should contain 'Chrono Field', got: '{perk_join[2]}'",
         )
 
         # --- Pattern matching ---
@@ -353,19 +354,22 @@ class TestPerkDetectionImage130242(unittest.TestCase):
         matched_slots = {p[0] for p in priorities}
         print(f"Matched priorities: {priorities}")
 
-        # Slot 1 (Defense percent) should match the Defense percent pattern
+        # Slot 0 (Golden Tower Bonus) should match
+        self.assertIn(0, matched_slots, "Slot 0 (Golden Tower Bonus) should match a pattern")
+        slot_0_hits = [p for p in priorities if p[0] == 0]
+        self.assertIn("Golden Tower Bonus", slot_0_hits[0][1])
+
+        # Slot 1 (Defense percent) should match
         self.assertIn(1, matched_slots, "Slot 1 (Defense percent) should match a pattern")
         slot_1_hits = [p for p in priorities if p[0] == 1]
         self.assertIn("Defense percent", slot_1_hits[0][1])
 
     def test_ocr_results_in_perk_region(self):
         """OCR results exist in the expected perk y-band with valid x-range."""
-        frame = process_ocr(self.img, self.config, self.ocr_reader)
-
         perk_region_results = []
-        for r in frame.results:
+        for r in self.frame.results:
             for row, dy in PERK_ROWS:
-                if abs(r.fy - dy) < 0.05 and 0.45 < r.fx < 0.78:
+                if abs(r.fy - dy) < 0.05 and 0.45 < r.fx < 0.82:
                     perk_region_results.append((row, r.text, r.fx, r.fy))
 
         self.assertGreater(

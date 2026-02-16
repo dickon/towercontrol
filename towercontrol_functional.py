@@ -84,6 +84,7 @@ PERK_CHOICES = [
     r'(\d*\s*)?(Wave )?On Death Wave',
     r'Bounce Shot( \+\d+)?',
     r'Black Hole Duration( \+[\d\.]+s)?',
+    r'Unlock Chrono Field',
     r'(x[\d\.]+ )?Max Health',
     r'Upgrade Chance for All'
     r'Unlock poison swamp',
@@ -541,6 +542,88 @@ def run_easyocr_ocr(img: np.ndarray, reader, config: Config) -> List[OCRResult]:
     return results
 
 
+def _ocr_perk_row_recovery(gray_upscaled: np.ndarray, config: Config,
+                           scale_factor: float, orig_w: int, orig_h: int,
+                           missing_rows: set = None) -> List[OCRResult]:
+    """Run targeted per-row OCR recovery for light-on-dark perk text.
+
+    Standard full-image OCR often fails to detect white/light text on
+    dark coloured backgrounds (e.g. dark red, dark green).  This function
+    crops each PERK_ROW region, inverts the grayscale and applies OTSU
+    thresholding so that the light text becomes dark-on-white — which
+    Tesseract handles reliably.
+
+    Only rows listed in *missing_rows* are processed.  If *missing_rows*
+    is ``None``, all rows with a dark background (mean gray < 100) are
+    attempted.
+
+    Args:
+        gray_upscaled: Grayscale image at 1.5× scale
+        config: Application configuration
+        scale_factor: The upscale factor used (1.5)
+        orig_w: Original image width
+        orig_h: Original image height
+        missing_rows: Set of row indices to attempt recovery for.
+                      If None, all dark rows are attempted.
+
+    Returns:
+        List of OCRResult objects with bboxes in original-image coordinates.
+    """
+    if not pytesseract:
+        return []
+
+    h2, w2 = gray_upscaled.shape[:2]
+    recovery_results: List[OCRResult] = []
+
+    for row_idx, fy in PERK_ROWS:
+        if missing_rows is not None and row_idx not in missing_rows:
+            continue
+        y_lo = max(0, int((fy - 0.05) * h2))
+        y_hi = min(h2, int((fy + 0.05) * h2))
+        x_lo = int(0.40 * w2)
+        x_hi = min(w2, int(0.82 * w2))
+        roi = gray_upscaled[y_lo:y_hi, x_lo:x_hi]
+
+        # Only attempt recovery on dark-background rows
+        if roi.mean() > 100:
+            continue
+
+        inv_roi = cv2.bitwise_not(roi)
+        _, inv_thresh = cv2.threshold(inv_roi, 0, 255,
+                                      cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        try:
+            pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
+            data = pytesseract.image_to_data(
+                inv_thresh, lang=config.ocr_lang,
+                output_type=pytesseract.Output.DICT,
+                config="--psm 7 --oem 3",
+                timeout=5,
+            )
+        except Exception:
+            continue
+
+        n = len(data["text"])
+        for i in range(n):
+            txt = data["text"][i].strip()
+            conf = float(data["conf"][i])
+            if conf >= config.ocr_confidence and len(txt) >= 2:
+                # Map ROI coordinates back to full upscaled image
+                bx = data["left"][i] + x_lo
+                by = data["top"][i] + y_lo
+                bw, bh = data["width"][i], data["height"][i]
+                # Scale back to original image coordinates
+                recovery_results.append(OCRResult(
+                    text=txt,
+                    bbox=(int(bx / scale_factor), int(by / scale_factor),
+                          int(bw / scale_factor), int(bh / scale_factor)),
+                    confidence=conf,
+                    image_size=(orig_w, orig_h),
+                ))
+
+    return recovery_results
+
+
 def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
     """Run OCR pipeline on image with optimized preprocessing strategies."""
     arr = image_to_bgr_array(img)
@@ -570,6 +653,29 @@ def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
             confidence=r.confidence,
             image_size=(w, h)
         ))
+
+    # Recovery pass: per-row OCR for light-on-dark perk text
+    # Only attempt recovery for perk rows that had no results from the
+    # standard OCR pass, to avoid redundant tesseract calls.
+    detected_rows = set()
+    for r in scaled_results:
+        for row_idx, fy in PERK_ROWS:
+            if abs(r.fy - fy) < 0.05 and 0.45 < r.fx < 0.82:
+                detected_rows.add(row_idx)
+                break
+
+    missing_rows = {idx for idx, _ in PERK_ROWS} - detected_rows
+    if missing_rows:
+        gray_upscaled = cv2.cvtColor(
+            cv2.resize(arr, None, fx=scale_factor, fy=scale_factor,
+                       interpolation=cv2.INTER_CUBIC),
+            cv2.COLOR_BGR2GRAY,
+        )
+        recovery = _ocr_perk_row_recovery(
+            gray_upscaled, config, scale_factor, w, h, missing_rows
+        )
+        if recovery:
+            scaled_results = _merge_ocr_results([scaled_results, recovery])
 
     # Save preprocessed debug image (first variant)
     try:
@@ -735,7 +841,9 @@ def collect_perk_texts(frame: OCRFrame) -> dict:
     """Collect OCR texts grouped by perk row/slot index.
     
     Scans OCR results and groups text fragments that fall within
-    the known perk row y-positions and valid x-range.
+    the known perk row y-positions and valid x-range.  Texts within
+    each row are sorted by x-position so they appear in natural
+    left-to-right reading order.
     
     Args:
         frame: OCRFrame with detected text results
@@ -743,13 +851,15 @@ def collect_perk_texts(frame: OCRFrame) -> dict:
     Returns:
         dict mapping slot index (int) -> list of text strings
     """
-    perk_text = {}
+    # Collect (fx, text) pairs per row so we can sort by x
+    perk_items: dict = {}
     for r in frame.results:
         for (row, dy) in PERK_ROWS:
-            if abs(r.fy - dy) < 0.05 and r.fx > 0.45 and r.fx < 0.78:
-                perk_text.setdefault(row, [])
-                perk_text[row].append(r.text)
-    return perk_text
+            if abs(r.fy - dy) < 0.05 and r.fx > 0.45 and r.fx < 0.82:
+                perk_items.setdefault(row, [])
+                perk_items[row].append((r.fx, r.text))
+    # Sort each row's texts by x-position and extract text only
+    return {row: [t for _, t in sorted(items)] for row, items in perk_items.items()}
 
 
 def filter_selected_perks(perk_text: dict) -> dict:
