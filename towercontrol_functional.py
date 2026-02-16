@@ -77,7 +77,7 @@ PERK_CHOICES = [
     r'Perk Wave Requirement( -[\d\.]+%)?',
     r'(Increase )?Max Game Speed( by \-[\d\.]+)?',
     r'(x[\d\.]+ )?All Coins Bonuses',
-    r'(x[\d\.]+ )?Damage',
+    r'(x[\d\.]+ )Damage',
     r'Chain Lightning Damage( x[\d\.]+)?',
     r'Golden Tower Bonus( x[\d\.]+)?',
     r'(\d*\s*)?More Smart Missiles',
@@ -86,7 +86,7 @@ PERK_CHOICES = [
     r'Black Hole Duration( \+[\d\.]+s)?',
     r'Unlock Chrono Field',
     r'(x[\d\.]+ )?Max Health',
-    r'Upgrade Chance for All'
+    r'Upgrade Chance for all'
     r'Unlock poison swamp',
     r'(x[\d\.]+ )?Cash Bonus',
     r'Spotlight Damage Bonus( x[\d\.]+)?',
@@ -98,6 +98,7 @@ PERK_CHOICES = [
     r'Orbs( \+\d+)?',
     r'(x[\d\.]*\s*)?Defense Absolute',
     r'Land Mine Damage( x[\d\.]+)?',
+    r'Unlock Spotlight',
     r'Interest( x[\d\.]+)?',    
     r'.*but boss.*',
 ]
