@@ -26,6 +26,7 @@ from towercontrol_functional import (
     join_perk_texts,
     match_perk_priorities,
     detect_perks,
+    detect_upgrade_buttons,
     process_ocr,
     initialize_ocr_backend,
 )
@@ -382,6 +383,95 @@ class TestPerkDetectionImage130242(unittest.TestCase):
             print(f"  slot {row}: '{text}' at ({fx:.3f}, {fy:.3f})")
 
 
+class TestUpgradeDetectionUnexpected1771282888(unittest.TestCase):
+    """Test OCR + upgrade detection on unexpected_upgrades_1771282888.png.
+
+    Known contents (ground truth):
+      - 6 attack upgrades all at MAX:
+        1. Damage
+        2. Attack Speed
+        3. Critical Chance
+        4. Critical Factor
+        5. Range
+        6. Damage Per Meter
+
+    This tests that all 6 upgrades are correctly detected and marked as MAX.
+    """
+
+    IMAGE_PATH = TEST_IMAGES_DIR / "unexpected_upgrades_1771282888.png"
+
+    @classmethod
+    def setUpClass(cls):
+        if not cls.IMAGE_PATH.exists():
+            raise unittest.SkipTest(f"Test image not found: {cls.IMAGE_PATH}")
+        cls.config = Config()
+        cls.ocr_reader = initialize_ocr_backend(cls.config)
+        cls.img = Image.open(cls.IMAGE_PATH).convert("RGB")
+        cls.frame = process_ocr(cls.img, cls.config, cls.ocr_reader)
+
+    def test_ocr_produces_results(self):
+        """OCR pipeline returns non-empty results for the test image."""
+        self.assertGreater(len(self.frame.results), 0, "OCR should detect text in image")
+
+    def test_six_upgrades_detected(self):
+        """Full pipeline: image -> OCR -> upgrade detection finds all 6 expected upgrades.
+
+        Expected upgrades (all attack upgrades, all at MAX):
+          1. Damage
+          2. Attack Speed
+          3. Critical Chance
+          4. Critical Factor
+          5. Range
+          6. Damage Per Meter
+        """
+        upgrades = detect_upgrade_buttons(self.frame, self.img)
+
+        print(f"\nDetected {len(upgrades)} upgrades:")
+        for label, cost_or_max, _ in upgrades:
+            print(f"  {label}: {cost_or_max}")
+
+        # Verify we found exactly 6 upgrades
+        self.assertEqual(len(upgrades), 6,
+                        f"Expected 6 upgrades but found {len(upgrades)}")
+
+        # Extract detected labels
+        detected_labels = [label for label, _, _ in upgrades]
+
+        # Verify all 6 expected attack upgrades are detected
+        expected_labels = [
+            'Damage',
+            'Attack Speed',
+            'Critical Chance',
+            'Critical Factor',
+            'Range',
+            'Damage Per Meter'
+        ]
+
+        for expected in expected_labels:
+            self.assertIn(expected, detected_labels,
+                         f"Expected upgrade '{expected}' not found in detected labels: {detected_labels}")
+
+    def test_all_upgrades_at_max(self):
+        """Verify all 6 upgrades are marked as MAX.
+
+        All buttons in this image have red backgrounds indicating MAX status,
+        including the darker red buttons for Damage and Attack Speed.
+        """
+        upgrades = detect_upgrade_buttons(self.frame, self.img)
+
+        print(f"\nUpgrade MAX status:")
+        for label, cost_or_max, _ in upgrades:
+            status_symbol = "✓" if cost_or_max == "MAX" else "✗"
+            print(f"  {status_symbol} {label}: {cost_or_max}")
+
+        # Check that all upgrades have MAX status (including dark red buttons)
+        for label, cost_or_max, _ in upgrades:
+            self.assertEqual(cost_or_max, "MAX",
+                           f"Upgrade '{label}' should be at MAX (dark red button should be detected as MAX) but got: {cost_or_max}")
+
+        print(f"✓ All {len(upgrades)} upgrades confirmed at MAX status")
+
+
 def run_tests():
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
@@ -389,6 +479,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestOCRPatternMatching))
     suite.addTests(loader.loadTestsFromTestCase(TestPerkDetectionWithImage))
     suite.addTests(loader.loadTestsFromTestCase(TestPerkDetectionImage130242))
+    suite.addTests(loader.loadTestsFromTestCase(TestUpgradeDetectionUnexpected1771282888))
 
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
