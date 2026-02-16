@@ -35,13 +35,14 @@ PERK_ROWS = [ (0, 0.273), (1, 0.373), (2, 0.473), (3, 0.573), (4, 0.673) ]
 
 # Upgrade button positions (6 buttons in 3 rows × 2 columns)
 # Format: (index, y_fraction, x_range)
+# X ranges extended to capture prices displayed on the right side of buttons
 UPGRADE_BUTTON_ROWS = [
-    (0, 0.71, (0.23, 0.50)),  # Row 1, Left column
-    (1, 0.71, (0.60, 0.85)),  # Row 1, Right column
-    (2, 0.81, (0.23, 0.50)),  # Row 2, Left column
-    (3, 0.81, (0.60, 0.85)),  # Row 2, Right column
-    (4, 0.91, (0.23, 0.50)),  # Row 3, Left column
-    (5, 0.91, (0.60, 0.85)),  # Row 3, Right column
+    (0, 0.69, (0.20, 0.55)),  # Row 1, Left column (extended right to capture prices)
+    (1, 0.69, (0.55, 0.95)),  # Row 1, Right column (extended right for prices)
+    (2, 0.80, (0.20, 0.55)),  # Row 2, Left column
+    (3, 0.80, (0.55, 0.95)),  # Row 2, Right column
+    (4, 0.90, (0.20, 0.55)),  # Row 3, Left column
+    (5, 0.90, (0.55, 0.95)),  # Row 3, Right column
 ]
 
 # Attack upgrade labels
@@ -77,7 +78,7 @@ PERK_CHOICES = [
     r'Perk Wave Requirement( -[\d\.]+%)?',
     r'(Increase )?Max Game Speed( by \-[\d\.]+)?',
     r'(x[\d\.]+ )?All Coins Bonuses',
-    r'(x[\d\.]+ )Damage',
+    r'[\d\.]+ Damage',
     r'Chain Lightning Damage( x[\d\.]+)?',
     r'Golden Tower Bonus( x[\d\.]+)?',
     r'(\d*\s*)?More Smart Missiles',
@@ -1111,29 +1112,29 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -
                     break
             if label:
                 break
-        
-        # If no exact match, try combining adjacent parts
+
+        # If no exact match, try word-based matching against known labels
         if not label and len(label_parts) >= 1:
-            # Sort by x position to combine left-to-right
+            # Extract text from all label parts
+            label_texts = [text.lower() for text, _ in label_parts]
             label_parts_sorted = sorted(label_parts, key=lambda x: x[1].fx)
-            combined_text = ' '.join(text for text, _ in label_parts_sorted)
-            
+
+            # Try matching against each known label
             for known_label in ALL_UPGRADE_LABELS:
-                # Normalize both strings for comparison (remove spaces, slashes, etc.)
-                known_normalized = known_label.lower().replace('/', '').replace(' ', '')
-                combined_normalized = combined_text.lower().replace('/', '').replace(' ', '')
-                
-                # Try exact normalized match
-                if combined_normalized == known_normalized:
-                    label = known_label
-                    representative = representative or label_parts_sorted[0][1]
-                    break
-                # Try fuzzy match (contains or partial)
-                elif known_normalized in combined_normalized or combined_normalized in known_normalized:
-                    # Only accept if substantial overlap
-                    if len(combined_normalized) >= len(known_normalized) * 0.6:
+                # Split known label into words
+                known_words = known_label.lower().replace('/', ' ').split()
+
+                # Check if all words from known label appear in our collected text
+                # This handles cases like "Recovery Amount" where we have both words
+                # but also junk text like "FOLO%" in between
+                if all(any(word in text or text in word for text in label_texts) for word in known_words):
+                    # Additional check: at least 60% of our text should be from known words
+                    # to avoid matching too loosely
+                    matching_parts = sum(1 for text in label_texts if any(word in text or text in word for word in known_words))
+                    if matching_parts / len(label_texts) >= 0.4 or len(known_words) >= 3:
                         label = known_label
                         representative = representative or label_parts_sorted[0][1]
+                        log.debug(f"Matched '{known_label}' from parts: {label_texts}")
                         break
         
         # Only add if we found a valid known label and/or cost
@@ -1143,6 +1144,27 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -
             upgrades.append((label, cost_or_max, representative))
             log.debug(f"Upgrade {idx}: '{label}' - {cost_or_max} at ({representative.fx:.3f}, {representative.fy:.3f})")
     
+    any_question = any(cost == "???" for _, cost, _ in upgrades)
+    if False and (len(upgrades) not in [5,6] or any_question):
+        log.warning(f"Detected {len(upgrades)} upgrades, which is unexpected. Detected upgrades: {[u[0] for u in upgrades]}")
+        # record a timestamped screenshot and JSON file with metadata for debugging
+        timestamp = int(time.time())
+        debug_dir = Path("debug")
+        debug_dir.mkdir(exist_ok=True)
+        img_path = debug_dir / f"unexpected_upgrades_{timestamp}.png"
+        json_path = debug_dir / f"unexpected_upgrades_{timestamp}.json"
+        try:
+            if img is not None:
+                img.save(img_path)
+            with open(json_path, 'w') as f:
+                json.dump({
+                    "upgrades": [(label, cost) for label, cost, _ in upgrades],
+                    "ocr_results": [r.text for r in frame.results],
+                    "image_size": frame.image_size,
+                }, f, indent=2)
+            log.warning(f"Saved debug image to {img_path} and metadata to {json_path}")
+        except Exception as e:
+            log.warning(f"Failed to save debug data: {e}")
     return upgrades
 
 
@@ -1649,6 +1671,7 @@ def automation_loop_tick():
     log.info(f'near perk: {[ (r.fx, r.fy) for r in near_perk]}')
     click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281)))
     click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(0.5945, 0.8168), mark_battle_start)
+
     click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429))
 
     defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
@@ -1684,7 +1707,7 @@ def automation_loop_tick():
         else:
             delay = time.time() - ctx.last_seen_upgrades
             log.info('Seen no upgrade mode selector for %.2f seconds', delay)
-            if delay > 60.0:
+            if delay > 60.0 and False:
                 do_click(ctx.window_rect, ctx.config, log, w, h, "Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
             
         click_if_present('perk', lambda r: r.text.lower() in ["perk", "perk:", 'park', 'new perk'] and r.is_near(0.6056, 0.035, 0.1))
