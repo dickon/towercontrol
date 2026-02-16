@@ -90,7 +90,7 @@ PERK_CHOICES = [
     r'(x[\d\.]+ )?Cash Bonus',
     r'Spotlight Damage Bonus( x[\d\.]+)?',
     r'Defense percent( \+[\d\.]+%)?',
-    r'x?[\d\.]+ Health Regen ',
+    r'(x?[\d\.]+ )?Health Regen',
     r'Chrono Field Duration( \+[\d\.]+s)?',
     r'Swamp Radius( x[\d\.]+)?',
     r'Extra Set Of Inner Mines',
@@ -727,7 +727,122 @@ def close_perks(window_rect, config, log, w, h):
     do_click(window_rect, config, log, w, h, "Closing perks mode by clicking 'X'", 0.878, 0.100)
 
 
+# ============================================================================
+# PURE FUNCTIONS - PERK DETECTION
+# ============================================================================
 
+def collect_perk_texts(frame: OCRFrame) -> dict:
+    """Collect OCR texts grouped by perk row/slot index.
+    
+    Scans OCR results and groups text fragments that fall within
+    the known perk row y-positions and valid x-range.
+    
+    Args:
+        frame: OCRFrame with detected text results
+    
+    Returns:
+        dict mapping slot index (int) -> list of text strings
+    """
+    perk_text = {}
+    for r in frame.results:
+        for (row, dy) in PERK_ROWS:
+            if abs(r.fy - dy) < 0.05 and r.fx > 0.45 and r.fx < 0.78:
+                perk_text.setdefault(row, [])
+                perk_text[row].append(r.text)
+    return perk_text
+
+
+def filter_selected_perks(perk_text: dict) -> dict:
+    """Filter out perk rows that contain 'Selected' and rows below them.
+    
+    When a row contains the word 'Selected', it means that perk was
+    already chosen. All rows at or after the selected row are removed.
+    
+    Args:
+        perk_text: dict mapping slot index -> list of text strings
+    
+    Returns:
+        Filtered dict with selected/below rows removed
+    """
+    for i in range(5):
+        if 'Selected' in ' '.join(perk_text.get(i, [])):
+            return {k: v for k, v in perk_text.items() if k < i}
+    return perk_text
+
+
+def join_perk_texts(perk_text: dict) -> dict:
+    """Join text fragments for each perk row into single strings.
+    
+    Args:
+        perk_text: dict mapping slot index -> list of text strings
+    
+    Returns:
+        dict mapping slot index (int) -> joined text string
+    """
+    return {row: " ".join(texts) for row, texts in perk_text.items()}
+
+
+def match_perk_priorities(perk_text_join: dict) -> Tuple[list, bool]:
+    """Match joined perk texts against known PERK_CHOICES patterns.
+    
+    Args:
+        perk_text_join: dict mapping slot index -> joined text string
+    
+    Returns:
+        Tuple of (priority_list, all_matched) where:
+        - priority_list: list of (row, pattern, priority_index) tuples
+          sorted by priority (lowest index = highest priority)
+        - all_matched: True if every row matched a pattern
+    """
+    log = logging.getLogger(__name__)
+    perk_text_priority = []
+    all_matched = True
+    
+    for row, text in perk_text_join.items():
+        hit = False
+        for idx, choice_pattern in enumerate(PERK_CHOICES):
+            if re.search(choice_pattern, text, re.IGNORECASE):
+                perk_text_priority.append((row, choice_pattern, idx))
+                hit = True
+                break
+        if not hit:
+            log.warning(f"No perk choice pattern matched for row {row} with text '{text}'")
+            all_matched = False
+    
+    perk_text_priority.sort(key=lambda x: x[2])
+    return perk_text_priority, all_matched
+
+
+def detect_perks(frame: OCRFrame) -> dict:
+    """Run the full perk detection pipeline on an OCR frame.
+    
+    This is the main entry point for perk detection, combining:
+    1. Collecting perk texts from OCR results by slot position
+    2. Filtering out already-selected perks
+    3. Joining text fragments per row
+    4. Matching against known perk patterns
+    
+    Args:
+        frame: OCRFrame with detected text results
+    
+    Returns:
+        dict with keys:
+        - 'perk_text': raw collected text by row (before filtering)
+        - 'perk_text_join': joined text per row (after filtering)
+        - 'perk_text_priority': list of (row, pattern, priority_index) sorted by priority
+        - 'all_matched': True if every row matched a known pattern
+    """
+    perk_text = collect_perk_texts(frame)
+    perk_text = filter_selected_perks(perk_text)
+    perk_text_join = join_perk_texts(perk_text)
+    perk_text_priority, all_matched = match_perk_priorities(perk_text_join)
+    
+    return {
+        'perk_text': perk_text,
+        'perk_text_join': perk_text_join,
+        'perk_text_priority': perk_text_priority,
+        'all_matched': all_matched,
+    }
 
 
 def record_action_in_state(state: GameState, action: Action) -> GameState:
@@ -1467,13 +1582,6 @@ def automation_loop_tick():
         
         lowertext = r.text.lower()
 
-        for (row, dy) in PERK_ROWS:
-            if abs(r.fy - dy) < 0.05 and r.fx > 0.45 and r.fx < 0.78:
-                perk_text.setdefault(row, list())            
-                perk_text[row].append(r.text)
-
-    
-
         # Check for perk threshold near position
         if r.is_near(0.6341, 0.0436, 0.05):
             # Try to parse as number
@@ -1498,29 +1606,16 @@ def automation_loop_tick():
                 multipliers = {'K': 1_000, 'M': 1_000_000, 'B': 1_000_000_000, 'T': 1_000_000_000_000}
                 multiplier = multipliers.get(suffix, 1)
                 coins = value * multiplier
-    for i in range(5):
-        if 'Selected' in ' '.join(perk_text.get(i, [])):
-            perk_text = { k:v for k,v in perk_text.items() if k < i }
-            
+
+    # Use refactored perk detection
+    perk_result = detect_perks(frame)
+    perk_text = perk_result['perk_text']
+    perk_text_join = perk_result['perk_text_join']
+    perk_text_priority = perk_result['perk_text_priority']
+    clean = perk_result['all_matched']
+
     if mode == 'perks' and perk_text:
-        perk_text_join = {row: " ".join(texts) for row, texts in perk_text.items()}        
         log.info(f"Perk text by row: {perk_text_join}")
-
-        # perk_text_priority defined as the keys in perk_text_join and the index in PERK_CHOICES that has a regexp that matches the value
-        perk_text_priority = []
-        clean = True
-        for row, text in perk_text_join.items():
-            hit = False
-
-            for idx, choice_pattern in enumerate(PERK_CHOICES):
-                if re.search(choice_pattern, text, re.IGNORECASE):
-                    perk_text_priority.append((row, choice_pattern, idx))
-                    hit = True
-                    break
-            if not hit:
-                log.warning(f"No perk choice pattern matched for row {row} with text '{text}'")
-                clean = False
-        perk_text_priority.sort(key=lambda x: x[2])  # Sort by choice index (priority)
 
         if len(perk_text_join) not in [3,4] or not clean:
             log.warning(f"Unexpected number of meaningful perk rows detected: {len(perk_text_join)}. Expected 3 or 4. Detected rows: {list(perk_text_join.keys())}")
@@ -1529,7 +1624,7 @@ def automation_loop_tick():
         debug_path = ctx.config.debug_dir / f"perk_rows_{timestamp}.png"
         img.save(debug_path)
         log.info(f"Saved debug screenshot for unexpected perk rows: {debug_path}")        
-        # write a JSON file with perk_text_join and perk_text_priority for debugging alongisde the screenshot
+        # write a JSON file with perk_text_join and perk_text_priority for debugging alongside the screenshot
         debug_json_path = ctx.config.debug_dir / f"perk_rows_{timestamp}.json"
         with open(debug_json_path, "w") as f:
             json.dump({
