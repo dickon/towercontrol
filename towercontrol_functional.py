@@ -13,6 +13,7 @@ Usage:
 import argparse
 import datetime
 import io
+import json
 import logging
 import re
 import time
@@ -76,22 +77,23 @@ PERK_CHOICES = [
     r'Perk Wave Requirement( -[\d\.]+%)?',
     r'(Increase )?Max Game Speed( by \-[\d\.]+)?',
     r'(x[\d\.]+ )?All Coins Bonuses',
+    r'(x[\d\.]+ )?Damage',
     r'Chain Lightning Damage( x[\d\.]+)?',
     r'Golden Tower Bonus( x[\d\.]+)?',
-    r'(x[\d\.]+ )?Damage',
     r'(\d*\s*)?More Smart Missiles',
     r'(\d*\s*)?(Wave )?On Death Wave',
     r'Bounce Shot( \+\d+)?',
     r'Black Hole Duration( \+[\d\.]+s)?',
+    r'(x[\d\.]+ )?Max Health',
+    r'Upgrade Chance for All'
+    r'Unlock poison swamp',
+    r'(x[\d\.]+ )?Cash Bonus',
     r'Spotlight Damage Bonus( x[\d\.]+)?',
     r'Defense percent( \+[\d\.]+%)?',
-    r'Health Regen( x[\d\.]+)?',
-    r'(x[\d\.]+ )?Max Health',
-    r'(x[\d\.]+ )?Cash Bonus',
+    r'x?[\d\.]+ Health Regen ',
     r'Chrono Field Duration( \+[\d\.]+s)?',
     r'Swamp Radius( x[\d\.]+)?',
     r'Extra Set Of Inner Mines',
-    r'Free Upgrade Chancel for All( \+[\d\.]+%)?',
     r'Orbs( \+\d+)?',
     r'(x[\d\.]*\s*)?Defense Absolute',
     r'Land Mine Damage( x[\d\.]+)?',
@@ -1497,14 +1499,16 @@ def automation_loop_tick():
                 multiplier = multipliers.get(suffix, 1)
                 coins = value * multiplier
     for i in range(5):
-        if ' '.join(perk_text.get(i, [])).startswith('Selected'):
+        if 'Selected' in ' '.join(perk_text.get(i, [])):
             perk_text = { k:v for k,v in perk_text.items() if k < i }
             
     if mode == 'perks' and perk_text:
         perk_text_join = {row: " ".join(texts) for row, texts in perk_text.items()}        
         log.info(f"Perk text by row: {perk_text_join}")
+
         # perk_text_priority defined as the keys in perk_text_join and the index in PERK_CHOICES that has a regexp that matches the value
         perk_text_priority = []
+        clean = True
         for row, text in perk_text_join.items():
             hit = False
 
@@ -1515,7 +1519,23 @@ def automation_loop_tick():
                     break
             if not hit:
                 log.warning(f"No perk choice pattern matched for row {row} with text '{text}'")
+                clean = False
         perk_text_priority.sort(key=lambda x: x[2])  # Sort by choice index (priority)
+
+        if len(perk_text_join) not in [3,4] or not clean:
+            log.warning(f"Unexpected number of meaningful perk rows detected: {len(perk_text_join)}. Expected 3 or 4. Detected rows: {list(perk_text_join.keys())}")
+        # save a copy of the screenshot as evidence for debugging
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        debug_path = ctx.config.debug_dir / f"perk_rows_{timestamp}.png"
+        img.save(debug_path)
+        log.info(f"Saved debug screenshot for unexpected perk rows: {debug_path}")        
+        # write a JSON file with perk_text_join and perk_text_priority for debugging alongisde the screenshot
+        debug_json_path = ctx.config.debug_dir / f"perk_rows_{timestamp}.json"
+        with open(debug_json_path, "w") as f:
+            json.dump({
+                "perk_text_join": perk_text_join,
+                "perk_text_priority": perk_text_priority
+            }, f, indent=2)
         # pick the row with the highest priority (lowest index)
         if perk_text_priority:
             best_row, best_choice, best_idx = perk_text_priority[0]
