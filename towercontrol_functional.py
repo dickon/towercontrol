@@ -1145,7 +1145,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -
             log.debug(f"Upgrade {idx}: '{label}' - {cost_or_max} at ({representative.fx:.3f}, {representative.fy:.3f})")
     
     any_question = any(cost == "???" for _, cost, _ in upgrades)
-    if False and (len(upgrades) not in [5,6] or any_question):
+    if (len(upgrades) not in [5,6] or any_question):
         log.warning(f"Detected {len(upgrades)} upgrades, which is unexpected. Detected upgrades: {[u[0] for u in upgrades]}")
         # record a timestamped screenshot and JSON file with metadata for debugging
         timestamp = int(time.time())
@@ -1165,6 +1165,18 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -
             log.warning(f"Saved debug image to {img_path} and metadata to {json_path}")
         except Exception as e:
             log.warning(f"Failed to save debug data: {e}")
+
+        # delete all but the last 30 debug files to prevent storage bloat
+        try:
+            debug_files = sorted(debug_dir.glob("unexpected_upgrades_*.json"), key=os.path.getmtime)
+            for old_file in debug_files[:-30]:
+                old_file.unlink()
+            # and the png
+            debug_images = sorted(debug_dir.glob("unexpected_upgrades_*.png"), key=os.path.getmtime)
+            for old_img in debug_images[:-30]:
+                old_img.unlink()
+        except Exception as e:
+            log.warning(f"Failed to clean up old debug files: {e}")
     return upgrades
 
 
