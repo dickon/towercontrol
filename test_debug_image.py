@@ -309,6 +309,39 @@ class TestDefenseUpgrades1771362963:
             f"Health Regen upgrades_to_purchase should be 157, got {count}"
 
 
+class TestDefenseUpgrades1771365389:
+    """Test upgrade detection on test image 1771365389 (DEFENSE upgrades).
+
+    Image shows: Health (1.81T, Max), Health Regen (2.14B/sec, $842.88M, x133),
+    Defense % (95.90%, Max), Defense Absolute (1.92M, $844.99M, x901),
+    Thorn Damage (108%, ???), Lifesteal (12.21%, ???).
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        """Set up test fixtures."""
+        self.config = Config()
+        test_image = Path("test_images/unexpected_upgrades_1771365389.png")
+        self.img = Image.open(test_image)
+        self.frame = process_ocr(self.img, self.config)
+        self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
+
+    def test_thorn_damage_not_damage(self):
+        """Verify the upgrade at ~(0.375, 0.9) is 'Thorn Damage', not 'Damage'.
+
+        FAILING: Currently matches 'Damage' because OCR detects 'Thorn' and
+        'Damage' separately, and 'Damage' is a known single-word label that
+        gets matched before the multi-word 'Thorn Damage'.
+        """
+        # 'Thorn Damage' should be detected
+        assert 'Thorn Damage' in self.upgrades, \
+            f"'Thorn Damage' should be detected. Found: {list(self.upgrades.keys())}"
+
+        # And specifically NOT 'Damage' (which is an Attack upgrade, not Defense)
+        assert 'Damage' not in self.upgrades, \
+            f"'Damage' should NOT be detected — it should be 'Thorn Damage'. Found: {list(self.upgrades.keys())}"
+
+
 class TestParseNumberWithSuffix:
     """Test cases for parse_number_with_suffix helper function."""
 
