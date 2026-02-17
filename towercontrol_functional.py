@@ -1401,13 +1401,14 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             for known_label in sorted_labels:
                 known_words = known_label.lower().replace('/', ' ').split()
 
+                # Accept if all words of the known label appear in detected text.
+                # Sorting by word count descending ensures longer labels (e.g.
+                # "Thorn Damage") match before shorter ones (e.g. "Damage").
                 if all(any(word in text or text in word for text in label_texts) for word in known_words):
-                    matching_parts = sum(1 for text in label_texts if any(word in text or text in word for word in known_words))
-                    if matching_parts / len(label_texts) >= 0.4 or len(known_words) >= 3:
-                        label = known_label
-                        label_ocr = label_parts_sorted[0][1]
-                        log.debug(f"Matched '{known_label}' from parts: {label_texts}")
-                        break
+                    label = known_label
+                    label_ocr = label_parts_sorted[0][1]
+                    log.debug(f"Matched '{known_label}' from parts: {label_texts}")
+                    break
 
         # Fall back to single exact-match if multi-word matching found nothing
         if not label:
