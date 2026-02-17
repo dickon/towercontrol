@@ -13,6 +13,7 @@ Usage:
 import argparse
 import datetime
 import io
+import os
 import json
 import logging
 import re
@@ -21,7 +22,7 @@ import pprint
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, NamedTuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, NamedTuple, TypedDict
 
 import cv2
 import numpy as np
@@ -302,6 +303,16 @@ class Action:
     duration: float = 0.3
     reason: str = ""
     priority: int = 0
+
+
+class UpgradeInfo(TypedDict):
+    """Information about a detected upgrade button."""
+    current_value: Optional[float]  # Current numerical value of the stat
+    cost: Optional[float]  # Cost to upgrade (None if MAX)
+    upgrades_to_purchase: int  # Number of upgrades to buy (default 1)
+    cell_color: Tuple[int, int, int]  # RGB color of the button cell
+    label_position: Tuple[float, float]  # Fractional position (fx, fy) of the label
+    button_position: Tuple[float, float]  # Fractional position (fx, fy) of the button center
 
 
 # ============================================================================
@@ -973,6 +984,85 @@ def record_action_in_state(state: GameState, action: Action) -> GameState:
     return replace(state, action_history=new_history)
 
 
+def parse_number_with_suffix(text: str) -> Optional[float]:
+    """Parse a number string with optional K/M/B/T suffix into a float.
+
+    Examples:
+        "1.5K" -> 1500.0
+        "3.62B" -> 3620000000.0
+        "28.10" -> 28.10
+        "MAX" -> None
+
+    Args:
+        text: String containing number with optional suffix
+
+    Returns:
+        Parsed float value, or None if unparseable
+    """
+    text = text.strip().upper()
+
+    if text in ["MAX", "???"]:
+        return None
+
+    # Match number with optional suffix
+    match = re.match(r'^([0-9,.]+)\s*([KMBT])?$', text)
+    if not match:
+        return None
+
+    try:
+        value = float(match.group(1).replace(',', ''))
+        suffix = match.group(2)
+
+        if suffix:
+            multipliers = {'K': 1_000, 'M': 1_000_000, 'B': 1_000_000_000, 'T': 1_000_000_000_000}
+            value *= multipliers.get(suffix, 1)
+
+        return value
+    except (ValueError, AttributeError):
+        return None
+
+
+def get_cell_color(img: Optional[Image.Image], y_frac: float, x_min: float, x_max: float,
+                   y_tolerance: float = 0.08) -> Tuple[int, int, int]:
+    """Extract the dominant color from a cell region.
+
+    Args:
+        img: PIL Image to analyze
+        y_frac: Fractional Y position of cell center (0.0-1.0)
+        x_min: Fractional X start of cell region (0.0-1.0)
+        x_max: Fractional X end of cell region (0.0-1.0)
+        y_tolerance: Vertical tolerance for cell region
+
+    Returns:
+        RGB tuple of the dominant color, or (128, 128, 128) if detection fails
+    """
+    if img is None:
+        return (128, 128, 128)  # Default gray
+
+    try:
+        img_array = np.array(img)
+        h, w = img_array.shape[:2]
+
+        # Calculate pixel coordinates
+        y_start = max(0, int((y_frac - y_tolerance) * h))
+        y_end = min(h, int((y_frac + y_tolerance) * h))
+        x_start = max(0, int(x_min * w))
+        x_end = min(w, int(x_max * w))
+
+        # Extract cell region
+        region = img_array[y_start:y_end, x_start:x_end]
+
+        if region.size == 0:
+            return (128, 128, 128)
+
+        # Calculate average color (simple dominant color approximation)
+        avg_color = region.mean(axis=(0, 1))
+        return (int(avg_color[0]), int(avg_color[1]), int(avg_color[2]))
+
+    except Exception:
+        return (128, 128, 128)
+
+
 def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max: float,
                   y_tolerance: float = 0.08) -> bool:
     """Check if a button region is predominantly dark red (indicating MAX status).
@@ -1048,18 +1138,25 @@ def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max
         return False
 
 
-def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -> List[Tuple[str, str, OCRResult]]:
+def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -> Dict[str, UpgradeInfo]:
     """Detect upgrade buttons and their costs/status.
-    
-    Returns list of tuples: (label, cost_or_max, representative_ocr_result)
+
+    Returns dictionary mapping label names to UpgradeInfo with:
+    - current_value: Current stat value as float (or None if not found)
+    - cost: Upgrade cost as float (or None if MAX)
+    - upgrades_to_purchase: Number of upgrades to buy (default 1)
+    - cell_color: RGB tuple of button background color
+    - label_position: (fx, fy) fractional position of label
+    - button_position: (fx, fy) fractional position of button center
+
     Only matches against known upgrade labels from Attack/Defense/Utility categories.
-    
+
     Args:
         frame: OCRFrame with detected text
-        img: Optional PIL Image for color detection (to detect red MAX buttons)
+        img: Optional PIL Image for color detection (to detect red MAX buttons and cell colors)
     """
     log = logging.getLogger(__name__)
-    upgrades = []
+    upgrades: Dict[str, UpgradeInfo] = {}
     
     for idx, y_frac, (x_min, x_max) in UPGRADE_BUTTON_ROWS:
         # Find all OCR results in this upgrade button region
@@ -1068,52 +1165,62 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -
             r for r in frame.results
             if abs(r.fy - y_frac) < y_tolerance and x_min <= r.fx <= x_max
         ]
-        
+
         # Check if button is red (MAX status)
         is_red_button = is_button_red(img, y_frac, x_min, x_max, y_tolerance)
-        
+
         if not region_results and not is_red_button:
             continue
-        
+
         # Categorize results in this region
         label = None
-        cost_or_max = None
-        representative = None
+        label_ocr = None
+        cost_str = None
+        cost_value = None
+        current_value = None
         label_parts = []  # Collect text fragments that might form a label
-        
+        value_candidates = []  # Collect potential current value numbers
+
         # If button is red, it's at MAX
         if is_red_button:
-            cost_or_max = "MAX"
+            cost_str = "MAX"
+            cost_value = None
             log.debug(f"Button {idx} detected as MAX via red color")
-        
+
         for r in region_results:
             text = r.text.strip()
             text_lower = text.lower()
-            
+
             # Check for "Max" status (button at max level)
             if text_lower == "max":
-                cost_or_max = "MAX"
-                representative = r
+                cost_str = "MAX"
+                cost_value = None
                 continue
-            
+
             # Check for cost (number with optional K/M/B/T suffix)
+            # Typically appears at bottom-right of cell
             cost_match = re.match(r'^([0-9,.]+)\s*([KMBT])?$', text, re.IGNORECASE)
             if cost_match:
-                cost_or_max = text
-                representative = r
+                parsed_cost = parse_number_with_suffix(text)
+                if parsed_cost is not None and cost_str is None:
+                    cost_str = text
+                    cost_value = parsed_cost
+                else:
+                    # Could be current value if not a cost
+                    value_candidates.append((parsed_cost or 0.0, r))
                 continue
-            
+
             # Collect potential label fragments
             if len(text) >= 2 and text_lower not in ['buy', 'lvl', 'lv']:
                 label_parts.append((text, r))
-        
+
         # Try to match collected text against known upgrade labels
         # First try individual parts
         for text, r in label_parts:
             for known_label in ALL_UPGRADE_LABELS:
                 if text.lower() == known_label.lower():
                     label = known_label
-                    representative = representative or r
+                    label_ocr = r
                     break
             if label:
                 break
@@ -1138,20 +1245,40 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -
                     matching_parts = sum(1 for text in label_texts if any(word in text or text in word for word in known_words))
                     if matching_parts / len(label_texts) >= 0.4 or len(known_words) >= 3:
                         label = known_label
-                        representative = representative or label_parts_sorted[0][1]
+                        label_ocr = label_parts_sorted[0][1]
                         log.debug(f"Matched '{known_label}' from parts: {label_texts}")
                         break
-        
-        # Only add if we found a valid known label and/or cost
-        if label and (cost_or_max or representative):
-            cost_or_max = cost_or_max or "???"
-            representative = representative or region_results[0]
-            upgrades.append((label, cost_or_max, representative))
-            log.debug(f"Upgrade {idx}: '{label}' - {cost_or_max} at ({representative.fx:.3f}, {representative.fy:.3f})")
-    
-    any_question = any(cost == "???" for _, cost, _ in upgrades)
-    if (len(upgrades) not in [5,6] or any_question):
-        log.warning(f"Detected {len(upgrades)} upgrades, which is unexpected. Detected upgrades: {[u[0] for u in upgrades]}")
+
+        # Extract current value - typically the largest number that's not the cost
+        if value_candidates:
+            # Sort by value magnitude and pick the largest
+            value_candidates.sort(key=lambda x: x[0], reverse=True)
+            current_value = value_candidates[0][0]
+
+        # Get cell color
+        cell_color = get_cell_color(img, y_frac, x_min, x_max, y_tolerance)
+
+        # Only add if we found a valid known label
+        if label and label_ocr:
+            # Create UpgradeInfo entry
+            upgrade_info: UpgradeInfo = {
+                'current_value': current_value,
+                'cost': cost_value,
+                'upgrades_to_purchase': 1,
+                'cell_color': cell_color,
+                'label_position': (label_ocr.fx, label_ocr.fy),
+                'button_position': (x_min + (x_max - x_min) / 2, y_frac)
+            }
+            upgrades[label] = upgrade_info
+
+            cost_display = cost_str or "???"
+            log.debug(f"Upgrade {idx}: '{label}' - value={current_value}, cost={cost_display} at ({label_ocr.fx:.3f}, {label_ocr.fy:.3f})")
+
+    any_missing_cost = any(info['cost'] is None and info.get('current_value') is not None for info in upgrades.values())
+    # count number of unexpected upgrade files and only produce more if we don't have 20 already, to avoid spamming debug data
+    number_of_debug_files = len(list(Path("debug").glob("unexpected_upgrades_*.json")))
+    if number_of_debug_files < 20 and (len(upgrades) not in [5,6] or any_missing_cost):
+        log.warning(f"Detected {len(upgrades)} upgrades, which is unexpected. Detected upgrades: {list(upgrades.keys())}")
         # record a timestamped screenshot and JSON file with metadata for debugging
         timestamp = int(time.time())
         debug_dir = Path("debug")
@@ -1161,9 +1288,21 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -
         try:
             if img is not None:
                 img.save(img_path)
+            # Convert upgrades dict to serializable format
+            upgrades_serializable = {
+                label: {
+                    'current_value': info['current_value'],
+                    'cost': info['cost'],
+                    'upgrades_to_purchase': info['upgrades_to_purchase'],
+                    'cell_color': info['cell_color'],
+                    'label_position': info['label_position'],
+                    'button_position': info['button_position']
+                }
+                for label, info in upgrades.items()
+            }
             with open(json_path, 'w') as f:
                 json.dump({
-                    "upgrades": [(label, cost) for label, cost, _ in upgrades],
+                    "upgrades": upgrades_serializable,
                     "ocr_results": [r.text for r in frame.results],
                     "image_size": frame.image_size,
                 }, f, indent=2)
@@ -1798,8 +1937,10 @@ def automation_loop_tick():
     upgrade_buttons = detect_upgrade_buttons(frame, img)
     if upgrade_buttons:
         log.info(f"Detected {len(upgrade_buttons)} upgrade buttons:")
-        for label, cost, ocr_result in upgrade_buttons:
-            log.info(f"  - '{label}': {cost} @ ({ocr_result.fx:.3f}, {ocr_result.fy:.3f})")
+        for label, info in upgrade_buttons.items():
+            cost_display = f"{info['cost']:.2f}" if info['cost'] is not None else "MAX"
+            value_display = f"{info['current_value']:.2f}" if info['current_value'] is not None else "N/A"
+            log.info(f"  - '{label}': value={value_display}, cost={cost_display} @ {info['label_position']}")
     
     elements = []
     resources = {}

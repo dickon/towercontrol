@@ -427,15 +427,16 @@ class TestUpgradeDetectionUnexpected1771282888(unittest.TestCase):
         upgrades = detect_upgrade_buttons(self.frame, self.img)
 
         print(f"\nDetected {len(upgrades)} upgrades:")
-        for label, cost_or_max, _ in upgrades:
-            print(f"  {label}: {cost_or_max}")
+        for label, info in upgrades.items():
+            cost_display = f"{info['cost']:.2f}" if info['cost'] is not None else "MAX"
+            print(f"  {label}: {cost_display}")
 
         # Verify we found exactly 6 upgrades
         self.assertEqual(len(upgrades), 6,
                         f"Expected 6 upgrades but found {len(upgrades)}")
 
         # Extract detected labels
-        detected_labels = [label for label, _, _ in upgrades]
+        detected_labels = list(upgrades.keys())
 
         # Verify all 6 expected attack upgrades are detected
         expected_labels = [
@@ -460,14 +461,16 @@ class TestUpgradeDetectionUnexpected1771282888(unittest.TestCase):
         upgrades = detect_upgrade_buttons(self.frame, self.img)
 
         print(f"\nUpgrade MAX status:")
-        for label, cost_or_max, _ in upgrades:
-            status_symbol = "✓" if cost_or_max == "MAX" else "✗"
-            print(f"  {status_symbol} {label}: {cost_or_max}")
+        for label, info in upgrades.items():
+            is_max = info['cost'] is None
+            status_symbol = "✓" if is_max else "✗"
+            cost_display = "MAX" if is_max else f"{info['cost']:.2f}"
+            print(f"  {status_symbol} {label}: {cost_display}")
 
         # Check that all upgrades have MAX status (including dark red buttons)
-        for label, cost_or_max, _ in upgrades:
-            self.assertEqual(cost_or_max, "MAX",
-                           f"Upgrade '{label}' should be at MAX (dark red button should be detected as MAX) but got: {cost_or_max}")
+        for label, info in upgrades.items():
+            self.assertIsNone(info['cost'],
+                           f"Upgrade '{label}' should be at MAX (dark red button should be detected as MAX) but got: {info['cost']}")
 
         print(f"✓ All {len(upgrades)} upgrades confirmed at MAX status")
 
