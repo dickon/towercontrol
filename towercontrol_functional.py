@@ -1189,6 +1189,60 @@ def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max
         return False
 
 
+def _ocr_upgrade_purchase_count(img: Image.Image, y_frac: float, x_max: float,
+                                config: Config) -> Optional[int]:
+    """Extract the "xNNN" upgrade purchase count from the top-right corner of a cell.
+
+    Some upgrade cells show a small cyan "x157" or "x794" count in the top-right
+    corner of the value sub-cell. This text is too small for standard OCR, so we
+    crop tightly, upscale heavily, and use a digit whitelist.
+
+    Returns the count as int, or None if not found.
+    """
+    if not pytesseract or img is None:
+        return None
+
+    try:
+        arr = image_to_bgr_array(img)
+        h, w = arr.shape[:2]
+
+        # The xNNN text sits just above the main value, in the top-right
+        y_start = max(0, int((y_frac - 0.02) * h))
+        y_end = int((y_frac - 0.005) * h)
+        x_start = int((x_max - 0.08) * w)
+        x_end = min(w, int(x_max * w))
+
+        roi = arr[y_start:y_end, x_start:x_end]
+        if roi.size == 0:
+            return None
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        upscaled = cv2.resize(gray, None, fx=6.0, fy=6.0, interpolation=cv2.INTER_CUBIC)
+        inverted = cv2.bitwise_not(upscaled)
+        adaptive = cv2.adaptiveThreshold(
+            inverted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 31, 10
+        )
+        padded = cv2.copyMakeBorder(adaptive, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
+
+        pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
+        text = pytesseract.image_to_string(
+            padded, lang=config.ocr_lang,
+            config="--psm 7 --oem 3 -c tessedit_char_whitelist=x0123456789",
+            timeout=5,
+        ).strip()
+
+        match = re.match(r'x?(\d+)', text)
+        if match:
+            count = int(match.group(1))
+            if count > 1:  # Only return meaningful counts
+                return count
+        return None
+
+    except Exception:
+        return None
+
+
 def _ocr_upgrade_cell_value(img: Image.Image, y_frac: float, x_min: float, x_max: float,
                             y_tolerance: float, config: Config) -> Optional[str]:
     """Run targeted OCR on an upgrade cell to recover light-on-dark value text.
@@ -1334,39 +1388,37 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
                 label_parts.append((text, r))
 
         # Try to match collected text against known upgrade labels
-        # First try individual parts
-        for text, r in label_parts:
-            for known_label in ALL_UPGRADE_LABELS:
-                if text.lower() == known_label.lower():
-                    label = known_label
-                    label_ocr = r
-                    break
-            if label:
-                break
-
-        # If no exact match, try word-based matching against known labels
-        if not label and len(label_parts) >= 1:
-            # Extract text from all label parts
+        # Try multi-word matching first (prefer longer/more specific labels)
+        if len(label_parts) >= 1:
             label_texts = [text.lower() for text, _ in label_parts]
             label_parts_sorted = sorted(label_parts, key=lambda x: x[1].fx)
 
-            # Try matching against each known label
-            for known_label in ALL_UPGRADE_LABELS:
-                # Split known label into words
+            # Sort known labels by word count descending so longer labels match first
+            # e.g. "Health Regen" before "Health"
+            sorted_labels = sorted(ALL_UPGRADE_LABELS,
+                                   key=lambda l: len(l.split()), reverse=True)
+
+            for known_label in sorted_labels:
                 known_words = known_label.lower().replace('/', ' ').split()
 
-                # Check if all words from known label appear in our collected text
-                # This handles cases like "Recovery Amount" where we have both words
-                # but also junk text like "FOLO%" in between
                 if all(any(word in text or text in word for text in label_texts) for word in known_words):
-                    # Additional check: at least 60% of our text should be from known words
-                    # to avoid matching too loosely
                     matching_parts = sum(1 for text in label_texts if any(word in text or text in word for word in known_words))
                     if matching_parts / len(label_texts) >= 0.4 or len(known_words) >= 3:
                         label = known_label
                         label_ocr = label_parts_sorted[0][1]
                         log.debug(f"Matched '{known_label}' from parts: {label_texts}")
                         break
+
+        # Fall back to single exact-match if multi-word matching found nothing
+        if not label:
+            for text, r in label_parts:
+                for known_label in ALL_UPGRADE_LABELS:
+                    if text.lower() == known_label.lower():
+                        label = known_label
+                        label_ocr = r
+                        break
+                if label:
+                    break
 
         # Extract current value - typically the largest number that's not the cost
         if value_candidates:
@@ -1394,6 +1446,14 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
                         current_value = parsed
                         log.debug(f"Recovered value {current_value} for '{label}' from cell OCR: '{recovered_text}'")
 
+        # Try to extract "xNNN" purchase count from top-right corner
+        purchase_count = 1
+        if config is not None:
+            count = _ocr_upgrade_purchase_count(img, y_frac, x_max, config)
+            if count is not None:
+                purchase_count = count
+                log.debug(f"Detected purchase count x{count} for button {idx}")
+
         # Get cell color
         cell_color = get_cell_color(img, y_frac, x_min, x_max, y_tolerance)
 
@@ -1403,7 +1463,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             upgrade_info: UpgradeInfo = {
                 'current_value': current_value,
                 'cost': cost_value,
-                'upgrades_to_purchase': 1,
+                'upgrades_to_purchase': purchase_count,
                 'cell_color': cell_color,
                 'cell_color_name': rgb_to_color_name(*cell_color),
                 'label_position': (label_ocr.fx, label_ocr.fy),
