@@ -1189,7 +1189,65 @@ def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max
         return False
 
 
-def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -> Dict[str, UpgradeInfo]:
+def _ocr_upgrade_cell_value(img: Image.Image, y_frac: float, x_min: float, x_max: float,
+                            y_tolerance: float, config: Config) -> Optional[str]:
+    """Run targeted OCR on an upgrade cell to recover light-on-dark value text.
+
+    The standard OCR pipeline often misses gray text on near-black backgrounds
+    (e.g. "63.40%"). This crops the value area of the cell, inverts it, and
+    runs Tesseract with single-line mode.
+
+    Returns the detected text string, or None if nothing found.
+    """
+    if not pytesseract or img is None:
+        return None
+
+    try:
+        arr = image_to_bgr_array(img)
+        h, w = arr.shape[:2]
+
+        # The value text sits in the right portion of the cell, upper half
+        # Label is on the left, value (e.g. "63.40%") is on the right
+        x_mid = x_min + (x_max - x_min) * 0.45  # Right ~55% of cell
+        y_start = max(0, int((y_frac - y_tolerance) * h))
+        y_end = min(h, int((y_frac - 0.01) * h))  # Upper part only, exclude button area
+        x_start = max(0, int(x_mid * w))
+        x_end = min(w, int(x_max * w))
+
+        roi = arr[y_start:y_end, x_start:x_end]
+        if roi.size == 0:
+            return None
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+        # Only attempt on dark cells (light-on-dark text)
+        if gray.mean() > 100:
+            return None
+
+        # Upscale, invert, adaptive threshold - handles mixed dark/bright regions
+        # better than OTSU which can lose text when borders are present
+        upscaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        inverted = cv2.bitwise_not(upscaled)
+        thresh = cv2.adaptiveThreshold(
+            inverted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 31, 10
+        )
+
+        pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
+        text = pytesseract.image_to_string(
+            thresh, lang=config.ocr_lang,
+            config="--psm 7 --oem 3",
+            timeout=5,
+        ).strip()
+
+        return text if text else None
+
+    except Exception:
+        return None
+
+
+def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
+                           config: Optional[Config] = None) -> Dict[str, UpgradeInfo]:
     """Detect upgrade buttons and their costs/status.
 
     Returns dictionary mapping label names to UpgradeInfo with:
@@ -1246,6 +1304,16 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -
             if text_lower == "max":
                 cost_str = "MAX"
                 cost_value = None
+                continue
+
+            # Check for percentage value (e.g. "63.40%") - always a current value, not a cost
+            pct_match = re.match(r'^([0-9,.]+)\s*%$', text)
+            if pct_match:
+                try:
+                    pct_val = float(pct_match.group(1).replace(',', ''))
+                    value_candidates.append((pct_val, r))
+                except ValueError:
+                    pass
                 continue
 
             # Check for cost (number with optional K/M/B/T suffix)
@@ -1305,6 +1373,26 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -
             # Sort by value magnitude and pick the largest
             value_candidates.sort(key=lambda x: x[0], reverse=True)
             current_value = value_candidates[0][0]
+
+        # Recovery: if no value found, try targeted OCR on the dark cell
+        # to pick up light-on-dark text like "63.40%"
+        if current_value is None and label and config is not None:
+            recovered_text = _ocr_upgrade_cell_value(img, y_frac, x_min, x_max, y_tolerance, config)
+            if recovered_text:
+                # Look for percentage pattern (e.g. "63.40%")
+                pct_match = re.search(r'([0-9,.]+)\s*%', recovered_text)
+                if pct_match:
+                    try:
+                        current_value = float(pct_match.group(1).replace(',', ''))
+                        log.debug(f"Recovered value {current_value}% for '{label}' from cell OCR: '{recovered_text}'")
+                    except ValueError:
+                        pass
+                # Also try plain numbers if no percentage found
+                if current_value is None:
+                    parsed = parse_number_with_suffix(recovered_text)
+                    if parsed is not None:
+                        current_value = parsed
+                        log.debug(f"Recovered value {current_value} for '{label}' from cell OCR: '{recovered_text}'")
 
         # Get cell color
         cell_color = get_cell_color(img, y_frac, x_min, x_max, y_tolerance)
