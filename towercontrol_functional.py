@@ -311,6 +311,7 @@ class UpgradeInfo(TypedDict):
     cost: Optional[float]  # Cost to upgrade (None if MAX)
     upgrades_to_purchase: int  # Number of upgrades to buy (default 1)
     cell_color: Tuple[int, int, int]  # RGB color of the button cell
+    cell_color_name: str  # English name for the cell color (e.g. "dark red", "dark blue")
     label_position: Tuple[float, float]  # Fractional position (fx, fy) of the label
     button_position: Tuple[float, float]  # Fractional position (fx, fy) of the button center
 
@@ -1063,6 +1064,56 @@ def get_cell_color(img: Optional[Image.Image], y_frac: float, x_min: float, x_ma
         return (128, 128, 128)
 
 
+def rgb_to_color_name(r: int, g: int, b: int) -> str:
+    """Convert an RGB color to an approximate English name.
+
+    Returns names like "dark red", "dark blue", "gray", etc.
+    """
+    brightness = (r + g + b) / 3
+    dark = brightness < 100
+    light = brightness > 180
+
+    # Check for grays (low saturation)
+    max_c = max(r, g, b)
+    min_c = min(r, g, b)
+    saturation = (max_c - min_c) / max_c if max_c > 0 else 0
+
+    if saturation < 0.15:
+        if brightness < 50:
+            return "black"
+        elif brightness > 200:
+            return "white"
+        elif dark:
+            return "dark gray"
+        elif light:
+            return "light gray"
+        else:
+            return "gray"
+
+    # Determine dominant hue
+    if r >= g and r >= b:
+        if g > b * 1.5:
+            hue = "yellow" if g > r * 0.7 else "orange"
+        else:
+            hue = "red"
+    elif g >= r and g >= b:
+        if b > r * 1.5:
+            hue = "cyan"
+        else:
+            hue = "green"
+    else:  # b dominant
+        if r > g * 1.5:
+            hue = "purple"
+        else:
+            hue = "blue"
+
+    if dark:
+        return f"dark {hue}"
+    elif light:
+        return f"light {hue}"
+    return hue
+
+
 def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max: float,
                   y_tolerance: float = 0.08) -> bool:
     """Check if a button region is predominantly dark red (indicating MAX status).
@@ -1266,6 +1317,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -
                 'cost': cost_value,
                 'upgrades_to_purchase': 1,
                 'cell_color': cell_color,
+                'cell_color_name': rgb_to_color_name(*cell_color),
                 'label_position': (label_ocr.fx, label_ocr.fy),
                 'button_position': (x_min + (x_max - x_min) / 2, y_frac)
             }
@@ -1295,6 +1347,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None) -
                     'cost': info['cost'],
                     'upgrades_to_purchase': info['upgrades_to_purchase'],
                     'cell_color': info['cell_color'],
+                    'cell_color_name': info['cell_color_name'],
                     'label_position': info['label_position'],
                     'button_position': info['button_position']
                 }
@@ -1937,10 +1990,7 @@ def automation_loop_tick():
     upgrade_buttons = detect_upgrade_buttons(frame, img)
     if upgrade_buttons:
         log.info(f"Detected {len(upgrade_buttons)} upgrade buttons:")
-        for label, info in upgrade_buttons.items():
-            cost_display = f"{info['cost']:.2f}" if info['cost'] is not None else "MAX"
-            value_display = f"{info['current_value']:.2f}" if info['current_value'] is not None else "N/A"
-            log.info(f"  - '{label}': value={value_display}, cost={cost_display} @ {info['label_position']}")
+        pprint.pprint(upgrade_buttons)
     
     elements = []
     resources = {}
