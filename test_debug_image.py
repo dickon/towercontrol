@@ -260,6 +260,55 @@ class TestUtilityUpgrades1771351783:
             f"Enemy Health Level Skip cost should be ~353.28K (353280), got {cost}"
 
 
+class TestDefenseUpgrades1771362963:
+    """Test upgrade detection on test image 1771362963 (DEFENSE upgrades).
+
+    Image shows: Health (1.81T, Max), Health Regen (1.06B/sec, $495.14M, x157),
+    Defense % (91.46%, Max), Defense Absolute (974.70K, $496.86M, x794),
+    Thorn Damage (108%, ???), Lifesteal (12.21%, ???).
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        """Set up test fixtures."""
+        self.config = Config()
+        test_image = Path("test_images/unexpected_upgrades_1771362963.png")
+        self.img = Image.open(test_image)
+        self.frame = process_ocr(self.img, self.config)
+        self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
+
+    def test_health_regen_detected(self):
+        """Verify Health Regen upgrade is detected."""
+        assert 'Health Regen' in self.upgrades, \
+            f"Health Regen should be detected. Found: {list(self.upgrades.keys())}"
+
+    def test_health_regen_cost_is_495_14m(self):
+        """Verify Health Regen cost is $495.14M (495140000).
+
+        Image shows "$495.14M" as the upgrade cost.
+        """
+        assert 'Health Regen' in self.upgrades, "Health Regen should be detected"
+
+        cost = self.upgrades['Health Regen']['cost']
+        assert cost is not None, "Health Regen should have a numeric cost"
+
+        expected = 495_140_000
+        tolerance = 5_000_000  # Allow ±5M tolerance for OCR variations
+        assert expected - tolerance < cost < expected + tolerance, \
+            f"Health Regen cost should be ~$495.14M ({expected}), got {cost}"
+
+    def test_health_regen_upgrades_to_purchase_is_157(self):
+        """Verify Health Regen upgrades_to_purchase is 157.
+
+        Image shows "x157" in the top-right corner of the Health Regen cell.
+        """
+        assert 'Health Regen' in self.upgrades, "Health Regen should be detected"
+
+        count = self.upgrades['Health Regen']['upgrades_to_purchase']
+        assert count == 157, \
+            f"Health Regen upgrades_to_purchase should be 157, got {count}"
+
+
 class TestParseNumberWithSuffix:
     """Test cases for parse_number_with_suffix helper function."""
 
