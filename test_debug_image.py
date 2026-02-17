@@ -24,7 +24,7 @@ class TestUtilityUpgrades1771264045:
         test_image = Path("test_images/unexpected_upgrades_1771264045.png")
         self.img = Image.open(test_image)
         self.frame = process_ocr(self.img, self.config)
-        self.upgrades = detect_upgrade_buttons(self.frame, self.img)
+        self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
 
     def test_image_loaded(self):
         """Verify test image loaded successfully."""
@@ -142,7 +142,7 @@ class TestUtilityUpgrades1771351783:
         test_image = Path("test_images/unexpected_upgrades_1771351783.png")
         self.img = Image.open(test_image)
         self.frame = process_ocr(self.img, self.config)
-        self.upgrades = detect_upgrade_buttons(self.frame, self.img)
+        self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
 
     def test_package_chance_detected(self):
         """Verify Package Chance upgrade is detected."""
