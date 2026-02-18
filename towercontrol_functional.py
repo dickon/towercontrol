@@ -157,6 +157,9 @@ class Config:
         "more": (470, 920),
     })
     scroll_region: Tuple[int, int, int, int] = (20, 200, 500, 650)
+    upgrade_interval: float = 30.0           # seconds between upgrade purchase attempts
+    upgrade_scroll_timeout: float = 20.0     # seconds scrolling down before switching to up
+    free_upgrade_cycle_seconds: float = 120.0  # seconds per category in free-upgrade mode
 
     @property
     def screenshots_dir(self) -> Path:
@@ -638,6 +641,79 @@ def _ocr_perk_row_recovery(gray_upscaled: np.ndarray, config: Config,
     return recovery_results
 
 
+def _ocr_upgrade_header_recovery(arr: np.ndarray, config: Config) -> List[OCRResult]:
+    """Recover the upgrade section header (UTILITY / ATTACK / DEFENSE UPGRADES).
+
+    The coloured banner text is frequently garbled by standard OCR (e.g. 'WN'
+    instead of 'UTILITY').  This crops the header band at y≈[0.60, 0.67],
+    upscales 2×, tries both inverted and straight adaptive thresholding, and
+    runs Tesseract in single-line mode.
+
+    On success it returns a single synthetic OCRResult with text equal to the
+    detected category word ('UTILITY', 'ATTACK', or 'DEFENSE'), centred in the
+    header band at approximately (fx=0.33, fy=0.635) so that the existing
+    automation_loop_tick detection logic matches it unchanged.
+
+    Returns an empty list if no category word is found.
+    """
+    if not pytesseract:
+        return []
+
+    try:
+        h, w = arr.shape[:2]
+
+        # Header band position (fractional)
+        y_lo = max(0, int(0.60 * h))
+        y_hi = min(h, int(0.67 * h))
+        x_lo = int(0.08 * w)
+        x_hi = min(w, int(0.58 * w))
+
+        roi = arr[y_lo:y_hi, x_lo:x_hi]
+        if roi.size == 0:
+            return []
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        upscaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+
+        pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
+
+        # Try inverted first (light text on dark banner), then straight.
+        # Block size 31 and PSM 6 (uniform text block) give the best results
+        # for the coloured game-UI banner font.
+        for proc in (cv2.bitwise_not(upscaled), upscaled):
+            thresh = cv2.adaptiveThreshold(
+                proc, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 31, 10,
+            )
+            try:
+                text = pytesseract.image_to_string(
+                    thresh, lang=config.ocr_lang,
+                    config="--psm 6 --oem 3",
+                    timeout=5,
+                ).strip().upper()
+            except Exception:
+                continue
+
+            for category in ('UTILITY', 'ATTACK', 'DEFENSE'):
+                if category in text:
+                    # Emit a synthetic token centred in the header band
+                    cx = (x_lo + x_hi) // 2
+                    cy = (y_lo + y_hi) // 2
+                    bw = (x_hi - x_lo) // 2
+                    bh = (y_hi - y_lo)
+                    return [OCRResult(
+                        text=category,
+                        bbox=(cx - bw // 2, cy - bh // 2, bw, bh),
+                        confidence=70.0,
+                        image_size=(w, h),
+                    )]
+
+        return []
+
+    except Exception:
+        return []
+
+
 def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
     """Run OCR pipeline on image with optimized preprocessing strategies."""
     arr = image_to_bgr_array(img)
@@ -690,6 +766,17 @@ def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
         )
         if recovery:
             scaled_results = _merge_ocr_results([scaled_results, recovery])
+
+    # Recovery pass: upgrade section header (UTILITY / ATTACK / DEFENSE UPGRADES)
+    # Only run if no category marker is already present near the expected position.
+    header_found = any(
+        r.text.upper() in ('UTILITY', 'ATTACK', 'DEFENSE') and r.is_near(0.333, 0.632, 0.15)
+        for r in scaled_results
+    )
+    if not header_found:
+        header_recovery = _ocr_upgrade_header_recovery(arr, config)
+        if header_recovery:
+            scaled_results = _merge_ocr_results([scaled_results, header_recovery])
 
     # Save preprocessed debug image (first variant)
     try:
@@ -930,7 +1017,7 @@ def match_perk_priorities(perk_text_join: dict) -> Tuple[list, bool]:
                 hit = True
                 break
         if not hit:
-            log.warning(f"No perk choice pattern matched for row {row} with text '{text}'")
+            log.debug(f"No perk choice pattern matched for row {row} with text '{text}'")
             all_matched = False
     
     perk_text_priority.sort(key=lambda x: x[2])
@@ -1779,54 +1866,214 @@ def find_claimable_buttons(state: GameState) -> List[UIElement]:
     if not claimable and all_buttons:
         log.debug('No claimable buttons found among: %s', [b.text for b in all_buttons])
     
-    return claimable
 
 
-def decide_action(state: GameState, config: Config, latest_image: Optional[Image.Image] = None, 
-                 gem_template: Optional[np.ndarray] = None) -> Action:
-    """Strategy decision function. Pure function."""
+# ============================================================================
+# UPGRADE AUTOMATION
+# ============================================================================
+
+FREE_UPGRADE_CATEGORIES = ['ATTACK', 'DEFENSE', 'UTILITY']
+
+CATEGORY_UPGRADES: Dict[str, set] = {
+    'ATTACK': set(ATTACK_UPGRADES),
+    'DEFENSE': set(DEFENSE_UPGRADES),
+    'UTILITY': set(UTILITY_UPGRADES),
+}
+
+# Fractional (fx, fy) coordinates for clicking each upgrade sub-tab
+UPGRADE_TAB_CLICK = {
+    'ATTACK':  (0.321,  0.985),
+    'DEFENSE': (0.5105, 0.985),
+    'UTILITY': (0.7,    0.985),
+}
+
+
+def _click_upgrade_tab(want_page: str, w: int, h: int) -> None:
+    """Click the upgrade sub-tab for the given category."""
+    global ctx
     log = logging.getLogger(__name__)
+    if want_page in UPGRADE_TAB_CLICK:
+        fx, fy = UPGRADE_TAB_CLICK[want_page]
+        do_click(ctx.window_rect, ctx.config, log, w, h,
+                 f"Switching to {want_page} upgrade tab", fx, fy)
 
-    # Priority 0: Click on floating gem (highest priority, with cooldown)
-    if latest_image is not None and gem_template is not None:
-        gem_pos = detect_floating_gem(latest_image, gem_template, config)
-        if gem_pos:
-            last_click_time = get_last_action_time(state, ActionType.CLICK)
-            time_since_last_click = time.time() - last_click_time
-            
-            # Cooldown: at least 1 second between clicks
-            if time_since_last_click > 1.0:
-                return Action(
-                    action_type=ActionType.CLICK,
-                    x=gem_pos[0],
-                    y=gem_pos[1],
-                    reason="Clicking floating gem",
-                    priority=100
-                )
 
-    # Priority 1: Click on claim/collect buttons (with cooldown)
-    claimable = find_claimable_buttons(state)
-    if claimable:
-        last_claim_time = get_last_action_time(state, ActionType.CLICK)
-        time_since_last_claim = time.time() - last_claim_time
-        
-        # Cooldown: at least 2 seconds between claims
-        if time_since_last_claim > 2.0:
-            # Click the first claimable button found
-            button = claimable[0]
-            cx, cy = button.center
-            return Action(
-                action_type=ActionType.CLICK,
-                x=cx,
-                y=cy,
-                reason=f"Clicking {button.text} button",
-                priority=10
-            )
-        else:
-            log.debug(f"Cooldown active: {time_since_last_claim:.1f}s since last click")
+def _do_upgrade_scroll(direction: str, w: int, h: int) -> None:
+    """Drag the upgrade list up or down by ~200 px."""
+    global ctx
+    log = logging.getLogger(__name__)
+    if not ctx.window_rect:
+        return
+    scroll_x = int(0.5 * w)
+    scroll_y = int(0.75 * h)
+    log.info(f"Scrolling upgrades {direction}")
+    execute_swipe(scroll_x, scroll_y, 200, direction, ctx.window_rect, ctx.config, True)
 
-    # Default: no action needed (scanning happens automatically)
-    return Action(action_type=ActionType.NONE, reason="Observing")
+
+def _advance_upgrade_state() -> None:
+    """Move to the next item in UPGRADE_PRIORITY and reset scroll tracking."""
+    global ctx
+    log = logging.getLogger(__name__)
+    ctx.upgrade_state += 1
+    ctx.upgrade_scroll_start = 0.0
+    ctx.upgrade_scroll_direction = 'down'
+    if ctx.upgrade_state < len(UPGRADE_PRIORITY):
+        log.info(f"Advanced to upgrade state {ctx.upgrade_state}: "
+                 f"'{UPGRADE_PRIORITY[ctx.upgrade_state][1]}'")
+    else:
+        log.info("All priority upgrades complete - entering free upgrade mode")
+
+
+def check_wave_restart(game_state: GameState) -> bool:
+    """Return True if the wave number has dropped sharply, indicating a game restart."""
+    history = game_state.wave_history
+    if len(history) < 4:
+        return False
+    latest_wave = history[-1][0]
+    # Peak of the 4 entries before the latest one
+    recent_peak = max(w for w, _ in history[-5:-1])
+    return latest_wave < recent_peak - 100
+
+
+def handle_upgrade_action(seen_page: Optional[str],
+                          upgrade_buttons: Dict[str, Any],
+                          w: int, h: int) -> None:
+    """Timed upgrade purchasing driven by UPGRADE_PRIORITY.
+
+    Called every tick; only acts when upgrade_interval seconds have elapsed.
+    Steps:
+      1. If upgrade_state is past the end of UPGRADE_PRIORITY, hand off to
+         handle_free_upgrade_mode.
+      2. Ensure the correct upgrade sub-tab (ATTACK/DEFENSE/UTILITY) is open.
+      3. Look for the target upgrade label among visible buttons.
+         - Not found → scroll (down first, switch to up after upgrade_scroll_timeout).
+         - Found, cost is None (MAX) → advance to next priority item.
+         - Found, cost exceeds threshold → advance to next priority item.
+         - Found, affordable → click to purchase.
+    """
+    global ctx
+    log = logging.getLogger(__name__)
+    now = time.time()
+
+    if now - ctx.last_upgrade_action < ctx.config.upgrade_interval:
+        return
+
+    if ctx.upgrade_state >= len(UPGRADE_PRIORITY):
+        handle_free_upgrade_mode(seen_page, upgrade_buttons, w, h)
+        return
+
+    want_page, want_label, cost_threshold, needs_scroll = UPGRADE_PRIORITY[ctx.upgrade_state]
+    log.info(f"Upgrade state {ctx.upgrade_state}: targeting '{want_label}' on {want_page} tab "
+             f"(threshold={cost_threshold}, needs_scroll={needs_scroll})")
+
+    if seen_page is None:
+        log.info("No upgrade tab visible - skipping upgrade action this tick")
+        return
+
+    if seen_page != want_page:
+        log.info(f"Currently on '{seen_page}', need '{want_page}' - switching tab")
+        _click_upgrade_tab(want_page, w, h)
+        ctx.last_upgrade_action = now
+        return
+
+    # Search for the target among currently visible buttons
+    target_info: Optional[Any] = None
+    for label, info in upgrade_buttons.items():
+        if label.lower() == want_label.lower():
+            target_info = info
+            break
+
+    if target_info is None:
+        # Not visible - scroll to find it
+        if ctx.upgrade_scroll_start == 0.0:
+            ctx.upgrade_scroll_start = now
+            ctx.upgrade_scroll_direction = 'down'
+            log.info(f"'{want_label}' not on screen - beginning scroll down")
+
+        elapsed = now - ctx.upgrade_scroll_start
+        if ctx.upgrade_scroll_direction == 'down' and elapsed > ctx.config.upgrade_scroll_timeout:
+            log.info(f"Scroll down timed out after {elapsed:.0f}s - switching to scroll up")
+            ctx.upgrade_scroll_direction = 'up'
+            ctx.upgrade_scroll_start = now
+
+        _do_upgrade_scroll(ctx.upgrade_scroll_direction, w, h)
+        ctx.last_upgrade_action = now
+        return
+
+    # Found - reset scroll tracking
+    ctx.upgrade_scroll_start = 0.0
+    ctx.upgrade_scroll_direction = 'down'
+
+    # Maxed?
+    if target_info['cost'] is None:
+        log.info(f"'{want_label}' is maxed - advancing to next priority upgrade")
+        _advance_upgrade_state()
+        ctx.last_upgrade_action = now
+        return
+
+    # Exceeds cost threshold?
+    if cost_threshold is not None and target_info['cost'] > cost_threshold:
+        log.info(f"'{want_label}' cost {target_info['cost']:.0f} > threshold {cost_threshold:.0f} "
+                 f"- advancing to next priority upgrade")
+        _advance_upgrade_state()
+        ctx.last_upgrade_action = now
+        return
+
+    # Purchase
+    fx, fy = target_info['button_position']
+    fx = fx +  0.1
+    log.info(f"Buying '{want_label}' (cost={target_info['cost']}) at ({fx:.3f}, {fy:.3f})")
+    do_click(ctx.window_rect, ctx.config, log, w, h, f"Buying upgrade '{want_label}'", fx, fy)
+    ctx.last_upgrade_action = now
+
+
+def handle_free_upgrade_mode(seen_page: Optional[str],
+                             upgrade_buttons: Dict[str, Any],
+                             w: int, h: int) -> None:
+    """Purchase any available (non-maxed) upgrade, cycling ATTACK→DEFENSE→UTILITY every 2 min."""
+    global ctx
+    log = logging.getLogger(__name__)
+    now = time.time()
+
+    if now - ctx.last_upgrade_action < ctx.config.upgrade_interval:
+        return
+
+    # Initialise cycle timer on first entry into this mode
+    if ctx.free_upgrade_cycle_start == 0.0:
+        ctx.free_upgrade_cycle_start = now
+
+    # Rotate category after free_upgrade_cycle_seconds
+    if now - ctx.free_upgrade_cycle_start >= ctx.config.free_upgrade_cycle_seconds:
+        ctx.free_upgrade_category = (ctx.free_upgrade_category + 1) % len(FREE_UPGRADE_CATEGORIES)
+        ctx.free_upgrade_cycle_start = now
+        log.info(f"Free upgrade cycle: now targeting "
+                 f"{FREE_UPGRADE_CATEGORIES[ctx.free_upgrade_category]}")
+
+    want_page = FREE_UPGRADE_CATEGORIES[ctx.free_upgrade_category]
+    log.info(f"Free upgrade mode: looking for any available {want_page} upgrade")
+
+    if seen_page is None:
+        return
+
+    if seen_page != want_page:
+        log.info(f"Free upgrade: switching from {seen_page} to {want_page}")
+        _click_upgrade_tab(want_page, w, h)
+        ctx.last_upgrade_action = now
+        return
+
+    category_labels = CATEGORY_UPGRADES[want_page]
+    for label, info in upgrade_buttons.items():
+        if label in category_labels and info['cost'] is not None:
+            fx, fy = info['button_position']
+            log.info(f"Free upgrade: buying '{label}' (cost={info['cost']}) "
+                     f"at ({fx:.3f}, {fy:.3f})")
+            do_click(ctx.window_rect, ctx.config, log, w, h,
+                     f"Free upgrade: '{label}'", fx, fy)
+            ctx.last_upgrade_action = now
+            return
+
+    log.info(f"Free upgrade: no available {want_page} upgrades visible this tick")
+    ctx.last_upgrade_action = now
 
 
 # ============================================================================
@@ -1979,12 +2226,18 @@ class RuntimeContext:
     last_window_check: float = 0.0
     last_seen_upgrades: float = 0.0
     upgrade_state: int = 0
+    last_upgrade_action: float = 0.0        # timestamp of last upgrade purchase attempt
+    last_upgrade_buttons_seen: float = 0.0  # timestamp when upgrade buttons were last visible
+    upgrade_scroll_start: float = 0.0       # when current scroll direction started (0 = not scrolling)
+    upgrade_scroll_direction: str = 'down'  # 'down' or 'up'
+    free_upgrade_category: int = 0          # index into FREE_UPGRADE_CATEGORIES
+    free_upgrade_cycle_start: float = 0.0   # when the current free-upgrade category started
     def update_window(self):
         """Update window rect if needed."""
         if time.time() - self.last_window_check > 2.0:
             self.window_rect = find_window(self.config.window_title)
             log = logging.getLogger(__name__)
-            log.info('Window check: %s', self.window_rect)
+            log.debug('Window check: %s', self.window_rect)
             self.last_window_check = time.time()
 
 def mark_battle_start():
@@ -1998,7 +2251,7 @@ def click_if_present(name, condition, callback=None):
     global ctx
     log = logging.getLogger(__name__)
     marks = [r for r in ctx.frame.results if condition(r)]
-    log.info(f'Marks found for condition "{name}"   : {marks}')
+    log.debug(f'Marks found for condition "{name}"   : {marks}')
     if marks:
         log.info(f"Condition met for '{marks[0].text}' at ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking!")
         execute_click(marks[0].center[0], marks[0].center[1], ctx.window_rect, ctx.config)
@@ -2018,10 +2271,10 @@ def automation_loop_tick():
         return
 
     # Capture and OCR current screen
-    log.info(f"Capturing window: {ctx.window_rect.width} x {ctx.window_rect.height} at ({ctx.window_rect.left}, {ctx.window_rect.top})")
+    log.debug(f"Capturing window: {ctx.window_rect.width} x {ctx.window_rect.height} at ({ctx.window_rect.left}, {ctx.window_rect.top})")
     
     img = capture_window(ctx.window_rect)
-    log.info(f'Capture done')
+    log.debug('Capture done')
     if not img:
         log.warning("Failed to capture window")
         return
@@ -2100,7 +2353,7 @@ def automation_loop_tick():
     log.info(f"Detected mode: {mode}")
     perk_text = {}
     near_perk = [r for r in frame.results if r.is_near(0.6056, 0.035, 0.1)]
-    log.info(f'near perk: {[ (r.fx, r.fy) for r in near_perk]}')
+    log.debug(f'near perk: {[ (r.fx, r.fy) for r in near_perk]}')
     click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281)))
     click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(0.5945, 0.8168), mark_battle_start)
 
@@ -2109,6 +2362,7 @@ def automation_loop_tick():
     defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
     attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.329, 0.632, 0.1)]
     utility_marks = [r for r in frame.results if r.text.lower() == "utility" and r.is_near(0.333, 0.632, 0.1)]
+    seen = None  # which upgrade sub-tab is currently visible; set inside if mode == 'main'
     if mode == 'main':
         if defense_marks:
             seen = 'DEFENSE'
@@ -2179,9 +2433,9 @@ def automation_loop_tick():
     perk_text_join = perk_result['perk_text_join']
     perk_text_priority = perk_result['perk_text_priority']
     clean = perk_result['all_matched']
-    log.info('perk text: %s', perk_text)
+    log.debug('perk text: %s', perk_text)
     if perk_text and mode == 'perks':
-        log.info(f"Perk text by row: {perk_text_join}")
+        log.debug(f"Perk text by row: {perk_text_join}")
 
         if len(perk_text_join) not in [3,4] or not clean:
             log.warning(f"Unexpected number of meaningful perk rows detected: {len(perk_text_join)}. Expected 3 or 4. Detected rows: {list(perk_text_join.keys())}")
@@ -2215,10 +2469,27 @@ def automation_loop_tick():
         close_perks(ctx.window_rect, ctx.config, log, w, h)
     
     # Detect and log upgrade buttons
-    upgrade_buttons = detect_upgrade_buttons(frame, img)
+    upgrade_buttons = detect_upgrade_buttons(frame, img, ctx.config)
     if upgrade_buttons:
-        log.info(f"Detected {len(upgrade_buttons)} upgrade buttons:")
-        pprint.pprint(upgrade_buttons)
+        text = [ f'{k} ({v["cost"]})' for k,v in upgrade_buttons.items()]
+        log.info(f'upgrades detected : {", ".join(text)}')
+        ctx.last_upgrade_buttons_seen = time.time()
+    elif mode == 'main' and time.time() - ctx.last_upgrade_buttons_seen > 30.0:
+        log.info("No upgrade buttons visible for 30s - clicking (0.6, 0.9) to dismiss popup")
+        do_click(ctx.window_rect, ctx.config, log, w, h, "Dismiss popup blocking upgrades", 0.6, 0.9)
+        ctx.last_upgrade_buttons_seen = time.time()
+
+    # Game-restart detection: reset upgrade state when wave drops sharply
+    if check_wave_restart(ctx.game_state):
+        log.info("Wave drop detected - resetting upgrade state (game restarted)")
+        ctx.upgrade_state = 0
+        ctx.upgrade_scroll_start = 0.0
+        ctx.upgrade_scroll_direction = 'down'
+        ctx.free_upgrade_cycle_start = 0.0
+
+    # Timed upgrade purchasing (only when on main game screen with upgrades visible)
+    if mode == 'main':
+        handle_upgrade_action(seen, upgrade_buttons, w, h)
     
     elements = []
     resources = {}
