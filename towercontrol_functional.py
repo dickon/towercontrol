@@ -1139,11 +1139,13 @@ def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max
         img_array = np.array(img)
         h, w = img_array.shape[:2]
         
-        # Calculate pixel coordinates
-        y_center = int(y_frac * h)
-        y_start = max(0, int((y_frac - y_tolerance) * h))
-        y_end = min(h, int((y_frac + y_tolerance) * h))
-        x_start = max(0, int(x_min * w))
+        # Focus on the button area (lower-right of cell) where the Max/cost button sits,
+        # not the entire cell region. Using the full region causes false positives from
+        # nearby red UI elements like the "DEFENSE UPGRADES" header.
+        x_mid = x_min + (x_max - x_min) * 0.4  # Right ~60% of cell
+        y_start = max(0, int((y_frac - 0.01) * h))
+        y_end = min(h, int((y_frac + 0.04) * h))
+        x_start = max(0, int(x_mid * w))
         x_end = min(w, int(x_max * w))
         
         # Extract button region
@@ -1238,6 +1240,60 @@ def _ocr_upgrade_purchase_count(img: Image.Image, y_frac: float, x_max: float,
             if count > 1:  # Only return meaningful counts
                 return count
         return None
+
+    except Exception:
+        return None
+
+
+def _ocr_upgrade_cell_cost(img: Image.Image, y_frac: float, x_min: float, x_max: float,
+                           y_tolerance: float, config: Config) -> Optional[str]:
+    """Run targeted OCR on the cost button area of an upgrade cell.
+
+    The cost button sits in the lower-right of the cell. On dark backgrounds,
+    standard OCR misses the light cost text (e.g. "$315.43K"). This crops
+    the button area, inverts, and runs Tesseract to recover cost text.
+
+    Returns the detected text string, or None if nothing found.
+    """
+    if not pytesseract or img is None:
+        return None
+
+    try:
+        arr = image_to_bgr_array(img)
+        h, w = arr.shape[:2]
+
+        # Cost button sits just below cell center, right portion
+        x_mid = x_min + (x_max - x_min) * 0.45
+        y_start = max(0, int((y_frac - 0.01) * h))
+        y_end = min(h, int((y_frac + 0.03) * h))
+        x_start = max(0, int(x_mid * w))
+        x_end = min(w, int(x_max * w))
+
+        roi = arr[y_start:y_end, x_start:x_end]
+        if roi.size == 0:
+            return None
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+        # Only attempt on dark cells
+        if gray.mean() > 100:
+            return None
+
+        upscaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        inverted = cv2.bitwise_not(upscaled)
+        thresh = cv2.adaptiveThreshold(
+            inverted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 31, 10
+        )
+
+        pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
+        text = pytesseract.image_to_string(
+            thresh, lang=config.ocr_lang,
+            config="--psm 7 --oem 3",
+            timeout=5,
+        ).strip()
+
+        return text if text else None
 
     except Exception:
         return None
@@ -1446,6 +1502,23 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
                     if parsed is not None:
                         current_value = parsed
                         log.debug(f"Recovered value {current_value} for '{label}' from cell OCR: '{recovered_text}'")
+
+        # Recovery: if no cost found, try targeted OCR on the cost button area
+        if cost_str is None and label and config is not None:
+            recovered_cost_text = _ocr_upgrade_cell_cost(img, y_frac, x_min, x_max, y_tolerance, config)
+            if recovered_cost_text:
+                # Look for cost pattern: optional $ then number with optional K/M/B/T suffix
+                cost_match_recovery = re.search(r'\$?\s*([0-9,.]+\s*[KMBT])', recovered_cost_text, re.IGNORECASE)
+                if cost_match_recovery:
+                    parsed = parse_number_with_suffix(cost_match_recovery.group(1).strip())
+                    if parsed is not None:
+                        cost_str = cost_match_recovery.group(0)
+                        cost_value = parsed
+                        log.debug(f"Recovered cost {cost_value} for '{label}' from cell OCR: '{recovered_cost_text}'")
+                elif 'max' in recovered_cost_text.lower():
+                    cost_str = "MAX"
+                    cost_value = None
+                    log.debug(f"Recovered MAX cost for '{label}' from cell OCR: '{recovered_cost_text}'")
 
         # Try to extract "xNNN" purchase count from top-right corner
         purchase_count = 1
