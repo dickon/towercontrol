@@ -513,7 +513,6 @@ class TestUtilityUpgradesDetection(unittest.TestCase):
         self.assertGreater(len(self.frame.results), 0,
                            "OCR should detect text in the utils.png image")
 
-    @unittest.expectedFailure
     def test_utility_tab_detected(self):
         """OCR finds 'utility' near (0.333, 0.632) — mirrors automation_loop_tick logic.
 
@@ -522,9 +521,9 @@ class TestUtilityUpgradesDetection(unittest.TestCase):
                              if r.text.lower() == "utility"
                              and r.is_near(0.333, 0.632, 0.1)]
 
-        Currently expected to FAIL: the 'UTILITY UPGRADES' header is not
-        reliably OCR'd as a standalone 'utility' token at the expected position.
-        When this OCR gap is fixed the decorator should be removed.
+        The header is recovered by _ocr_upgrade_header_recovery in process_ocr
+        (inverted adaptive-threshold block=31, PSM 6) which emits a synthetic
+        'UTILITY' token centred in the header band.
         """
         utility_marks = [
             r for r in self.frame.results
