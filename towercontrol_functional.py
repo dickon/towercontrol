@@ -2091,6 +2091,7 @@ def automation_loop_tick():
     texts: tuple[str, float, float] = [(r.text, r.fx, r.fy) for r in frame.results]
     perks_mode = [t for t in texts if t[0] == 'Perks' and abs(t[1]-0.612) < 0.05 and abs(t[2]-0.098) < 0.05]
     choose = [t for t in texts if t[0] == 'Choose' and abs(t[1]-0.522) < 0.05 and abs(t[2]-0.206) < 0.05]
+    log.info('perks_mode: %s, choose: %s', perks_mode, choose)
     if perks_mode and choose:
         log.info("Perks mode found")
         mode = 'perks'        
@@ -2178,8 +2179,8 @@ def automation_loop_tick():
     perk_text_join = perk_result['perk_text_join']
     perk_text_priority = perk_result['perk_text_priority']
     clean = perk_result['all_matched']
-
-    if mode == 'perks' and perk_text:
+    log.info('perk text: %s', perk_text)
+    if perk_text and mode == 'perks':
         log.info(f"Perk text by row: {perk_text_join}")
 
         if len(perk_text_join) not in [3,4] or not clean:
@@ -2191,11 +2192,16 @@ def automation_loop_tick():
         log.info(f"Saved debug screenshot for unexpected perk rows: {debug_path}")        
         # write a JSON file with perk_text_join and perk_text_priority for debugging alongside the screenshot
         debug_json_path = ctx.config.debug_dir / f"perk_rows_{timestamp}.json"
-        with open(debug_json_path, "w") as f:
-            json.dump({
+        # create/append to perks.log with a jsonl format containing wave, timestamp in epoch seconds, timestamp as iso string, perk_text_join, perk_text_priority
+        with open(ctx.config.debug_dir / "perks.jsonl", "a") as log_file:
+            log_entry = {
+                "timestamp": time.time(),
+                "timestamp_iso": datetime.datetime.now().isoformat(),
+                "wave": wave_num_str,
                 "perk_text_join": perk_text_join,
-                "perk_text_priority": perk_text_priority
-            }, f, indent=2)
+                "perk_text_priority": perk_text_priority,
+            }
+            log_file.write(json.dumps(log_entry) + "\n")
         # pick the row with the highest priority (lowest index)
         if perk_text_priority:
             best_row, best_choice, best_idx = perk_text_priority[0]
