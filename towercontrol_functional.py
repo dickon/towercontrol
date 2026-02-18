@@ -2325,7 +2325,7 @@ def automation_loop_tick():
                 ctx.game_state = record_action_in_state(ctx.game_state, action)
     
     # Build screen state (inlined from build_screen_state)
-    log.info('build screen state')
+    log.debug('build screen state')
     
     # Check known markers (inlined from check_known_markers)
     w, h = frame.image_size
