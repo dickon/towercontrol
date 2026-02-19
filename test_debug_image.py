@@ -342,6 +342,43 @@ class TestDefenseUpgrades1771365389:
             f"'Damage' should NOT be detected — it should be 'Thorn Damage'. Found: {list(self.upgrades.keys())}"
 
 
+class TestHealthRegenMax:
+    """Test upgrade detection on test_images/health_regen_max.png.
+
+    Image shows the DEFENSE UPGRADES screen with:
+      - Health:            2.65T   / Max
+      - Health Regen:      107.30B/sec / Max   <-- key assertion
+      - Defense %:         95.90%  / Max
+      - Defense Absolute:  521.82M / $728.18M
+      - Thorn Damage:      108%
+      - Lifesteal:         4.96%
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        """Set up test fixtures."""
+        self.config = Config()
+        test_image = Path("test_images/health_regen_max.png")
+        if not test_image.exists():
+            pytest.skip(f"Test image not found: {test_image}")
+        self.img = Image.open(test_image)
+        self.frame = process_ocr(self.img, self.config)
+        self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
+
+    def test_health_regen_detected(self):
+        """Verify Health Regen upgrade is detected."""
+        assert 'Health Regen' in self.upgrades, \
+            f"Health Regen should be detected. Found: {list(self.upgrades.keys())}"
+
+    def test_health_regen_is_max(self):
+        """Verify Health Regen cost is MAX (None) — the button shows 'Max' in the image."""
+        assert 'Health Regen' in self.upgrades, "Health Regen should be detected"
+
+        cost = self.upgrades['Health Regen']['cost']
+        assert cost is None, \
+            f"Health Regen should be at MAX (cost=None), got {cost}"
+
+
 class TestParseNumberWithSuffix:
     """Test cases for parse_number_with_suffix helper function."""
 
