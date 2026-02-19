@@ -28,6 +28,8 @@ from towercontrol_functional import (
     match_perk_priorities,
     detect_perks,
     detect_upgrade_buttons,
+    detect_floating_gem,
+    load_gem_template,
     process_ocr,
     initialize_ocr_backend,
 )
@@ -560,6 +562,65 @@ class TestUtilityUpgradesDetection(unittest.TestCase):
         )
 
 
+class TestFloatingGemDetection(unittest.TestCase):
+    """Test floating gem detection on floater images and non-floater images.
+
+    floater.png, floater2.png, floater3.png should each contain a floating gem
+    that detect_floating_gem detects (returns a non-None (x, y) position).
+
+    unexpected_upgrades_1771264045.png and unexpected_upgrades_1771282888.png
+    show upgrade screens with no floating gem — detect_floating_gem should
+    return None for both.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.config = Config()
+        cls.gem_template = load_gem_template(cls.config)
+
+    def _load(self, filename: str) -> Image.Image:
+        path = TEST_IMAGES_DIR / filename
+        if not path.exists():
+            self.skipTest(f"Test image not found: {path}")
+        return Image.open(path).convert("RGB")
+
+    # --- images that SHOULD detect a gem ---
+
+    def test_floater_detects_gem(self):
+        """floater.png contains a floating gem."""
+        img = self._load("floater.png")
+        result = detect_floating_gem(img, self.gem_template, self.config)
+        self.assertIsNotNone(result, "Expected a gem to be detected in floater.png")
+
+    def test_floater2_detects_gem(self):
+        """floater2.png contains a floating gem."""
+        img = self._load("floater2.png")
+        result = detect_floating_gem(img, self.gem_template, self.config)
+        self.assertIsNotNone(result, "Expected a gem to be detected in floater2.png")
+
+    def test_floater3_detects_gem(self):
+        """floater3.png contains a floating gem."""
+        img = self._load("floater3.png")
+        result = detect_floating_gem(img, self.gem_template, self.config)
+        self.assertIsNotNone(result, "Expected a gem to be detected in floater3.png")
+
+    # --- images that should NOT detect a gem ---
+
+    def test_unexpected_upgrades_1771264045_no_gem(self):
+        """unexpected_upgrades_1771264045.png has no floating gem."""
+        img = self._load("unexpected_upgrades_1771264045.png")
+        result = detect_floating_gem(img, self.gem_template, self.config)
+        self.assertIsNone(result,
+            f"Expected no gem in unexpected_upgrades_1771264045.png but got: {result}")
+
+    def test_unexpected_upgrades_1771282888_no_gem(self):
+        """unexpected_upgrades_1771282888.png has no floating gem."""
+        img = self._load("unexpected_upgrades_1771282888.png")
+        result = detect_floating_gem(img, self.gem_template, self.config)
+        self.assertIsNone(result,
+            f"Expected no gem in unexpected_upgrades_1771282888.png but got: {result}")
+
+
 def run_tests():
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
@@ -569,6 +630,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestPerkDetectionImage130242))
     suite.addTests(loader.loadTestsFromTestCase(TestUpgradeDetectionUnexpected1771282888))
     suite.addTests(loader.loadTestsFromTestCase(TestUtilityUpgradesDetection))
+    suite.addTests(loader.loadTestsFromTestCase(TestFloatingGemDetection))
 
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
