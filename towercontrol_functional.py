@@ -1855,9 +1855,19 @@ def detect_claim_button(img: Optional[Image.Image], claim_template: Optional[np.
         return None
 
 
-def detect_battle_button(img: Optional[Image.Image], battle_template: Optional[np.ndarray]) -> Optional[Tuple[float, float]]:
-    """Detect BATTLE button near (0.4824, 0.8141). Returns (fx, fy) normalised or None."""
-    if img is None or battle_template is None:
+def detect_template_in_region(
+    img: Optional[Image.Image],
+    template: Optional[np.ndarray],
+    label: str,
+    x0: float, y0: float, x1: float, y1: float,
+    threshold: float,
+) -> Optional[Tuple[float, float]]:
+    """Match *template* inside the normalised sub-region [x0,x1] x [y0,y1] of *img*.
+
+    Returns the normalised (fx, fy) centre of the best match when its score
+    meets *threshold*, otherwise None.
+    """
+    if img is None or template is None:
         return None
 
     log = logging.getLogger(__name__)
@@ -1866,79 +1876,42 @@ def detect_battle_button(img: Optional[Image.Image], battle_template: Optional[n
         img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
         h, w = img_cv.shape
 
-        # Search region around expected centre (0.4824, 0.8141) ± 0.1
-        x_start = int(w * 0.28)
-        x_end   = int(w * 0.88)
-        y_start = int(h * 0.71)
-        y_end   = int(h * 0.91)
+        x_start, x_end = int(w * x0), int(w * x1)
+        y_start, y_end = int(h * y0), int(h * y1)
         search_region = img_cv[y_start:y_end, x_start:x_end]
 
-        if battle_template.shape[0] > search_region.shape[0] or battle_template.shape[1] > search_region.shape[1]:
-            scale = min(search_region.shape[0] / battle_template.shape[0],
-                        search_region.shape[1] / battle_template.shape[1])
-            new_w = max(1, int(battle_template.shape[1] * scale))
-            new_h = max(1, int(battle_template.shape[0] * scale))
-            battle_template = cv2.resize(battle_template, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        if template.shape[0] > search_region.shape[0] or template.shape[1] > search_region.shape[1]:
+            scale = min(search_region.shape[0] / template.shape[0],
+                        search_region.shape[1] / template.shape[1])
+            new_w = max(1, int(template.shape[1] * scale))
+            new_h = max(1, int(template.shape[0] * scale))
+            template = cv2.resize(template, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        result = cv2.matchTemplate(search_region, battle_template, cv2.TM_CCOEFF_NORMED)
+        result = cv2.matchTemplate(search_region, template, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
-        log.info('battle button threshold check: max_val=%.3f at location %s', max_val, max_loc)
-        threshold = 0.98
+        log.debug('%s template check: max_val=%.3f at location %s', label, max_val, max_loc)
         if max_val >= threshold:
-            match_x = max_loc[0] + x_start + battle_template.shape[1] // 2
-            match_y = max_loc[1] + y_start + battle_template.shape[0] // 2
+            match_x = max_loc[0] + x_start + template.shape[1] // 2
+            match_y = max_loc[1] + y_start + template.shape[0] // 2
             fx, fy = match_x / w, match_y / h
-            log.info(f"BATTLE button detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f}")
+            log.info(f"{label} detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f}")
             return (fx, fy)
 
         return None
 
     except Exception as e:
-        log.info(f"BATTLE button detection failed: {e}")
+        log.debug(f"{label} detection failed: {e}")
         return None
+
+
+def detect_battle_button(img: Optional[Image.Image], battle_template: Optional[np.ndarray]) -> Optional[Tuple[float, float]]:
+    """Detect BATTLE button near (0.4824, 0.8141). Returns (fx, fy) normalised or None."""
+    return detect_template_in_region(img, battle_template, "BATTLE button", 0.28, 0.71, 0.88, 0.91, threshold=0.98)
 
 
 def detect_newperk(img: Optional[Image.Image], newperk_template: Optional[np.ndarray]) -> Optional[Tuple[float, float]]:
     """Detect new perk icon near (0.5989, 0.0468). Returns (fx, fy) normalised or None."""
-    if img is None or newperk_template is None:
-        return None
-
-    log = logging.getLogger(__name__)
-
-    try:
-        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
-        h, w = img_cv.shape
-
-        # Search region around expected centre (0.5989, 0.0468) ± 0.08 x, ± 0.05 y
-        x_start = int(w * 0.52)
-        x_end   = int(w * 0.68)
-        y_start = int(h * 0.00)
-        y_end   = int(h * 0.10)
-        search_region = img_cv[y_start:y_end, x_start:x_end]
-
-        if newperk_template.shape[0] > search_region.shape[0] or newperk_template.shape[1] > search_region.shape[1]:
-            scale = min(search_region.shape[0] / newperk_template.shape[0],
-                        search_region.shape[1] / newperk_template.shape[1])
-            new_w = max(1, int(newperk_template.shape[1] * scale))
-            new_h = max(1, int(newperk_template.shape[0] * scale))
-            newperk_template = cv2.resize(newperk_template, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
-        result = cv2.matchTemplate(search_region, newperk_template, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, max_loc = cv2.minMaxLoc(result)
-        log.debug('newperk template check: max_val=%.3f at location %s', max_val, max_loc)
-        threshold = 0.8
-        if max_val >= threshold:
-            match_x = max_loc[0] + x_start + newperk_template.shape[1] // 2
-            match_y = max_loc[1] + y_start + newperk_template.shape[0] // 2
-            fx, fy = match_x / w, match_y / h
-            log.info(f"New perk icon detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f}")
-            return (fx, fy)
-
-        return None
-
-    except Exception as e:
-        log.debug(f"New perk detection failed: {e}")
-        return None
+    return detect_template_in_region(img, newperk_template, "new perk icon", 0.52, 0.00, 0.68, 0.10, threshold=0.8)
 
 
 def get_last_action_time(state: GameState, action_type: ActionType) -> float:
