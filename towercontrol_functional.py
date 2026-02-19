@@ -1891,7 +1891,7 @@ def detect_template_in_region(
 
         result = cv2.matchTemplate(search_region, template, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
-        log.debug('%s template check: max_val=%.3f at location %s', label, max_val, max_loc)
+        log.info('%s template check: max_val=%.3f at location %s', label, max_val, max_loc)
         if max_val >= threshold:
             match_x = max_loc[0] + x_start + template.shape[1] // 2
             match_y = max_loc[1] + y_start + template.shape[0] // 2
