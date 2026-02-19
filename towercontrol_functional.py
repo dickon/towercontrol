@@ -111,6 +111,8 @@ UPGRADE_PRIORITY = [
     ('ATTACK', 'Damage', None, False),
     ('DEFENSE', 'Health', None, False),
     ('DEFENSE', 'Health Regen', None, False),
+    ('UTILITY', 'Enemy Attack level Skip', 1e9, True),
+    ('UTILITY', 'Enemy Health level Skip', 1e9, True),
     ('DEFENSE', 'Defense Absoslute', None, False)
 ]
 
