@@ -1263,7 +1263,7 @@ def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max
         upper_red1 = np.array([10, 255, 255])
         lower_red2 = np.array([160, 80, 50])  # Hue 160-180, Saturation 80+, Value 50+
         upper_red2 = np.array([180, 255, 255])
-        
+
         # Create masks for red color
         mask1 = cv2.inRange(region_hsv, lower_red1, upper_red1)
         mask2 = cv2.inRange(region_hsv, lower_red2, upper_red2)
@@ -1606,8 +1606,10 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
         if cost_str is None and label and config is not None:
             recovered_cost_text = _ocr_upgrade_cell_cost(img, y_frac, x_min, x_max, y_tolerance, config)
             if recovered_cost_text:
-                # Look for cost pattern: optional $ then number with optional K/M/B/T suffix
-                cost_match_recovery = re.search(r'\$?\s*([0-9,.]+\s*[KMBT])', recovered_cost_text, re.IGNORECASE)
+                # Look for cost pattern: optional $ then number with optional K/M/B/T suffix.
+                # Reject matches followed by "/" to avoid confusing stat values like
+                # "107.30B/sec" (health regen rate) with a cost amount.
+                cost_match_recovery = re.search(r'\$?\s*([0-9,.]+\s*[KMBT])(?!\s*/)', recovered_cost_text, re.IGNORECASE)
                 if cost_match_recovery:
                     parsed = parse_number_with_suffix(cost_match_recovery.group(1).strip())
                     if parsed is not None:
