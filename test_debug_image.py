@@ -379,6 +379,87 @@ class TestHealthRegenMax:
             f"Health Regen should be at MAX (cost=None), got {cost}"
 
 
+class TestDefenseAbsoluteCost:
+    """Test upgrade detection on test_images/def_abs.png.
+
+    Image shows the DEFENSE UPGRADES screen where all upgrades are at MAX
+    except Defense Absolute, which has a cost of $7.86B.
+
+    Expected:
+      - Health:            MAX
+      - Health Regen:      MAX
+      - Defense %:         MAX
+      - Defense Absolute:  cost = 7.86B   <-- key assertion
+      - (others if visible): MAX
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        """Set up test fixtures."""
+        self.config = Config()
+        test_image = Path("test_images/def_abs.png")
+        if not test_image.exists():
+            pytest.skip(f"Test image not found: {test_image}")
+        self.img = Image.open(test_image)
+        self.frame = process_ocr(self.img, self.config)
+        self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
+
+    def test_defense_absolute_detected(self):
+        """Verify Defense Absolute upgrade is detected."""
+        assert 'Defense Absolute' in self.upgrades, \
+            f"Defense Absolute should be detected. Found: {list(self.upgrades.keys())}"
+
+    def test_defense_absolute_has_cost(self):
+        """Verify Defense Absolute cost is ~7.86B (not MAX)."""
+        assert 'Defense Absolute' in self.upgrades, "Defense Absolute should be detected"
+
+        cost = self.upgrades['Defense Absolute']['cost']
+        assert cost is not None, \
+            "Defense Absolute should have a cost, not MAX"
+        expected = 7.86e9
+        tolerance = expected * 0.01  # 1%
+        assert abs(cost - expected) <= tolerance, \
+            f"Defense Absolute cost should be ~7.86B, got {cost:.3e}"
+
+    def test_all_other_upgrades_at_max(self):
+        """Verify every detected upgrade except Defense Absolute is at MAX."""
+        non_max = {
+            label: info['cost']
+            for label, info in self.upgrades.items()
+            if label != 'Defense Absolute' and info['cost'] is not None
+        }
+        assert not non_max, \
+            f"All upgrades except Defense Absolute should be MAX, but these have costs: {non_max}"
+
+    def test_health_upgrade_level_is_2_65T(self):
+        """Verify Health current_value (upgrade level) is ~2.65T (2.65e12).
+
+        Image shows '2.65T' in the Health box value area.
+        """
+        assert 'Health' in self.upgrades, \
+            f"Health should be detected. Found: {list(self.upgrades.keys())}"
+
+        level = self.upgrades['Health']['current_value']
+        assert level is not None, "Health should have a current_value (upgrade level)"
+
+        expected = 2.65e12
+        tolerance = expected * 0.02  # 2 % tolerance for OCR variation
+        assert abs(level - expected) <= tolerance, \
+            f"Health upgrade level should be ~2.65T ({expected:.2e}), got {level:.2e}"
+
+    def test_defense_absolute_levels_to_purchase_is_504(self):
+        """Verify Defense Absolute upgrades_to_purchase is 504.
+
+        Image shows 'x504' in the top-right corner of the Defense Absolute box.
+        """
+        assert 'Defense Absolute' in self.upgrades, \
+            "Defense Absolute should be detected"
+
+        count = self.upgrades['Defense Absolute']['upgrades_to_purchase']
+        assert count == 504, \
+            f"Defense Absolute upgrades_to_purchase should be 504, got {count}"
+
+
 class TestParseNumberWithSuffix:
     """Test cases for parse_number_with_suffix helper function."""
 
