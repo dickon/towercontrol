@@ -243,8 +243,8 @@ class OCRResult:
     def is_near(self, target_fx: float, target_fy: float, tolerance: float = 0.05) -> bool:
         """Check if center is within tolerance of target fractional coordinates."""
         return abs(self.fx - target_fx) < tolerance and abs(self.fy - target_fy) < tolerance
-    def click(self, window_rect: WindowRect, config: Config, message: str = "Clicking OCR result"):
-        do_click(window_rect, config, logging.getLogger(__name__), window_rect.width, window_rect.height, message, self.fx, self.fy )
+    def click(self, message: str = "Clicking OCR result"):
+        do_click(message, self.fx, self.fy)
     def __repr__(self):
         return f'%.3f,%.3f "%s"' % (self.fx, self.fy, self.text)
 
@@ -923,15 +923,19 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
     return None, None
 
 
-def do_click(window_rect, config, log, w, h, message,  click_x_frac, click_y_frac):
+def do_click(message, click_x_frac, click_y_frac):
+    global ctx
+    log = logging.getLogger(__name__)
+    w = ctx.window_rect.width
+    h = ctx.window_rect.height
     click_x = int(click_x_frac * w)
     click_y = int(click_y_frac * h)
     log.info(f'{message} at ({click_x_frac:.4f}, {click_y_frac:.4f}) -> pixels ({click_x}, {click_y})')
-    if window_rect and config:
-        execute_click(click_x, click_y, window_rect, config)
+    if ctx.window_rect and ctx.config:
+        execute_click(click_x, click_y, ctx.window_rect, ctx.config)
 
-def close_perks(window_rect, config, log, w, h):
-    do_click(window_rect, config, log, w, h, "Closing perks mode by clicking 'X'", 0.878, 0.100)
+def close_perks():
+    do_click("Closing perks mode by clicking 'X'", 0.878, 0.100)
 
 
 # ============================================================================
@@ -1888,14 +1892,11 @@ UPGRADE_TAB_CLICK = {
 }
 
 
-def _click_upgrade_tab(want_page: str, w: int, h: int) -> None:
+def _click_upgrade_tab(want_page: str) -> None:
     """Click the upgrade sub-tab for the given category."""
-    global ctx
-    log = logging.getLogger(__name__)
     if want_page in UPGRADE_TAB_CLICK:
         fx, fy = UPGRADE_TAB_CLICK[want_page]
-        do_click(ctx.window_rect, ctx.config, log, w, h,
-                 f"Switching to {want_page} upgrade tab", fx, fy)
+        do_click(f"Switching to {want_page} upgrade tab", fx, fy)
 
 
 def _do_upgrade_scroll(direction: str, w: int, h: int) -> None:
@@ -1959,7 +1960,7 @@ def handle_upgrade_action(seen_page: Optional[str],
         return
 
     if ctx.upgrade_state >= len(UPGRADE_PRIORITY):
-        handle_free_upgrade_mode(seen_page, upgrade_buttons, w, h)
+        handle_free_upgrade_mode(seen_page, upgrade_buttons)
         return
 
     want_page, want_label, cost_threshold, needs_scroll = UPGRADE_PRIORITY[ctx.upgrade_state]
@@ -1972,7 +1973,7 @@ def handle_upgrade_action(seen_page: Optional[str],
 
     if seen_page != want_page:
         log.info(f"Currently on '{seen_page}', need '{want_page}' - switching tab")
-        _click_upgrade_tab(want_page, w, h)
+        _click_upgrade_tab(want_page)
         ctx.last_upgrade_action = now
         return
 
@@ -2023,13 +2024,12 @@ def handle_upgrade_action(seen_page: Optional[str],
     fx, fy = target_info['button_position']
     fx = fx +  0.1
     log.info(f"Buying '{want_label}' (cost={target_info['cost']}) at ({fx:.3f}, {fy:.3f})")
-    do_click(ctx.window_rect, ctx.config, log, w, h, f"Buying upgrade '{want_label}'", fx, fy)
+    do_click(f"Buying upgrade '{want_label}'", fx, fy)
     ctx.last_upgrade_action = now
 
 
 def handle_free_upgrade_mode(seen_page: Optional[str],
-                             upgrade_buttons: Dict[str, Any],
-                             w: int, h: int) -> None:
+                             upgrade_buttons: Dict[str, Any]) -> None:
     """Purchase any available (non-maxed) upgrade, cycling ATTACK→DEFENSE→UTILITY every 2 min."""
     global ctx
     log = logging.getLogger(__name__)
@@ -2057,7 +2057,7 @@ def handle_free_upgrade_mode(seen_page: Optional[str],
 
     if seen_page != want_page:
         log.info(f"Free upgrade: switching from {seen_page} to {want_page}")
-        _click_upgrade_tab(want_page, w, h)
+        _click_upgrade_tab(want_page)
         ctx.last_upgrade_action = now
         return
 
@@ -2067,8 +2067,7 @@ def handle_free_upgrade_mode(seen_page: Optional[str],
             fx, fy = info['button_position']
             log.info(f"Free upgrade: buying '{label}' (cost={info['cost']}) "
                      f"at ({fx:.3f}, {fy:.3f})")
-            do_click(ctx.window_rect, ctx.config, log, w, h,
-                     f"Free upgrade: '{label}'", fx, fy)
+            do_click(f"Free upgrade: '{label}'", fx, fy)
             ctx.last_upgrade_action = now
             return
 
@@ -2358,23 +2357,26 @@ def automation_loop_tick():
     click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(0.5945, 0.8168), mark_battle_start)
 
     click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429))
-
+    game_stats_mark = [r for r in frame.results if r.text == 'GAME' and r.is_near(  0.5171,   0.2491) or r.text == 'STATS' and r.is_near(  0.6667,   0.2491)]
     defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
     attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.329, 0.632, 0.1)]
     utility_marks = [r for r in frame.results if r.text.lower() == "utility" and r.is_near(0.333, 0.632, 0.1)]
+    if game_stats_mark:
+        mode = 'killed by'
+        do_click("Seen game stats, clicking to exit", 0.7601, 0.7496)
     seen = None  # which upgrade sub-tab is currently visible; set inside if mode == 'main'
     if mode == 'main':
         if defense_marks:
             seen = 'DEFENSE'
             
-            #do_click(ctx.window_rect, ctx.config, log, w, h, "Seen defense, Clicking 'ATTACK'", 0.321, 0.985)
+            #do_click("Seen defense, Clicking 'ATTACK'", 0.321, 0.985)
         elif attack_marks:
             seen = 'ATTACK'
-            
-            #do_click(ctx.window_rect, ctx.config, log, w, h, "Seen attack,Clicking 'UTILITY'", 0.7, 0.985)
+
+            #do_click("Seen attack,Clicking 'UTILITY'", 0.7, 0.985)
         elif utility_marks:
             seen = 'UTILITY'
-            #do_click(ctx.window_rect, ctx.config, log, w, h, "Seen utiliy, Clicking 'DEFENSE'", 0.5105, 0.985)
+            #do_click("Seen utiliy, Clicking 'DEFENSE'", 0.5105, 0.985)
         else:
             seen = None
         log.info('Seen upgrade mode selector: %s', seen)
@@ -2383,18 +2385,18 @@ def automation_loop_tick():
         if want_upgrades and seen != want_upgrades and False:
             log.info(f"Upgrade mode selector seen: {seen}, but want: {want_upgrades}")
             if want_upgrades == 'ATTACK':
-                do_click(ctx.window_rect, ctx.config, log, w, h, "Clicking 'ATTACK' for upgrades", 0.321, 0.985)
+                do_click("Clicking 'ATTACK' for upgrades", 0.321, 0.985)
             elif want_upgrades == 'UTILITY':
-                do_click(ctx.window_rect, ctx.config, log, w, h, "Clicking 'UTILITY' for upgrades", 0.7, 0.985)
+                do_click("Clicking 'UTILITY' for upgrades", 0.7, 0.985)
             elif want_upgrades == 'DEFENSE':
-                do_click(ctx.window_rect, ctx.config, log, w, h, "Clicking 'DEFENSE' for upgrades", 0.5105, 0.985)  
+                do_click("Clicking 'DEFENSE' for upgrades", 0.5105, 0.985)
         if seen:
             ctx.last_seen_upgrades = time.time()
         else:
             delay = time.time() - ctx.last_seen_upgrades
             log.info('Seen no upgrade mode selector for %.2f seconds', delay)
             if delay > 60.0 and False:
-                do_click(ctx.window_rect, ctx.config, log, w, h, "Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
+                do_click("Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
             
         click_if_present('perk', lambda r: r.text.lower() in ["perk", "perk:", 'park', 'new perk'] and r.is_near(0.6056, 0.035, 0.1))
     for r in frame.results:
@@ -2462,11 +2464,11 @@ def automation_loop_tick():
             log.info(f"Best perk choice: '{best_choice}' in row {best_row} with text '{perk_text_join[best_row]}'")
             # click the perk in that row
             message = f"Clicking perk at row {best_row} (choice: '{best_choice}')"
-            do_click(ctx.window_rect, ctx.config, log, w, h, message,  0.671, PERK_ROWS[best_row][1])
-            close_perks(ctx.window_rect, ctx.config, log, w, h)
+            do_click(message, 0.671, PERK_ROWS[best_row][1])
+            close_perks()
         
     if perks_mode and not choose:
-        close_perks(ctx.window_rect, ctx.config, log, w, h)
+        close_perks()
     
     # Detect and log upgrade buttons
     upgrade_buttons = detect_upgrade_buttons(frame, img, ctx.config)
@@ -2476,7 +2478,7 @@ def automation_loop_tick():
         ctx.last_upgrade_buttons_seen = time.time()
     elif mode == 'main' and time.time() - ctx.last_upgrade_buttons_seen > 30.0:
         log.info("No upgrade buttons visible for 30s - clicking (0.6, 0.9) to dismiss popup")
-        do_click(ctx.window_rect, ctx.config, log, w, h, "Dismiss popup blocking upgrades", 0.6, 0.9)
+        do_click("Dismiss popup blocking upgrades", 0.6, 0.9)
         ctx.last_upgrade_buttons_seen = time.time()
 
     # Game-restart detection: reset upgrade state when wave drops sharply
