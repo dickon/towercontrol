@@ -114,6 +114,10 @@ UPGRADE_PRIORITY = [
     ('DEFENSE', 'Defense Absoslute', None, False)
 ]
 
+FLOATER_POSITIONS = [
+    (0.6694, 0.3016)
+]
+
 # OCR
 try:
     import pytesseract
@@ -1894,6 +1898,49 @@ def detect_battle_button(img: Optional[Image.Image], battle_template: Optional[n
         return None
 
 
+def detect_newperk(img: Optional[Image.Image], newperk_template: Optional[np.ndarray]) -> Optional[Tuple[float, float]]:
+    """Detect new perk icon near (0.5989, 0.0468). Returns (fx, fy) normalised or None."""
+    if img is None or newperk_template is None:
+        return None
+
+    log = logging.getLogger(__name__)
+
+    try:
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+        h, w = img_cv.shape
+
+        # Search region around expected centre (0.5989, 0.0468) ± 0.08 x, ± 0.05 y
+        x_start = int(w * 0.52)
+        x_end   = int(w * 0.68)
+        y_start = int(h * 0.00)
+        y_end   = int(h * 0.10)
+        search_region = img_cv[y_start:y_end, x_start:x_end]
+
+        if newperk_template.shape[0] > search_region.shape[0] or newperk_template.shape[1] > search_region.shape[1]:
+            scale = min(search_region.shape[0] / newperk_template.shape[0],
+                        search_region.shape[1] / newperk_template.shape[1])
+            new_w = max(1, int(newperk_template.shape[1] * scale))
+            new_h = max(1, int(newperk_template.shape[0] * scale))
+            newperk_template = cv2.resize(newperk_template, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        result = cv2.matchTemplate(search_region, newperk_template, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        log.debug('newperk template check: max_val=%.3f at location %s', max_val, max_loc)
+        threshold = 0.8
+        if max_val >= threshold:
+            match_x = max_loc[0] + x_start + newperk_template.shape[1] // 2
+            match_y = max_loc[1] + y_start + newperk_template.shape[0] // 2
+            fx, fy = match_x / w, match_y / h
+            log.info(f"New perk icon detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f}")
+            return (fx, fy)
+
+        return None
+
+    except Exception as e:
+        log.debug(f"New perk detection failed: {e}")
+        return None
+
+
 def get_last_action_time(state: GameState, action_type: ActionType) -> float:
     """Get timestamp of last action of given type. Returns 0 if not found."""
     for entry in reversed(state.action_history):
@@ -2268,6 +2315,7 @@ class RuntimeContext:
     gem_template: Optional[np.ndarray] = None
     claim_template: Optional[np.ndarray] = None
     battle_template: Optional[np.ndarray] = None
+    newperk_template: Optional[np.ndarray] = None
     game_state: GameState = field(default_factory=GameState)
     window_rect: Optional[WindowRect] = None
     latest_image: Optional[Image.Image] = None
@@ -2463,6 +2511,9 @@ def automation_loop_tick():
                 do_click("Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
             
         click_if_present('perk', lambda r: r.text.lower() in ["perk", "perk:", 'park', 'new perk'] and r.is_near(0.6056, 0.035, 0.1))
+        newperk_pos = detect_newperk(img, ctx.newperk_template)
+        if newperk_pos:
+            do_click("Clicking new perk icon (template match)", newperk_pos[0], newperk_pos[1])
     for r in frame.results:
         cx, cy = r.center
         
@@ -2765,6 +2816,13 @@ def main():
     else:
         log.info("BATTLE template not found - battle button detection disabled")
 
+    # Load new perk template
+    newperk_template = load_template(config, "newperk.png", "newperk")
+    if newperk_template is not None:
+        log.info(f"Loaded newperk template: {newperk_template.shape}")
+    else:
+        log.info("newperk template not found - image-based perk detection disabled")
+
     # Create runtime context
     ctx = RuntimeContext(
         config=config,
@@ -2772,6 +2830,7 @@ def main():
         gem_template=gem_template,
         claim_template=claim_template,
         battle_template=battle_template,
+        newperk_template=newperk_template,
         running=True,
         status="running",
         input_enabled=False,
