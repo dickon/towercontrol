@@ -1714,24 +1714,33 @@ def load_gem_template(config: Config) -> Optional[np.ndarray]:
         return None
 
 
-def load_claim_template(config: Config) -> Optional[np.ndarray]:
-    """Load CLAIM button template image for detection."""
-    claim_path = config.base_dir / "claim_button.png"
-    if not claim_path.exists():
-        logging.getLogger(__name__).debug(f"CLAIM template not found: {claim_path}")
+def load_template(config: Config, filename: str, label: str) -> Optional[np.ndarray]:
+    """Load a grayscale template image for detection."""
+    path = config.base_dir / filename
+    if not path.exists():
+        logging.getLogger(__name__).debug(f"{label} template not found: {path}")
         return None
-    
+
     try:
-        template = cv2.imread(str(claim_path), cv2.IMREAD_UNCHANGED)
+        template = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
         if template is None:
             return None
-        # Convert to grayscale for template matching
         if len(template.shape) == 3:
             template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
         return template
     except Exception as e:
-        logging.getLogger(__name__).debug(f"Failed to load CLAIM template: {e}")
+        logging.getLogger(__name__).debug(f"Failed to load {label} template: {e}")
         return None
+
+
+def load_claim_template(config: Config) -> Optional[np.ndarray]:
+    """Load CLAIM button template image for detection."""
+    return load_template(config, "claim_button.png", "CLAIM")
+
+
+def load_battle_template(config: Config) -> Optional[np.ndarray]:
+    """Load BATTLE button template image for detection."""
+    return load_template(config, "battle.png", "BATTLE")
 
 
 def detect_floating_gem(img: Optional[Image.Image], gem_template: Optional[np.ndarray], 
@@ -1838,6 +1847,45 @@ def detect_claim_button(img: Optional[Image.Image], claim_template: Optional[np.
         
     except Exception as e:
         log.debug(f"CLAIM button detection failed: {e}")
+        return None
+
+
+def detect_battle_button(img: Optional[Image.Image], battle_template: Optional[np.ndarray]) -> Optional[Tuple[float, float]]:
+    """Detect BATTLE button near (0.4824, 0.8141). Returns (fx, fy) normalised or None."""
+    if img is None or battle_template is None:
+        return None
+
+    log = logging.getLogger(__name__)
+
+    try:
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+        h, w = img_cv.shape
+
+        # Search region around expected centre (0.4824, 0.8141) ± 0.1
+        x_start = int(w * 0.38)
+        x_end   = int(w * 0.58)
+        y_start = int(h * 0.71)
+        y_end   = int(h * 0.91)
+        search_region = img_cv[y_start:y_end, x_start:x_end]
+
+        if battle_template.shape[0] > search_region.shape[0] or battle_template.shape[1] > search_region.shape[1]:
+            return None
+
+        result = cv2.matchTemplate(search_region, battle_template, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        log.info('battle button threshold check: max_val=%.3f at location %s', max_val, max_loc)
+        threshold = 0.65
+        if max_val >= threshold:
+            match_x = max_loc[0] + x_start + battle_template.shape[1] // 2
+            match_y = max_loc[1] + y_start + battle_template.shape[0] // 2
+            fx, fy = match_x / w, match_y / h
+            log.info(f"BATTLE button detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f}")
+            return (fx, fy)
+
+        return None
+
+    except Exception as e:
+        log.info(f"BATTLE button detection failed: {e}")
         return None
 
 
@@ -2215,6 +2263,7 @@ class RuntimeContext:
     ocr_reader: Any = None
     gem_template: Optional[np.ndarray] = None
     claim_template: Optional[np.ndarray] = None
+    battle_template: Optional[np.ndarray] = None
     game_state: GameState = field(default_factory=GameState)
     window_rect: Optional[WindowRect] = None
     latest_image: Optional[Image.Image] = None
@@ -2322,9 +2371,16 @@ def automation_loop_tick():
                     priority=90
                 )
                 ctx.game_state = record_action_in_state(ctx.game_state, action)
-    
+
+    # Check for BATTLE button via template matching
+    battle_button_pos = None
+    if ctx.battle_template is not None:
+        battle_button_pos = detect_battle_button(img, ctx.battle_template)
+    else:
+        log.error('no battle button template')
+
     # Build screen state (inlined from build_screen_state)
-    log.debug('build screen state')
+    log.info('build screen state')
     
     # Check known markers (inlined from check_known_markers)
     w, h = frame.image_size
@@ -2343,18 +2399,22 @@ def automation_loop_tick():
     texts: tuple[str, float, float] = [(r.text, r.fx, r.fy) for r in frame.results]
     perks_mode = [t for t in texts if t[0] == 'Perks' and abs(t[1]-0.612) < 0.05 and abs(t[2]-0.098) < 0.05]
     choose = [t for t in texts if t[0] == 'Choose' and abs(t[1]-0.522) < 0.05 and abs(t[2]-0.206) < 0.05]
-    log.info('perks_mode: %s, choose: %s', perks_mode, choose)
+    log.debug('perks_mode: %s, choose: %s', perks_mode, choose)
     if perks_mode and choose:
         log.info("Perks mode found")
         mode = 'perks'        
     else:
         mode = 'main'
+    if battle_button_pos:
+        mode = 'home'
+        log.info(f"BATTLE button detected via template at {battle_button_pos} - clicking to start game!")
+        execute_click(battle_button_pos[0], battle_button_pos[1], ctx.window_rect, ctx.config)
+        mark_battle_start()
     log.info(f"Detected mode: {mode}")
     perk_text = {}
     near_perk = [r for r in frame.results if r.is_near(0.6056, 0.035, 0.1)]
     log.debug(f'near perk: {[ (r.fx, r.fy) for r in near_perk]}')
     click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281)))
-    click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(0.5945, 0.8168), mark_battle_start)
 
     click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429))
     game_stats_mark = [r for r in frame.results if r.text == 'GAME' and r.is_near(  0.5171,   0.2491) or r.text == 'STATS' and r.is_near(  0.6667,   0.2491)]
@@ -2694,16 +2754,25 @@ def main():
     else:
         log.info("CLAIM template not found - using OCR-only detection")
 
+    # Load BATTLE button template
+    battle_template = load_battle_template(config)
+    if battle_template is not None:
+        log.info(f"Loaded BATTLE template: {battle_template.shape}")
+    else:
+        log.info("BATTLE template not found - battle button detection disabled")
+
     # Create runtime context
     ctx = RuntimeContext(
         config=config,
         ocr_reader=ocr_reader,
         gem_template=gem_template,
         claim_template=claim_template,
+        battle_template=battle_template,
         running=True,
         status="running",
         input_enabled=False,
     )
+    ctx.last_upgrade_buttons_seen = time.time()
 
     # Run automation loop on main thread
     try:
