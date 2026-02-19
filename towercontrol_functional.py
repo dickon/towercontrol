@@ -2367,6 +2367,7 @@ def automation_loop_tick():
     log.debug(f"Capturing window: {ctx.window_rect.width} x {ctx.window_rect.height} at ({ctx.window_rect.left}, {ctx.window_rect.top})")
     
     img = capture_window(ctx.window_rect)
+    img_capture_time = time.time()  # used for gem dead-reckoning dt
     log.debug('Capture done')
     if not img:
         log.warning("Failed to capture window")
@@ -2391,12 +2392,38 @@ def automation_loop_tick():
     ctx.latest_image = img
     ctx.frame = frame
     
-    # Check for floating gem and click it directly
+    # Check for floating gem and click it with dead reckoning
     if ctx.gem_template is not None:
         gem_pos = detect_floating_gem(img, ctx.gem_template, ctx.config)
         if gem_pos:
-            log.info(f"Floating gem detected at {gem_pos} - clicking!")
-            execute_click(gem_pos[0], gem_pos[1], ctx.window_rect, ctx.config)
+            gx, gy, angle_from_north = gem_pos
+            img_w, img_h = img.size
+            cx_px = _GEM_ORBIT_CENTER_FX * img_w
+            cy_px = _GEM_ORBIT_CENTER_FY * img_h
+            orbit_r_px = math.hypot(gx - cx_px, gy - cy_px)
+            # Advance angle by elapsed time × 30°/s (clockwise)
+            dt = time.time() - img_capture_time
+            advanced_angle = angle_from_north + 30.0 * dt
+            adv_rad = math.radians(advanced_angle)
+            click_x = int(cx_px + orbit_r_px * math.sin(adv_rad))
+            click_y = int(cy_px - orbit_r_px * math.cos(adv_rad))
+            log.info(
+                f"Floating gem at ({gx},{gy}) angle={angle_from_north:.1f}° "
+                f"dt={dt:.3f}s → clicking ({click_x},{click_y}) adv_angle={advanced_angle:.1f}°"
+            )
+            execute_click(click_x, click_y, ctx.window_rect, ctx.config)
+            # Post-click verification: re-capture and re-detect
+            time.sleep(0.3)
+            post_img = capture_window(ctx.window_rect)
+            if post_img is not None:
+                post_pos = detect_floating_gem(post_img, ctx.gem_template, ctx.config)
+                if post_pos is None:
+                    log.info("Gem click HIT - gem no longer detected")
+                else:
+                    log.info(
+                        f"Gem click MISS - gem still at ({post_pos[0]},{post_pos[1]}) "
+                        f"angle={post_pos[2]:.1f}°"
+                    )
     
     # Check for CLAIM button via template matching (supplements OCR detection)
     if ctx.claim_template is not None:
