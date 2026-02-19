@@ -106,8 +106,8 @@ PERK_CHOICES = [
 ]
 
 UPGRADE_PRIORITY = [
-    ('UTILITY', 'Enemy Attack level Skip', 1e6, True),
-    ('UTILITY', 'Enemy Health level Skip', 1e6, True),
+    ('UTILITY', 'Enemy Attack level Skip', 1e8, True),
+    ('UTILITY', 'Enemy Health level Skip', 1e8, True),
     ('ATTACK', 'Damage', None, False),
     ('DEFENSE', 'Health', None, False),
     ('DEFENSE', 'Health Regen', None, False),
@@ -292,6 +292,7 @@ class GameState:
     wave_history: Tuple[Tuple[int, float], ...] = ()  # (wave_number, timestamp)
     action_history: Tuple[Dict[str, Any], ...] = ()
     error_count: int = 0
+    battle_start_time: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -1862,19 +1863,23 @@ def detect_battle_button(img: Optional[Image.Image], battle_template: Optional[n
         h, w = img_cv.shape
 
         # Search region around expected centre (0.4824, 0.8141) ± 0.1
-        x_start = int(w * 0.38)
-        x_end   = int(w * 0.58)
+        x_start = int(w * 0.28)
+        x_end   = int(w * 0.88)
         y_start = int(h * 0.71)
         y_end   = int(h * 0.91)
         search_region = img_cv[y_start:y_end, x_start:x_end]
 
         if battle_template.shape[0] > search_region.shape[0] or battle_template.shape[1] > search_region.shape[1]:
-            return None
+            scale = min(search_region.shape[0] / battle_template.shape[0],
+                        search_region.shape[1] / battle_template.shape[1])
+            new_w = max(1, int(battle_template.shape[1] * scale))
+            new_h = max(1, int(battle_template.shape[0] * scale))
+            battle_template = cv2.resize(battle_template, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
         result = cv2.matchTemplate(search_region, battle_template, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
         log.info('battle button threshold check: max_val=%.3f at location %s', max_val, max_loc)
-        threshold = 0.65
+        threshold = 0.98
         if max_val >= threshold:
             match_x = max_loc[0] + x_start + battle_template.shape[1] // 2
             match_y = max_loc[1] + y_start + battle_template.shape[0] // 2
@@ -2203,8 +2208,7 @@ def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_fro
     ax, ay = to_absolute_coords(x, y, rect)
     log.debug(f"click({x}, {y}) → abs({ax}, {ay})")
     pyautogui.click(ax, ay, interval=config.click_pause)
-    log.debug(f"Clicked at ({ax}, {ay})")
-    log.debug('sleep for %.2f seconds', config.click_pause)
+    log.info(f"Clicked at ({ax}, {ay}); sleep for {config.click_pause:.2f} seconds")
     time.sleep(config.click_pause)
 
     return True
@@ -2380,7 +2384,7 @@ def automation_loop_tick():
         log.error('no battle button template')
 
     # Build screen state (inlined from build_screen_state)
-    log.info('build screen state')
+    log.debug('build screen state')
     
     # Check known markers (inlined from check_known_markers)
     w, h = frame.image_size
@@ -2408,7 +2412,7 @@ def automation_loop_tick():
     if battle_button_pos:
         mode = 'home'
         log.info(f"BATTLE button detected via template at {battle_button_pos} - clicking to start game!")
-        execute_click(battle_button_pos[0], battle_button_pos[1], ctx.window_rect, ctx.config)
+        do_click("Clicking BATTLE button", battle_button_pos[0], battle_button_pos[1])
         mark_battle_start()
     log.info(f"Detected mode: {mode}")
     perk_text = {}
