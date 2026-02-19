@@ -2477,7 +2477,7 @@ def automation_loop_tick():
                 do_click("Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
             
         click_if_present('perk', lambda r: r.text.lower() in ["perk", "perk:", 'park', 'new perk'] and r.is_near(0.6056, 0.035, 0.1))
-        newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.52, 0.00, 0.68, 0.10, threshold=0.8)
+        newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.42, 0.00, 0.8, 0.10, threshold=0.99)
         if newperk_pos:
             do_click("Clicking new perk icon (template match)", newperk_pos[0], newperk_pos[1])
     for r in frame.results:
