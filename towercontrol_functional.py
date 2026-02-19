@@ -1904,15 +1904,6 @@ def detect_template_in_region(
         return None
 
 
-def detect_battle_button(img: Optional[Image.Image], battle_template: Optional[np.ndarray]) -> Optional[Tuple[float, float]]:
-    """Detect BATTLE button near (0.4824, 0.8141). Returns (fx, fy) normalised or None."""
-    return detect_template_in_region(img, battle_template, "BATTLE button", 0.28, 0.71, 0.88, 0.91, threshold=0.98)
-
-
-def detect_newperk(img: Optional[Image.Image], newperk_template: Optional[np.ndarray]) -> Optional[Tuple[float, float]]:
-    """Detect new perk icon near (0.5989, 0.0468). Returns (fx, fy) normalised or None."""
-    return detect_template_in_region(img, newperk_template, "new perk icon", 0.52, 0.00, 0.68, 0.10, threshold=0.8)
-
 
 def get_last_action_time(state: GameState, action_type: ActionType) -> float:
     """Get timestamp of last action of given type. Returns 0 if not found."""
@@ -2400,7 +2391,7 @@ def automation_loop_tick():
     # Check for BATTLE button via template matching
     battle_button_pos = None
     if ctx.battle_template is not None:
-        battle_button_pos = detect_battle_button(img, ctx.battle_template)
+        battle_button_pos = detect_template_in_region(img, ctx.battle_template, "BATTLE button", 0.28, 0.71, 0.88, 0.91, threshold=0.98)
     else:
         log.error('no battle button template')
 
@@ -2484,7 +2475,7 @@ def automation_loop_tick():
                 do_click("Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
             
         click_if_present('perk', lambda r: r.text.lower() in ["perk", "perk:", 'park', 'new perk'] and r.is_near(0.6056, 0.035, 0.1))
-        newperk_pos = detect_newperk(img, ctx.newperk_template)
+        newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.52, 0.00, 0.68, 0.10, threshold=0.8)
         if newperk_pos:
             do_click("Clicking new perk icon (template match)", newperk_pos[0], newperk_pos[1])
     for r in frame.results:
