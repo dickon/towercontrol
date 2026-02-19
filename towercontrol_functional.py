@@ -1290,39 +1290,121 @@ def is_button_red(img: Optional[Image.Image], y_frac: float, x_min: float, x_max
         return False
 
 
-def _ocr_upgrade_purchase_count(img: Image.Image, y_frac: float, x_max: float,
-                                config: Config) -> Optional[int]:
-    """Extract the "xNNN" upgrade purchase count from the top-right corner of a cell.
+def _find_upgrade_boxes(img: Image.Image) -> List[Tuple[int, int, int, int]]:
+    """Find white-bordered upgrade boxes by scanning for bright separator lines.
 
-    Some upgrade cells show a small cyan "x157" or "x794" count in the top-right
-    corner of the value sub-cell. This text is too small for standard OCR, so we
-    crop tightly, upscale heavily, and use a digit whitelist.
+    Looks at the lower portion of the image (where the upgrade panel lives),
+    projects pixel brightness horizontally and vertically to find separator
+    lines, then forms boxes from consecutive pairs of those lines.
 
-    Returns the count as int, or None if not found.
+    Returns a list of (x, y, w, h) in pixel coordinates,
+    sorted top-to-bottom then left-to-right.
+    """
+    arr = np.array(img)
+    h_img, w_img = arr.shape[:2]
+    bgr = arr[:, :, ::-1].copy()
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+    # The upgrade panel occupies roughly y=0.58–0.98 and x=0.15–1.0
+    y_top = int(h_img * 0.58)
+    x_left = int(w_img * 0.15)
+    panel = gray[y_top:, x_left:]
+    ph, pw = panel.shape
+
+    # Threshold: near-white pixels mark box border lines
+    _, binary = cv2.threshold(panel, 200, 255, cv2.THRESH_BINARY)
+
+    # Project brightness: fraction of white pixels per row / column
+    h_density = binary.mean(axis=1) / 255.0
+    v_density = binary.mean(axis=0) / 255.0
+
+    def cluster_peaks(indices: List[int], gap: int = 8) -> List[int]:
+        """Cluster adjacent indices into representative midpoints."""
+        if not indices:
+            return []
+        groups: List[List[int]] = [[indices[0]]]
+        for idx in indices[1:]:
+            if idx - groups[-1][-1] <= gap:
+                groups[-1].append(idx)
+            else:
+                groups.append([idx])
+        return [int(np.mean(g)) for g in groups]
+
+    # True separator bars span the full width/height of the panel and produce
+    # 80-90 % white pixels per row/column.  Noise from in-box text is typically
+    # < 35 %.  Use 0.65 / 0.50 to cleanly separate signal from noise.
+    # Use a wide cluster gap (25 px) so that adjacent double-border lines
+    # (two parallel white bars ~16-18 px apart) merge into a single separator.
+    h_peaks = cluster_peaks([y for y, d in enumerate(h_density) if d > 0.65], gap=25)
+    v_peaks = cluster_peaks([x for x, d in enumerate(v_density) if d > 0.35], gap=25)
+
+    log = logging.getLogger(__name__)
+    log.debug(
+        f"_find_upgrade_boxes: h_peaks={[p + y_top for p in h_peaks]}, "
+        f"v_peaks={[p + x_left for p in v_peaks]}"
+    )
+
+    # Build boxes from consecutive pairs of separator lines
+    boxes: List[Tuple[int, int, int, int]] = []
+    min_bh = h_img * 0.05   # at least 5 % of image height
+    max_bh = h_img * 0.22   # at most 22 % of image height
+    min_bw = w_img * 0.10   # at least 10 % of image width
+    max_bw = w_img * 0.55   # at most 55 % of image width
+
+    for i in range(len(h_peaks) - 1):
+        y1 = h_peaks[i] + y_top
+        y2 = h_peaks[i + 1] + y_top
+        bh = y2 - y1
+        if not (min_bh <= bh <= max_bh):
+            continue
+        for j in range(len(v_peaks) - 1):
+            x1 = v_peaks[j] + x_left
+            x2 = v_peaks[j + 1] + x_left
+            bw = x2 - x1
+            if not (min_bw <= bw <= max_bw):
+                continue
+            if bh >= bw:   # boxes are landscape (wider than tall)
+                continue
+            boxes.append((x1, y1, bw, bh))
+
+    return sorted(boxes, key=lambda b: (b[1], b[0]))
+
+
+def _ocr_box_purchase_count(img: Image.Image, box_x: int, box_y: int,
+                             box_w: int, box_h: int, config: Config) -> Optional[int]:
+    """Extract the "xNNN" purchase count from the top-right corner of an upgrade box.
+
+    The count (e.g. "x504") appears as small cyan text in the top-right area of
+    each box. We crop that corner tightly, upscale heavily, invert, and OCR
+    with a digit-only whitelist.
+
+    Returns the count as int (> 1), or None if not found.
     """
     if not pytesseract or img is None:
         return None
-
     try:
         arr = image_to_bgr_array(img)
-        h, w = arr.shape[:2]
+        h_arr, w_arr = arr.shape[:2]
 
-        # The xNNN text sits just above the main value, in the top-right
-        y_start = max(0, int((y_frac - 0.02) * h))
-        y_end = int((y_frac - 0.005) * h)
-        x_start = int((x_max - 0.08) * w)
-        x_end = min(w, int(x_max * w))
+        # Top-right ~25 % width × ~35 % height of the box.
+        # x_frac=0.75 keeps the crop narrow so that the "x" prefix and digits
+        # fit on one line without neighbouring text.  h_frac=0.35 is tall
+        # enough to capture the xNNN count even when it sits lower in the box.
+        x_start = box_x + int(box_w * 0.75)
+        y_start = box_y
+        x_end = min(w_arr, box_x + box_w)
+        y_end = box_y + int(box_h * 0.35)
 
         roi = arr[y_start:y_end, x_start:x_end]
         if roi.size == 0:
             return None
 
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        upscaled = cv2.resize(gray, None, fx=6.0, fy=6.0, interpolation=cv2.INTER_CUBIC)
+        upscaled = cv2.resize(gray, None, fx=4.0, fy=4.0, interpolation=cv2.INTER_CUBIC)
         inverted = cv2.bitwise_not(upscaled)
         adaptive = cv2.adaptiveThreshold(
             inverted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY, 31, 10
+            cv2.THRESH_BINARY, 31, 10,
         )
         padded = cv2.copyMakeBorder(adaptive, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
 
@@ -1333,56 +1415,50 @@ def _ocr_upgrade_purchase_count(img: Image.Image, y_frac: float, x_max: float,
             timeout=5,
         ).strip()
 
-        match = re.match(r'x?(\d+)', text)
+        match = re.match(r'^x(\d+)', text, re.IGNORECASE)
         if match:
             count = int(match.group(1))
-            if count > 1:  # Only return meaningful counts
+            if count > 1:
                 return count
         return None
-
     except Exception:
         return None
 
 
-def _ocr_upgrade_cell_cost(img: Image.Image, y_frac: float, x_min: float, x_max: float,
-                           y_tolerance: float, config: Config) -> Optional[str]:
-    """Run targeted OCR on the cost button area of an upgrade cell.
+def _ocr_box_cost(img: Image.Image, box_x: int, box_y: int,
+                  box_w: int, box_h: int, config: Config) -> Optional[str]:
+    """Run targeted OCR on the cost-button area (right ~55 % × lower ~45 %) of a box.
 
-    The cost button sits in the lower-right of the cell. On dark backgrounds,
-    standard OCR misses the light cost text (e.g. "$315.43K"). This crops
-    the button area, inverts, and runs Tesseract to recover cost text.
+    The cost button sits in the lower-right of each upgrade box. On dark
+    backgrounds the text (e.g. "$7.86B" or "Max") is light-on-dark and can be
+    missed by the global OCR pass; we invert and threshold to recover it.
 
-    Returns the detected text string, or None if nothing found.
+    Returns the raw detected text, or None if nothing found.
     """
     if not pytesseract or img is None:
         return None
-
     try:
         arr = image_to_bgr_array(img)
-        h, w = arr.shape[:2]
+        h_arr, w_arr = arr.shape[:2]
 
-        # Cost button sits just below cell center, right portion
-        x_mid = x_min + (x_max - x_min) * 0.45
-        y_start = max(0, int((y_frac - 0.01) * h))
-        y_end = min(h, int((y_frac + 0.03) * h))
-        x_start = max(0, int(x_mid * w))
-        x_end = min(w, int(x_max * w))
+        x_start = box_x + int(box_w * 0.40)
+        y_start = box_y + int(box_h * 0.52)
+        x_end = min(w_arr, box_x + box_w)
+        y_end = min(h_arr, box_y + box_h)
 
         roi = arr[y_start:y_end, x_start:x_end]
         if roi.size == 0:
             return None
 
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-
-        # Only attempt on dark cells
-        if gray.mean() > 100:
+        if gray.mean() > 120:   # skip bright-background buttons (already readable)
             return None
 
         upscaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
         inverted = cv2.bitwise_not(upscaled)
         thresh = cv2.adaptiveThreshold(
             inverted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY, 31, 10
+            cv2.THRESH_BINARY, 31, 10,
         )
 
         pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
@@ -1391,270 +1467,349 @@ def _ocr_upgrade_cell_cost(img: Image.Image, y_frac: float, x_min: float, x_max:
             config="--psm 7 --oem 3",
             timeout=5,
         ).strip()
-
         return text if text else None
-
     except Exception:
         return None
 
 
-def _ocr_upgrade_cell_value(img: Image.Image, y_frac: float, x_min: float, x_max: float,
-                            y_tolerance: float, config: Config) -> Optional[str]:
-    """Run targeted OCR on an upgrade cell to recover light-on-dark value text.
+def _ocr_box_value(img: Image.Image, box_x: int, box_y: int,
+                   box_w: int, box_h: int, config: Config) -> Optional[str]:
+    """Run targeted OCR on the stat-value area of an upgrade box.
 
-    The standard OCR pipeline often misses gray text on near-black backgrounds
-    (e.g. "63.40%"). This crops the value area of the cell, inverts it, and
-    runs Tesseract with single-line mode.
+    The current stat value (e.g. "2.65T", "95.90%", "107.30B/sec") lives
+    inside a bordered sub-widget in the upper-right of each upgrade box.
+    Strategy:
+    1. Crop the right ~60 % × full height of the box.
+    2. Detect the golden/orange inner-border sub-widget by HSV masking.
+       If found, crop to just the upper ~55 % of its interior (skipping the
+       cost/Max button that lives in the lower half of the same sub-widget).
+    3. Apply CLAHE for local contrast enhancement, then OTSU threshold to
+       produce clean black-on-white text for Tesseract.
 
-    Returns the detected text string, or None if nothing found.
+    Returns the raw OCR text, or None if nothing found.
     """
     if not pytesseract or img is None:
         return None
-
     try:
         arr = image_to_bgr_array(img)
-        h, w = arr.shape[:2]
+        h_arr, w_arr = arr.shape[:2]
 
-        # The value text sits in the right portion of the cell, upper half
-        # Label is on the left, value (e.g. "63.40%") is on the right
-        x_mid = x_min + (x_max - x_min) * 0.45  # Right ~55% of cell
-        y_start = max(0, int((y_frac - y_tolerance) * h))
-        y_end = min(h, int((y_frac - 0.01) * h))  # Upper part only, exclude button area
-        x_start = max(0, int(x_mid * w))
-        x_end = min(w, int(x_max * w))
-
-        roi = arr[y_start:y_end, x_start:x_end]
-        if roi.size == 0:
+        x_start = box_x + int(box_w * 0.40)
+        x_end = min(w_arr, box_x + box_w)
+        full_roi = arr[box_y:box_y + box_h, x_start:x_end]
+        if full_roi.size == 0:
             return None
 
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        # ── Step 1: find the golden/orange inner sub-widget border ─────────
+        hsv = cv2.cvtColor(full_roi, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(
+            hsv,
+            np.array([10, 80, 80]),    # lower: orange-ish hue
+            np.array([45, 255, 255]),  # upper: yellow-ish hue
+        )
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        # Only attempt on dark cells (light-on-dark text)
-        if gray.mean() > 100:
+        best_roi: Optional[np.ndarray] = None
+        for cnt in sorted(contours, key=cv2.contourArea, reverse=True):
+            cx, cy, cw, ch = cv2.boundingRect(cnt)
+            if cw * ch < 800:
+                continue
+            margin = 5
+            # Crop to just the upper ~55 % of the sub-widget interior
+            # (the lower portion is occupied by the cost / "Max" button)
+            sub = full_roi[
+                cy + margin: cy + int(ch * 0.55),
+                cx + margin: cx + cw - margin,
+            ]
+            if sub.size > 0:
+                best_roi = sub
+                break
+
+        # Fall back to the full right-portion if no sub-widget was detected
+        if best_roi is None:
+            best_roi = arr[box_y: box_y + int(box_h * 0.60), x_start:x_end]
+
+        gray = cv2.cvtColor(best_roi, cv2.COLOR_BGR2GRAY)
+        if gray.mean() > 120:   # skip if area is unexpectedly bright
             return None
 
-        # Upscale, invert, adaptive threshold - handles mixed dark/bright regions
-        # better than OTSU which can lose text when borders are present
-        upscaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-        inverted = cv2.bitwise_not(upscaled)
-        thresh = cv2.adaptiveThreshold(
-            inverted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY, 31, 10
+        # ── Step 2: CLAHE + OTSU for robust light-on-dark text ────────────
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
+        enhanced = clahe.apply(gray)
+        upscaled = cv2.resize(enhanced, None, fx=3.0, fy=3.0,
+                               interpolation=cv2.INTER_CUBIC)
+        _, thresh = cv2.threshold(upscaled, 0, 255,
+                                   cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Invert to black-on-white then pad
+        padded = cv2.copyMakeBorder(
+            cv2.bitwise_not(thresh), 20, 20, 20, 20,
+            cv2.BORDER_CONSTANT, value=255,
         )
 
         pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
         text = pytesseract.image_to_string(
-            thresh, lang=config.ocr_lang,
+            padded, lang=config.ocr_lang,
             config="--psm 7 --oem 3",
             timeout=5,
         ).strip()
-
         return text if text else None
-
     except Exception:
         return None
+
+
+def _match_upgrade_label(texts: List[str]) -> Optional[str]:
+    """Match text fragments against the known upgrade label list.
+
+    Sorts known labels by word-count descending so longer / more-specific
+    labels (e.g. "Thorn Damage") match before shorter ones (e.g. "Damage").
+
+    Returns the matched label string, or None if no match found.
+    """
+    texts_lower = [t.lower() for t in texts]
+    sorted_labels = sorted(ALL_UPGRADE_LABELS, key=lambda l: len(l.split()), reverse=True)
+
+    for known_label in sorted_labels:
+        known_words = known_label.lower().replace('/', ' ').split()
+        if all(
+            any(word in lt or lt in word for lt in texts_lower)
+            for word in known_words
+        ):
+            return known_label
+    return None
+
+
+def _parse_upgrade_value(texts: List[str]) -> Optional[float]:
+    """Parse the current stat value from a list of OCR text fragments.
+
+    Accepts percentages (e.g. "95.90%"), plain numbers with K/M/B/T suffix
+    (e.g. "689.52M"), and numbers followed by a unit (e.g. "107.30B/sec").
+
+    Returns the parsed float, or None if nothing parseable is found.
+    """
+    for text in texts:
+        text = text.strip()
+        # Percentage (e.g. "95.90%")
+        pct = re.match(r'^([0-9,.]+)\s*%', text)
+        if pct:
+            try:
+                return float(pct.group(1).replace(',', ''))
+            except ValueError:
+                pass
+        # Number optionally followed by a unit suffix (e.g. "107.30B/sec")
+        num = re.match(r'^([0-9,.]+\s*[KMBT]?)(?:/\w+)?$', text, re.IGNORECASE)
+        if num:
+            parsed = parse_number_with_suffix(num.group(1).strip())
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _parse_upgrade_cost(texts: List[str]) -> Tuple[bool, Optional[float]]:
+    """Parse the upgrade cost from button-area text fragments.
+
+    Returns ``(is_max, cost_value)`` where:
+    - ``is_max=True`` means the button shows "Max" (no cost to pay).
+    - ``cost_value`` is the numeric cost as float, or ``None`` if MAX / unparseable.
+    """
+    for text in texts:
+        stripped = text.strip()
+        lower = stripped.lower()
+        if lower in ('max', 'max.', 'max!'):
+            return True, None
+        # Strip leading currency symbol then parse
+        cleaned = stripped.lstrip('$').strip()
+        parsed = parse_number_with_suffix(cleaned)
+        if parsed is not None:
+            return False, parsed
+    return False, None
 
 
 def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
                            config: Optional[Config] = None) -> Dict[str, UpgradeInfo]:
-    """Detect upgrade buttons and their costs/status.
+    """Detect upgrade buttons and parse their four key fields per box.
 
-    Returns dictionary mapping label names to UpgradeInfo with:
-    - current_value: Current stat value as float (or None if not found)
-    - cost: Upgrade cost as float (or None if MAX)
-    - upgrades_to_purchase: Number of upgrades to buy (default 1)
-    - cell_color: RGB tuple of button background color
-    - label_position: (fx, fy) fractional position of label
-    - button_position: (fx, fy) fractional position of button center
+    Box-based approach:
+    1. Scan the upgrade panel for white-bordered boxes via brightness line
+       projection (``_find_upgrade_boxes``).
+    2. For each box, collect the OCR results from ``frame.results`` that fall
+       within its pixel bounds.
+    3. Split the box into sub-regions and classify results:
+       - Left ~45 %      → label (upgrade name)
+       - Right-upper     → current stat value / upgrade level
+       - Right-lower     → cost button ("Max" or "$NNN.NNX")
+       - Top-right corner → purchase count ("xNNN", small text)
+    4. Match the label against the known upgrade list; fall back to targeted
+       Tesseract OCR for any field that the global pass missed.
 
-    Only matches against known upgrade labels from Attack/Defense/Utility categories.
+    Returns a dict mapping label → ``UpgradeInfo``.  Every detected box is
+    logged at INFO level with all four fields::
 
-    Args:
-        frame: OCRFrame with detected text
-        img: Optional PIL Image for color detection (to detect red MAX buttons and cell colors)
+        Upgrade box 'Health': level=2650000000000.0, cost=MAX, x_count=1
+        Upgrade box 'Defense Absolute': level=689520000.0, cost=7860000000.0, x_count=504
     """
     log = logging.getLogger(__name__)
     upgrades: Dict[str, UpgradeInfo] = {}
-    
-    for idx, y_frac, (x_min, x_max) in UPGRADE_BUTTON_ROWS:
-        # Find all OCR results in this upgrade button region
-        y_tolerance = 0.08  # Vertical tolerance for grouping
-        region_results = [
+
+    if img is None:
+        log.warning("detect_upgrade_buttons: no image provided")
+        return upgrades
+
+    img_w, img_h = img.size
+
+    # ── Step 1: Locate the white-bordered boxes ────────────────────────────
+    boxes_px = _find_upgrade_boxes(img)
+    log.debug(f"detect_upgrade_buttons: found {len(boxes_px)} candidate boxes")
+
+    if not boxes_px:
+        log.warning(
+            "detect_upgrade_buttons: no upgrade boxes detected; "
+            "upgrade panel may not be visible"
+        )
+        return upgrades
+
+    # ── Step 2: Process each box ────────────────────────────────────────────
+    for box_x, box_y, box_w, box_h in boxes_px:
+        fx_min = box_x / img_w
+        fx_max = (box_x + box_w) / img_w
+        fy_min = box_y / img_h
+        fy_max = (box_y + box_h) / img_h
+        fy_center = (fy_min + fy_max) / 2
+
+        # Dividers between sub-regions (fractional within the image)
+        fx_mid = fx_min + (fx_max - fx_min) * 0.45  # label | value+button
+        fy_mid = fy_min + (fy_max - fy_min) * 0.55  # value | button
+
+        # Collect OCR results whose centre falls inside this box
+        box_results = [
             r for r in frame.results
-            if abs(r.fy - y_frac) < y_tolerance and x_min <= r.fx <= x_max
+            if fx_min <= r.fx <= fx_max and fy_min <= r.fy <= fy_max
         ]
 
-        # Check if button is red (MAX status)
-        is_red_button = is_button_red(img, y_frac, x_min, x_max, y_tolerance)
+        # ── Label (left portion of box) ────────────────────────────────────
+        label_texts = [
+            r.text.strip() for r in box_results
+            if r.fx < fx_mid and len(r.text.strip()) >= 2
+        ]
+        label = _match_upgrade_label(label_texts)
 
-        if not region_results and not is_red_button:
+        # ── Current value (upper-right portion) ────────────────────────────
+        value_texts = [
+            r.text.strip() for r in box_results
+            if r.fx >= fx_mid and r.fy < fy_mid
+        ]
+        current_value = _parse_upgrade_value(value_texts)
+
+        # ── Cost (lower-right / button portion) ────────────────────────────
+        cost_texts = [
+            r.text.strip() for r in box_results
+            if r.fx >= fx_mid and r.fy >= fy_mid
+        ]
+        is_max, cost_value = _parse_upgrade_cost(cost_texts)
+
+        # Color-based MAX check (dark-red button → MAX even if text was missed)
+        if not is_max and is_button_red(img, fy_center, fx_min, fx_max):
+            is_max = True
+            cost_value = None
+
+        # ── Purchase count (xNNN anywhere in box; small text) ──────────────
+        purchase_count = 1
+        for r in box_results:
+            m = re.match(r'^x(\d+)$', r.text.strip(), re.IGNORECASE)
+            if m:
+                n = int(m.group(1))
+                if n > 1:
+                    purchase_count = n
+                    break
+
+        # ── Targeted OCR fallbacks ─────────────────────────────────────────
+        if config is not None:
+            if current_value is None and label is not None:
+                ocr_text = _ocr_box_value(img, box_x, box_y, box_w, box_h, config)
+                if ocr_text:
+                    recovered = _parse_upgrade_value([ocr_text])
+                    if recovered is not None:
+                        current_value = recovered
+                        log.debug(
+                            f"Recovered value for '{label}' via targeted OCR: "
+                            f"'{ocr_text}' → {current_value}"
+                        )
+
+            if not is_max and cost_value is None and label is not None:
+                ocr_text = _ocr_box_cost(img, box_x, box_y, box_w, box_h, config)
+                if ocr_text:
+                    if 'max' in ocr_text.lower():
+                        is_max = True
+                        cost_value = None
+                        log.debug(
+                            f"Recovered MAX for '{label}' via targeted OCR: '{ocr_text}'"
+                        )
+                    else:
+                        cost_m = re.search(
+                            r'\$?\s*([0-9,.]+\s*[KMBT])(?!\s*/)',
+                            ocr_text, re.IGNORECASE,
+                        )
+                        if cost_m:
+                            parsed = parse_number_with_suffix(cost_m.group(1).strip())
+                            if parsed is not None:
+                                cost_value = parsed
+                                log.debug(
+                                    f"Recovered cost for '{label}' via targeted OCR: "
+                                    f"'{ocr_text}' → {parsed}"
+                                )
+
+            if purchase_count == 1:
+                count = _ocr_box_purchase_count(img, box_x, box_y, box_w, box_h, config)
+                if count is not None:
+                    purchase_count = count
+                    log.debug(f"Recovered purchase count x{count} via targeted OCR")
+
+        # ── Skip boxes with no matched label ───────────────────────────────
+        if label is None:
+            log.debug(
+                f"Box ({box_x},{box_y},{box_w},{box_h}): no known label matched "
+                f"from texts {label_texts!r}"
+            )
             continue
 
-        # Categorize results in this region
-        label = None
-        label_ocr = None
-        cost_str = None
-        cost_value = None
-        current_value = None
-        label_parts = []  # Collect text fragments that might form a label
-        value_candidates = []  # Collect potential current value numbers
+        # ── Assemble UpgradeInfo ────────────────────────────────────────────
+        cell_color = get_cell_color(img, fy_center, fx_min, fx_max)
+        label_r = next(
+            (r for r in box_results
+             if any(w.lower() in r.text.lower() for w in label.split())),
+            None,
+        )
+        label_pos = (label_r.fx, label_r.fy) if label_r else (fx_min + 0.05, fy_center)
+        button_pos = ((fx_min + fx_max) / 2, fy_center)
 
-        # If button is red, it's at MAX
-        if is_red_button:
-            cost_str = "MAX"
-            cost_value = None
-            log.debug(f"Button {idx} detected as MAX via red color")
+        info: UpgradeInfo = {
+            'current_value': current_value,
+            'cost': cost_value,
+            'upgrades_to_purchase': purchase_count,
+            'cell_color': cell_color,
+            'cell_color_name': rgb_to_color_name(*cell_color),
+            'label_position': label_pos,
+            'button_position': button_pos,
+        }
+        upgrades[label] = info
 
-        for r in region_results:
-            text = r.text.strip()
-            text_lower = text.lower()
+        log.info(
+            f"Upgrade box '{label}': "
+            f"level={current_value!r}, "
+            f"cost={'MAX' if is_max else repr(cost_value)}, "
+            f"x_count={purchase_count}"
+        )
 
-            # Check for "Max" status (button at max level)
-            if text_lower == "max":
-                cost_str = "MAX"
-                cost_value = None
-                continue
-
-            # Check for percentage value (e.g. "63.40%") - always a current value, not a cost
-            pct_match = re.match(r'^([0-9,.]+)\s*%$', text)
-            if pct_match:
-                try:
-                    pct_val = float(pct_match.group(1).replace(',', ''))
-                    value_candidates.append((pct_val, r))
-                except ValueError:
-                    pass
-                continue
-
-            # Check for cost (number with optional K/M/B/T suffix)
-            # Typically appears at bottom-right of cell
-            cost_match = re.match(r'^([0-9,.]+)\s*([KMBT])?$', text, re.IGNORECASE)
-            if cost_match:
-                parsed_cost = parse_number_with_suffix(text)
-                if parsed_cost is not None and cost_str is None:
-                    cost_str = text
-                    cost_value = parsed_cost
-                else:
-                    # Could be current value if not a cost
-                    value_candidates.append((parsed_cost or 0.0, r))
-                continue
-
-            # Collect potential label fragments
-            if len(text) >= 2 and text_lower not in ['buy', 'lvl', 'lv']:
-                label_parts.append((text, r))
-
-        # Try to match collected text against known upgrade labels
-        # Try multi-word matching first (prefer longer/more specific labels)
-        if len(label_parts) >= 1:
-            label_texts = [text.lower() for text, _ in label_parts]
-            label_parts_sorted = sorted(label_parts, key=lambda x: x[1].fx)
-
-            # Sort known labels by word count descending so longer labels match first
-            # e.g. "Health Regen" before "Health"
-            sorted_labels = sorted(ALL_UPGRADE_LABELS,
-                                   key=lambda l: len(l.split()), reverse=True)
-
-            for known_label in sorted_labels:
-                known_words = known_label.lower().replace('/', ' ').split()
-
-                # Accept if all words of the known label appear in detected text.
-                # Sorting by word count descending ensures longer labels (e.g.
-                # "Thorn Damage") match before shorter ones (e.g. "Damage").
-                if all(any(word in text or text in word for text in label_texts) for word in known_words):
-                    label = known_label
-                    label_ocr = label_parts_sorted[0][1]
-                    log.debug(f"Matched '{known_label}' from parts: {label_texts}")
-                    break
-
-        # Fall back to single exact-match if multi-word matching found nothing
-        if not label:
-            for text, r in label_parts:
-                for known_label in ALL_UPGRADE_LABELS:
-                    if text.lower() == known_label.lower():
-                        label = known_label
-                        label_ocr = r
-                        break
-                if label:
-                    break
-
-        # Extract current value - typically the largest number that's not the cost
-        if value_candidates:
-            # Sort by value magnitude and pick the largest
-            value_candidates.sort(key=lambda x: x[0], reverse=True)
-            current_value = value_candidates[0][0]
-
-        # Recovery: if no value found, try targeted OCR on the dark cell
-        # to pick up light-on-dark text like "63.40%"
-        if current_value is None and label and config is not None:
-            recovered_text = _ocr_upgrade_cell_value(img, y_frac, x_min, x_max, y_tolerance, config)
-            if recovered_text:
-                # Look for percentage pattern (e.g. "63.40%")
-                pct_match = re.search(r'([0-9,.]+)\s*%', recovered_text)
-                if pct_match:
-                    try:
-                        current_value = float(pct_match.group(1).replace(',', ''))
-                        log.debug(f"Recovered value {current_value}% for '{label}' from cell OCR: '{recovered_text}'")
-                    except ValueError:
-                        pass
-                # Also try plain numbers if no percentage found
-                if current_value is None:
-                    parsed = parse_number_with_suffix(recovered_text)
-                    if parsed is not None:
-                        current_value = parsed
-                        log.debug(f"Recovered value {current_value} for '{label}' from cell OCR: '{recovered_text}'")
-
-        # Recovery: if no cost found, try targeted OCR on the cost button area
-        if cost_str is None and label and config is not None:
-            recovered_cost_text = _ocr_upgrade_cell_cost(img, y_frac, x_min, x_max, y_tolerance, config)
-            if recovered_cost_text:
-                # Look for cost pattern: optional $ then number with optional K/M/B/T suffix.
-                # Reject matches followed by "/" to avoid confusing stat values like
-                # "107.30B/sec" (health regen rate) with a cost amount.
-                cost_match_recovery = re.search(r'\$?\s*([0-9,.]+\s*[KMBT])(?!\s*/)', recovered_cost_text, re.IGNORECASE)
-                if cost_match_recovery:
-                    parsed = parse_number_with_suffix(cost_match_recovery.group(1).strip())
-                    if parsed is not None:
-                        cost_str = cost_match_recovery.group(0)
-                        cost_value = parsed
-                        log.debug(f"Recovered cost {cost_value} for '{label}' from cell OCR: '{recovered_cost_text}'")
-                elif 'max' in recovered_cost_text.lower():
-                    cost_str = "MAX"
-                    cost_value = None
-                    log.debug(f"Recovered MAX cost for '{label}' from cell OCR: '{recovered_cost_text}'")
-
-        # Try to extract "xNNN" purchase count from top-right corner
-        purchase_count = 1
-        if config is not None:
-            count = _ocr_upgrade_purchase_count(img, y_frac, x_max, config)
-            if count is not None:
-                purchase_count = count
-                log.debug(f"Detected purchase count x{count} for button {idx}")
-
-        # Get cell color
-        cell_color = get_cell_color(img, y_frac, x_min, x_max, y_tolerance)
-
-        # Only add if we found a valid known label
-        if label and label_ocr:
-            # Create UpgradeInfo entry
-            upgrade_info: UpgradeInfo = {
-                'current_value': current_value,
-                'cost': cost_value,
-                'upgrades_to_purchase': purchase_count,
-                'cell_color': cell_color,
-                'cell_color_name': rgb_to_color_name(*cell_color),
-                'label_position': (label_ocr.fx, label_ocr.fy),
-                'button_position': (x_min + (x_max - x_min) / 2, y_frac)
-            }
-            upgrades[label] = upgrade_info
-
-            cost_display = cost_str or "???"
-            log.debug(f"Upgrade {idx}: '{label}' - value={current_value}, cost={cost_display} at ({label_ocr.fx:.3f}, {label_ocr.fy:.3f})")
-
-    any_missing_cost = any(info['cost'] is None and info.get('current_value') is not None for info in upgrades.values())
-    # count number of unexpected upgrade files and only produce more if we don't have 20 already, to avoid spamming debug data
+    # ── Debug snapshot when detection count looks wrong ────────────────────
+    any_missing_cost = any(
+        info['cost'] is None and info.get('current_value') is not None
+        for info in upgrades.values()
+    )
     number_of_debug_files = len(list(Path("debug").glob("unexpected_upgrades_*.json")))
-    if number_of_debug_files < 20 and (len(upgrades) not in [5,6] or any_missing_cost):
-        log.warning(f"Detected {len(upgrades)} upgrades, which is unexpected. Detected upgrades: {list(upgrades.keys())}")
-        # record a timestamped screenshot and JSON file with metadata for debugging
+    if number_of_debug_files < 20 and (len(upgrades) not in [5, 6] or any_missing_cost):
+        log.warning(
+            f"Detected {len(upgrades)} upgrades, which is unexpected. "
+            f"Detected upgrades: {list(upgrades.keys())}"
+        )
         timestamp = int(time.time())
         debug_dir = Path("debug")
         debug_dir.mkdir(exist_ok=True)
@@ -1663,7 +1818,6 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
         try:
             if img is not None:
                 img.save(img_path)
-            # Convert upgrades dict to serializable format
             upgrades_serializable = {
                 label: {
                     'current_value': info['current_value'],
@@ -1672,7 +1826,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
                     'cell_color': info['cell_color'],
                     'cell_color_name': info['cell_color_name'],
                     'label_position': info['label_position'],
-                    'button_position': info['button_position']
+                    'button_position': info['button_position'],
                 }
                 for label, info in upgrades.items()
             }
@@ -1686,13 +1840,15 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
         except Exception as e:
             log.warning(f"Failed to save debug data: {e}")
 
-        # delete all but the last 30 debug files to prevent storage bloat
         try:
-            debug_files = sorted(debug_dir.glob("unexpected_upgrades_*.json"), key=os.path.getmtime)
+            debug_files = sorted(
+                debug_dir.glob("unexpected_upgrades_*.json"), key=os.path.getmtime
+            )
             for old_file in debug_files[:-30]:
                 old_file.unlink()
-            # and the png
-            debug_images = sorted(debug_dir.glob("unexpected_upgrades_*.png"), key=os.path.getmtime)
+            debug_images = sorted(
+                debug_dir.glob("unexpected_upgrades_*.png"), key=os.path.getmtime
+            )
             for old_img in debug_images[:-30]:
                 old_img.unlink()
         except Exception as e:
