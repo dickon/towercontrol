@@ -2407,10 +2407,22 @@ def automation_loop_tick():
             adv_rad = math.radians(advanced_angle)
             click_x = int(cx_px + orbit_r_px * math.sin(adv_rad))
             click_y = int(cy_px - orbit_r_px * math.cos(adv_rad))
-            log.info(
-                f"Floating gem at ({gx},{gy}) angle={angle_from_north:.1f}° "
-                f"dt={dt:.3f}s → clicking ({click_x},{click_y}) adv_angle={advanced_angle:.1f}°"
-            )
+            message = f"Floating gem at ({gx},{gy}) angle={angle_from_north:.1f}° dt={dt:.3f}s → clicking ({click_x},{click_y}) adv_angle={advanced_angle:.1f}°"
+
+            log.info(message)
+            # append to debug/gems.jsonl
+            with (ctx.config.debug_dir / "gems.jsonl").open("a") as f:
+                json.dump({
+                    "timestamp": time.time(),
+                    'localtime': datetime.datetime.now().isoformat(),
+                    "message": message,
+                    "gem_position": {"x": gx, "y": gy},
+                    "click_position": {"x": click_x, "y": click_y},
+                    "angle_from_north": angle_from_north,
+                    "advanced_angle": advanced_angle,
+                    "dt": dt
+                }, f)
+                f.write("\n")
             execute_click(click_x, click_y, ctx.window_rect, ctx.config)
             # Post-click verification: re-capture and re-detect
             time.sleep(0.3)
@@ -2424,6 +2436,16 @@ def automation_loop_tick():
                         f"Gem click MISS - gem still at ({post_pos[0]},{post_pos[1]}) "
                         f"angle={post_pos[2]:.1f}°"
                     )
+                with (ctx.config.debug_dir / "gems.jsonl").open("a") as f:
+                    json.dump({
+                        "timestamp": time.time(),
+                        'localtime': datetime.datetime.now().isoformat(),
+                        "post_click_verification": True,
+                        "gem_still_present": post_pos is not None,
+                        "post_gem_position": {"x": post_pos[0], "y": post_pos[1]} if post_pos else None,
+                        "post_gem_angle": post_pos[2] if post_pos else None
+                    }, f)
+                    f.write("\n")
     
     # Check for CLAIM button via template matching (supplements OCR detection)
     if ctx.claim_template is not None:
