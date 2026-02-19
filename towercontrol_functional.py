@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, NamedTuple, TypedDict
 
 import cv2
+import math
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -1750,59 +1751,85 @@ def load_battle_template(config: Config) -> Optional[np.ndarray]:
     return load_template(config, "battle.png", "BATTLE")
 
 
-def detect_floating_gem(img: Optional[Image.Image], gem_template: Optional[np.ndarray], 
-                       config: Config) -> Optional[Tuple[int, int]]:
-    """Detect floating gem at any rotation near middle of screen. Returns (x, y) or None."""
+# Gems orbit a fixed centre point.  The tip of the gem always points toward that
+# centre, and all gems orbit at the same radius.
+_GEM_ORBIT_CENTER_FX: float = 0.5989   # fractional x of orbit centre
+_GEM_ORBIT_CENTER_FY: float = 0.2630   # fractional y of orbit centre
+_GEM_ORBIT_RADIUS_FW: float = 0.2956   # orbital radius as a fraction of image width
+_GEM_SEARCH_MARGIN_PX: int  = 100      # extra pixels beyond orbit radius to search
+
+
+def detect_floating_gem(
+    img: Optional[Image.Image],
+    gem_template: Optional[np.ndarray],
+    config: Config,
+) -> Optional[Tuple[int, int, float]]:
+    """Detect the floating gem that orbits _GEM_ORBIT_CENTER_*.
+
+    Searches a bounding box centred on the orbit centre (radius + margin) at all
+    template rotations in 10-degree steps.
+
+    Returns (x, y, angle_from_north_deg) where *angle_from_north_deg* is the
+    clockwise angle of the vector (orbit_centre → gem) measured from straight
+    up (0 = gem directly above centre, 90 = gem to the right, etc.).  Returns
+    None when no gem is found above the confidence threshold.
+    """
     if img is None or gem_template is None:
         return None
-    
+
     log = logging.getLogger(__name__)
-    
+
     try:
-        # Convert PIL to cv2
         img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
         h, w = img_cv.shape
-        
-        # Define middle region (center 60% of screen)
-        middle_margin_x = int(w * 0.3)
-        middle_margin_y = int(h * 0.3)
-        middle_region = img_cv[middle_margin_y:h-middle_margin_y, middle_margin_x:w-middle_margin_x]
-        
-        best_match = None
+        th, tw = gem_template.shape[:2]
+
+        # Orbit centre in pixel coordinates
+        cx = _GEM_ORBIT_CENTER_FX * w
+        cy = _GEM_ORBIT_CENTER_FY * h
+
+        # Square search region centred on the orbit centre
+        search_r = int(_GEM_ORBIT_RADIUS_FW * w) + _GEM_SEARCH_MARGIN_PX
+        sx1 = max(tw // 2, int(cx - search_r))
+        sx2 = min(w - tw // 2, int(cx + search_r))
+        sy1 = max(th // 2, int(cy - search_r))
+        sy2 = min(h - th // 2, int(cy + search_r))
+        search_region = img_cv[sy1:sy2, sx1:sx2]
+
+        if search_region.shape[0] < th or search_region.shape[1] < tw:
+            return None
+
         best_val = 0.0
-        threshold = 0.6  # Matching threshold
-        
-        # Try multiple rotations (0, 90, 180, 270 degrees)
-        for angle in [0, 90, 180, 270]:
-            # Rotate template
-            if angle == 0:
-                rotated = gem_template
-            else:
-                center = (gem_template.shape[1] // 2, gem_template.shape[0] // 2)
-                matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-                rotated = cv2.warpAffine(gem_template, matrix, 
-                                        (gem_template.shape[1], gem_template.shape[0]))
-            
-            # Skip if template is larger than search region
-            if rotated.shape[0] > middle_region.shape[0] or rotated.shape[1] > middle_region.shape[1]:
-                continue
-            
-            # Template matching
-            result = cv2.matchTemplate(middle_region, rotated, cv2.TM_CCOEFF_NORMED)
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-            
+        best_match_cx: Optional[int] = None
+        best_match_cy: Optional[int] = None
+        threshold = 0.70
+
+        center_pt = (tw // 2, th // 2)
+        for rot_deg in range(0, 360, 10):
+            matrix = cv2.getRotationMatrix2D(center_pt, rot_deg, 1.0)
+            rotated = cv2.warpAffine(gem_template, matrix, (tw, th))
+
+            result = cv2.matchTemplate(search_region, rotated, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
             if max_val > best_val:
                 best_val = max_val
-                # Convert back to full image coordinates
-                best_match = (max_loc[0] + middle_margin_x + rotated.shape[1] // 2,
-                            max_loc[1] + middle_margin_y + rotated.shape[0] // 2)
-        
-        if best_val >= threshold and best_match:
-            log.info(f"Floating gem detected at ({best_match[0]}, {best_match[1]}) with confidence {best_val:.2f}")
-            return best_match
-        
+                best_match_cx = sx1 + max_loc[0] + tw // 2
+                best_match_cy = sy1 + max_loc[1] + th // 2
+
+        if best_val >= threshold and best_match_cx is not None:
+            dx = best_match_cx - cx
+            dy = best_match_cy - cy
+            # Clockwise angle from north: 0° = above centre, 90° = right, etc.
+            angle_from_north = math.degrees(math.atan2(dx, -dy))
+            log.info(
+                f"Floating gem at ({best_match_cx}, {best_match_cy}) "
+                f"angle={angle_from_north:.1f}° confidence={best_val:.3f}"
+            )
+            return (int(best_match_cx), int(best_match_cy), angle_from_north)
+
         return None
-        
+
     except Exception as e:
         log.warning(f"Gem detection failed: {e}")
         return None
