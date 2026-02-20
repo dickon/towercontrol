@@ -125,6 +125,7 @@ UPGRADE_PRIORITY = [
     ('UTILITY', 'Enemy Health level Skip', 1e9, True),
     ('DEFENSE', 'Wall Health', 1e9, True),
     ('DEFENSE', 'Wall Rebuild', 1e9, True),
+    ('DEFENSE', 'Health Regen', None, False),
     ('DEFENSE', 'Defense Absoslute', None, False)
 ]
 
@@ -2659,7 +2660,7 @@ def automation_loop_tick():
         else:
             delay = time.time() - ctx.last_seen_upgrades
             if delay > 15.0:
-                pos = (0.5105, 0.985) if want_upgrades == 'DEFENSE' else (0.3232, 0.9711) if want_upgrades == 'ATTACK' else (0.7000, 0.9719)
+                pos = (0.3865, 0.985) if want_upgrades == 'DEFENSE' else (0.3232, 0.9711) if want_upgrades == 'ATTACK' else (0.7000, 0.9719)
                 do_click(f"Seen no upgrades for {delay} so clicking upgrades tab for {want_upgrades}", pos[0], pos[1])
             
         newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.42, 0.00, 0.8, 0.10, threshold=0.9)
