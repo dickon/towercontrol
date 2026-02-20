@@ -99,10 +99,10 @@ PERK_CHOICES = [
     r'Swamp Radius( x[\d\.]+)?',
     r'Extra Set Of Inner Mines',
     r'Orbs( \+\d+)?',
-    r'(x[\d\.]*\s*)?Defense Absolute',
     r'Land Mine Damage( x[\d\.]+)?',
     r'Unlock Spotlight',
     r'Interest( x[\d\.]+)?',    
+    r'(x[\d\.]*\s*)?Defense Absolute',
     r'.*but boss.*',
     r'x1.89 coins, but -10.0% tower max',
     ]
