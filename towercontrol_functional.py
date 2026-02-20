@@ -2454,7 +2454,6 @@ def execute_swipe(x: int, y: int, distance: int, direction: str,
     ax, ay = to_absolute_coords(x, y, rect)
     offset = distance if direction == "up" else -distance
     
-    log.info(f"swipe_{direction}({x}, {y}, {distance})")
     pyautogui.moveTo(ax, ay)
     pyautogui.drag(0, offset, duration=0.3)
     log.info(f"Swiped {direction} from ({ax}, {ay}) by {offset} pixels; sleep for {config.swipe_pause:.2f} seconds")
@@ -2716,7 +2715,7 @@ def automation_loop_tick():
             log.debug(f"Perk text by row: {perk_text_join}")
 
             if len(perk_text_join) not in [3,4] or not clean:
-                log.warning(f"Unexpected number of meaningful perk rows detected: {len(perk_text_join)}. Expected 3 or 4. Detected rows: {list(perk_text_join.keys())}")
+                log.warning(f"Unexpected number of meaningful perk rows detected: {len(perk_text_join)}. Expected 3 or 4. Detected rows: {list(perk_text_join.keys())} {perk_text_join}")
             # create/append to perks.log with a jsonl format containing wave, timestamp in epoch seconds, timestamp as iso string, perk_text_join, perk_text_priority
             with open(ctx.config.debug_dir / "perks.jsonl", "a") as log_file:
                 log_entry = {
