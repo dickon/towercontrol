@@ -951,7 +951,6 @@ def do_click(message, click_x_frac, click_y_frac):
     h = ctx.window_rect.height
     click_x = int(click_x_frac * w)
     click_y = int(click_y_frac * h)
-    log.info(f'{message} at ({click_x_frac:.4f}, {click_y_frac:.4f}) -> pixels ({click_x}, {click_y})')
     if ctx.window_rect and ctx.config:
         execute_click(click_x, click_y, ctx.window_rect, ctx.config, reason=message)
 
@@ -2184,7 +2183,7 @@ def _click_upgrade_tab(want_page: str) -> None:
         do_click(f"Switching to {want_page} upgrade tab", fx, fy)
 
 
-def _do_upgrade_scroll(direction: str, w: int, h: int) -> None:
+def _do_upgrade_scroll(direction: str, w: int, h: int, message) -> None:
     """Drag the upgrade list up or down by ~200 px."""
     global ctx
     log = logging.getLogger(__name__)
@@ -2192,7 +2191,7 @@ def _do_upgrade_scroll(direction: str, w: int, h: int) -> None:
         return
     scroll_x = int(0.595 * w)
     scroll_y = int(0.8325 * h)
-    execute_swipe(scroll_x, scroll_y, 100, direction, ctx.window_rect, ctx.config, True)
+    execute_swipe(scroll_x, scroll_y, 400, direction, ctx.window_rect, ctx.config, True)
 
 
 def _advance_upgrade_state() -> None:
@@ -2272,22 +2271,21 @@ def handle_upgrade_action(seen_page: Optional[str],
         # Not visible - scroll to find it
         if ctx.upgrade_scroll_start == 0.0:
             ctx.upgrade_scroll_start = now
-            ctx.upgrade_scroll_direction = 'down'
-            log.info(f"'{want_label}' not on screen - beginning scroll down")
+            ctx.upgrade_scroll_direction = 'down' if UPGRADE_PRIORITY[ctx.upgrade_state][3] else 'up'
+            log.info(f"'{want_label}' not on screen - beginning scroll  {ctx.upgrade_scroll_direction}")
 
         elapsed = now - ctx.upgrade_scroll_start
         if ctx.upgrade_scroll_direction == 'down' and elapsed > ctx.config.upgrade_scroll_timeout:
-            log.info(f"Scroll down timed out after {elapsed:.0f}s - switching to scroll up")
-            ctx.upgrade_scroll_direction = 'up'
+            log.info(f"Scroll down timed out after {elapsed:.0f}s - switching scroll direction")
+            ctx.upgrade_scroll_direction = 'up' if ctx.upgrade_scroll_direction == 'down' else 'down'
             ctx.upgrade_scroll_start = now
 
-        _do_upgrade_scroll(ctx.upgrade_scroll_direction, w, h)
+        _do_upgrade_scroll(ctx.upgrade_scroll_direction, w, h, f'scrolling {ctx.upgrade_scroll_direction} for {want_label}; elapsed {elapsed:.1f}s of {ctx.config.upgrade_scroll_timeout}')
         ctx.last_upgrade_action = now
         return
 
     # Found - reset scroll tracking
     ctx.upgrade_scroll_start = 0.0
-    ctx.upgrade_scroll_direction = 'down'
 
     # Maxed?
     if target_info['cost'] is None:
@@ -2418,7 +2416,7 @@ def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_fro
             reason_slug = ("_" + re.sub(r"[^\w]+", "_", reason).strip("_")) if reason else ""
             debug_path = config.debug_dir / f"click_debug_{timestamp}{reason_slug}.png"
             debug_img.save(debug_path)
-            log.info(f"Debug screenshot saved: {debug_path}")
+            log.debug(f"Debug screenshot saved: {debug_path}")
             
             # Cleanup old files - keep only last 20
             cleanup_old_click_debug_files(config, keep_count=20)
@@ -2458,8 +2456,7 @@ def execute_swipe(x: int, y: int, distance: int, direction: str,
     log.info(f"swipe_{direction}({x}, {y}, {distance})")
     pyautogui.moveTo(ax, ay)
     pyautogui.drag(0, offset, duration=0.3)
-    log.info(f"Swiped {direction} from ({ax}, {ay}) by {offset} pixels")
-    log.info('sleep for %.2f seconds', config.click_pause)
+    log.info(f"Swiped {direction} from ({ax}, {ay}) by {offset} pixels; sleep for {config.swipe_pause:.2f} seconds")
     time.sleep(config.swipe_pause)
     return True
 
