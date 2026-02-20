@@ -104,7 +104,8 @@ PERK_CHOICES = [
     r'Unlock Spotlight',
     r'Interest( x[\d\.]+)?',    
     r'.*but boss.*',
-]
+    r'x1.89 coins, but -10.0% tower max',
+    ]
 
 UPGRADE_PRIORITY = [
     ('UTILITY', 'Enemy Attack level Skip', 1e8, True),
@@ -1306,8 +1307,8 @@ def _find_upgrade_boxes(img: Image.Image) -> List[Tuple[int, int, int, int]]:
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
     # The upgrade panel occupies roughly y=0.58–0.98 and x=0.15–1.0
-    y_top = int(h_img * 0.58)
-    x_left = int(w_img * 0.15)
+    y_top = int(h_img * 0.59)
+    x_left = int(w_img * 0.05)
     panel = gray[y_top:, x_left:]
     ph, pw = panel.shape
 
@@ -1659,6 +1660,14 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
     # ── Step 1: Locate the white-bordered boxes ────────────────────────────
     boxes_px = _find_upgrade_boxes(img)
     log.debug(f"detect_upgrade_buttons: found {len(boxes_px)} candidate boxes")
+    log.info('upgrade boxes')
+
+    # save out a debug image with the box corners marked in yellow
+    debug_img = img.copy()
+    draw = ImageDraw.Draw(debug_img)
+    for box_x, box_y, box_w, box_h in boxes_px:
+        draw.rectangle([box_x, box_y, box_x + box_w, box_y + box_h], outline='yellow', width=2) 
+    debug_img.save('debug_upgrade_boxes.png')
 
     if not boxes_px:
         log.warning(
@@ -1684,7 +1693,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             r for r in frame.results
             if fx_min <= r.fx <= fx_max and fy_min <= r.fy <= fy_max
         ]
-
+        pprint.pprint(box_results)
         # ── Label (left portion of box) ────────────────────────────────────
         label_texts = [
             r.text.strip() for r in box_results
@@ -1711,11 +1720,13 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             is_max = True
             cost_value = None
 
-        # ── Purchase count (xNNN anywhere in box; small text) ──────────────
-        purchase_count = 1
-        for r in box_results:
+        # ── Purchase count (xNNN to right of box)
+        purchase_count = None
+        for r in box_results:            
             m = re.match(r'^x(\d+)$', r.text.strip(), re.IGNORECASE)
-            if m:
+
+            if m and r.fx > 0.5:
+                log.info(f'purhcase count match: "{r.text.strip()}" at fx={r.fx:.3f}, fy={r.fy:.3f}')
                 n = int(m.group(1))
                 if n > 1:
                     purchase_count = n
@@ -1799,60 +1810,6 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             f"x_count={purchase_count}"
         )
 
-    # ── Debug snapshot when detection count looks wrong ────────────────────
-    any_missing_cost = any(
-        info['cost'] is None and info.get('current_value') is not None
-        for info in upgrades.values()
-    )
-    number_of_debug_files = len(list(Path("debug").glob("unexpected_upgrades_*.json")))
-    if number_of_debug_files < 20 and (len(upgrades) not in [5, 6] or any_missing_cost):
-        log.warning(
-            f"Detected {len(upgrades)} upgrades, which is unexpected. "
-            f"Detected upgrades: {list(upgrades.keys())}"
-        )
-        timestamp = int(time.time())
-        debug_dir = Path("debug")
-        debug_dir.mkdir(exist_ok=True)
-        img_path = debug_dir / f"unexpected_upgrades_{timestamp}.png"
-        json_path = debug_dir / f"unexpected_upgrades_{timestamp}.json"
-        try:
-            if img is not None:
-                img.save(img_path)
-            upgrades_serializable = {
-                label: {
-                    'current_value': info['current_value'],
-                    'cost': info['cost'],
-                    'upgrades_to_purchase': info['upgrades_to_purchase'],
-                    'cell_color': info['cell_color'],
-                    'cell_color_name': info['cell_color_name'],
-                    'label_position': info['label_position'],
-                    'button_position': info['button_position'],
-                }
-                for label, info in upgrades.items()
-            }
-            with open(json_path, 'w') as f:
-                json.dump({
-                    "upgrades": upgrades_serializable,
-                    "ocr_results": [r.text for r in frame.results],
-                    "image_size": frame.image_size,
-                }, f, indent=2)
-            log.warning(f"Saved debug image to {img_path} and metadata to {json_path}")
-        except Exception as e:
-            log.warning(f"Failed to save debug data: {e}")
-
-        try:
-            debug_files = sorted(
-                debug_dir.glob("unexpected_upgrades_*.json"), key=os.path.getmtime
-            )
-            for old_file in debug_files[:-30]:
-                old_file.unlink()
-            debug_images = sorted(
-                debug_dir.glob("unexpected_upgrades_*.png"), key=os.path.getmtime
-            )
-            for old_img in debug_images[:-30]:
-                old_img.unlink()
-        except Exception as e:
-            log.warning(f"Failed to clean up old debug files: {e}")
     return upgrades
 
 
@@ -1993,23 +1950,24 @@ def detect_floating_gem(
         return None
 
 
-def detect_claim_button(img: Optional[Image.Image], claim_template: Optional[np.ndarray], 
-                       config: Config) -> Optional[Tuple[int, int]]:
-    """Detect CLAIM button in middle-left region. Returns (x, y) or None.
-    
+def process_claim_button(img: Optional[Image.Image], claim_template: Optional[np.ndarray],
+                        config: Config) -> None:
+    """Detect CLAIM button in middle-left region and click it if found.
+
     This supplements OCR-based detection for improved reliability without OCR cost.
     Focuses on middle-left area where CLAIM buttons typically appear.
     """
+    global ctx
     if img is None or claim_template is None:
-        return None
-    
+        return
+
     log = logging.getLogger(__name__)
-    
+
     try:
         # Convert PIL to cv2
         img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
         h, w = img_cv.shape
-        
+
         # Define middle-left region (left 40%, middle 60% vertically)
         # This focuses on where CLAIM buttons commonly appear
         x_start = int(w * 0.05)
@@ -2017,29 +1975,41 @@ def detect_claim_button(img: Optional[Image.Image], claim_template: Optional[np.
         y_start = int(h * 0.2)
         y_end = int(h * 0.8)
         search_region = img_cv[y_start:y_end, x_start:x_end]
-        
+
         # Skip if template is larger than search region
         if claim_template.shape[0] > search_region.shape[0] or claim_template.shape[1] > search_region.shape[1]:
-            return None
-        
+            return
+
         # Template matching with normalized cross-correlation
         result = cv2.matchTemplate(search_region, claim_template, cv2.TM_CCOEFF_NORMED)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-        
+
         threshold = 0.65  # Slightly higher threshold for button matching
-        
+
         if max_val >= threshold:
             # Convert back to full image coordinates
-            match_x = max_loc[0] + x_start + claim_template.shape[1] // 2
-            match_y = max_loc[1] + y_start + claim_template.shape[0] // 2
-            log.info(f"CLAIM button detected at ({match_x}, {match_y}) with confidence {max_val:.2f}")
-            return (match_x, match_y)
-        
-        return None
-        
+            claim_pos = (
+                max_loc[0] + x_start + claim_template.shape[1] // 2,
+                max_loc[1] + y_start + claim_template.shape[0] // 2,
+            )
+            log.info(f"CLAIM button detected at {claim_pos} with confidence {max_val:.2f}")
+            # Add cooldown to avoid clicking too frequently
+            last_claim_time = get_last_action_time(ctx.game_state, ActionType.CLICK)
+            if time.time() - last_claim_time > 2.0:
+                log.info(f"CLAIM button detected via template at {claim_pos} - clicking!")
+                execute_click(claim_pos[0], claim_pos[1], ctx.window_rect, config)
+                # Update action history
+                action = Action(
+                    action_type=ActionType.CLICK,
+                    x=claim_pos[0],
+                    y=claim_pos[1],
+                    reason="Clicking CLAIM button (template match)",
+                    priority=90
+                )
+                ctx.game_state = record_action_in_state(ctx.game_state, action)
+
     except Exception as e:
         log.debug(f"CLAIM button detection failed: {e}")
-        return None
 
 
 def detect_template_in_region(
@@ -2483,6 +2453,7 @@ class RuntimeContext:
     upgrade_scroll_direction: str = 'down'  # 'down' or 'up'
     free_upgrade_category: int = 0          # index into FREE_UPGRADE_CATEGORIES
     free_upgrade_cycle_start: float = 0.0   # when the current free-upgrade category started
+    no_perk_until: float = 0.0              # skip perk processing until this timestamp (set when no perks selectable)
     def update_window(self):
         """Update window rect if needed."""
         if time.time() - self.last_window_check > 2.0:
@@ -2509,27 +2480,26 @@ def click_if_present(name, condition, callback=None):
         if callback:
             callback()
 
-def automation_loop_tick():
-    """Single tick of automation loop."""
+def do_ocr():
+    """Capture the window and run OCR. Returns (img, img_capture_time, frame) or None on failure."""
     global ctx
     log = logging.getLogger(__name__)
-    log.info("----------------- TiCK")
+
     # Update window rect
     ctx.update_window()
     if not ctx.window_rect:
         log.warning("Window not found: '%s'", ctx.config.window_title)
         ctx.status = "no_window"
-        return
+        return None
 
-    # Capture and OCR current screen
+    # Capture screen
     log.debug(f"Capturing window: {ctx.window_rect.width} x {ctx.window_rect.height} at ({ctx.window_rect.left}, {ctx.window_rect.top})")
-    
     img = capture_window(ctx.window_rect)
     img_capture_time = time.time()  # used for gem dead-reckoning dt
     log.debug('Capture done')
     if not img:
         log.warning("Failed to capture window")
-        return
+        return None
 
     # time OCR
     try:
@@ -2541,88 +2511,40 @@ def automation_loop_tick():
             save_debug_files(img, frame, ctx.config)
         else:
             log.warning("OCR processing failed")
-            return
+            return None
     except Exception as e:
         log.error(f"OCR failed: {e}")
-        return
+        return None
 
-    # Update state
+    # Check known markers (inlined from check_known_markers)
+    w,h= frame.image_size
+    if w <= 0 or h <= 0:
+        log.warning("Invalid image size from OCR frame: (%d, %d)", w, h)
+        return
+    return img, img_capture_time, frame
+
+
+def automation_loop_tick():
+    """Single tick of automation loop."""
+    global ctx
+    log = logging.getLogger(__name__)
+    log.info("----------------- TiCK")
+
+    result = do_ocr()
+    if result is None:
+        return
+    img, img_capture_time, frame = result
+    w, h = frame.image_size
     ctx.latest_image = img
     ctx.frame = frame
     
     # Check for floating gem and click it with dead reckoning
     if ctx.gem_template is not None:
         gem_pos = detect_floating_gem(img, ctx.gem_template, ctx.config)
-        if gem_pos:
-            gx, gy, angle_from_north = gem_pos
-            img_w, img_h = img.size
-            cx_px = _GEM_ORBIT_CENTER_FX * img_w
-            cy_px = _GEM_ORBIT_CENTER_FY * img_h
-            orbit_r_px = math.hypot(gx - cx_px, gy - cy_px)
-            # Advance angle by elapsed time × 30°/s (clockwise)
-            dt = time.time() - img_capture_time
-            advanced_angle = angle_from_north + 30.0 * dt
-            adv_rad = math.radians(advanced_angle)
-            click_x = int(cx_px + orbit_r_px * math.sin(adv_rad))
-            click_y = int(cy_px - orbit_r_px * math.cos(adv_rad))
-            message = f"Floating gem at ({gx},{gy}) angle={angle_from_north:.1f}° dt={dt:.3f}s → clicking ({click_x},{click_y}) adv_angle={advanced_angle:.1f}°"
-
-            log.info(message)
-            # append to debug/gems.jsonl
-            with (ctx.config.debug_dir / "gems.jsonl").open("a") as f:
-                json.dump({
-                    "timestamp": time.time(),
-                    'localtime': datetime.datetime.now().isoformat(),
-                    "message": message,
-                    "gem_position": {"x": gx, "y": gy},
-                    "click_position": {"x": click_x, "y": click_y},
-                    "angle_from_north": angle_from_north,
-                    "advanced_angle": advanced_angle,
-                    "dt": dt
-                }, f)
-                f.write("\n")
-            execute_click(click_x, click_y, ctx.window_rect, ctx.config)
-            # Post-click verification: re-capture and re-detect
-            time.sleep(0.3)
-            post_img = capture_window(ctx.window_rect)
-            if post_img is not None:
-                post_pos = detect_floating_gem(post_img, ctx.gem_template, ctx.config)
-                if post_pos is None:
-                    log.info("Gem click HIT - gem no longer detected")
-                else:
-                    log.info(
-                        f"Gem click MISS - gem still at ({post_pos[0]},{post_pos[1]}) "
-                        f"angle={post_pos[2]:.1f}°"
-                    )
-                with (ctx.config.debug_dir / "gems.jsonl").open("a") as f:
-                    json.dump({
-                        "timestamp": time.time(),
-                        'localtime': datetime.datetime.now().isoformat(),
-                        "post_click_verification": True,
-                        "gem_still_present": post_pos is not None,
-                        "post_gem_position": {"x": post_pos[0], "y": post_pos[1]} if post_pos else None,
-                        "post_gem_angle": post_pos[2] if post_pos else None
-                    }, f)
-                    f.write("\n")
+        attempt_floating_gem_click(log, img, img_capture_time, gem_pos)
     
     # Check for CLAIM button via template matching (supplements OCR detection)
-    if ctx.claim_template is not None:
-        claim_pos = detect_claim_button(img, ctx.claim_template, ctx.config)
-        if claim_pos:
-            # Add cooldown to avoid clicking too frequently
-            last_claim_time = get_last_action_time(ctx.game_state, ActionType.CLICK)
-            if time.time() - last_claim_time > 2.0:
-                log.info(f"CLAIM button detected via template at {claim_pos} - clicking!")
-                execute_click(claim_pos[0], claim_pos[1], ctx.window_rect, ctx.config)
-                # Update action history
-                action = Action(
-                    action_type=ActionType.CLICK,
-                    x=claim_pos[0],
-                    y=claim_pos[1],
-                    reason="Clicking CLAIM button (template match)",
-                    priority=90
-                )
-                ctx.game_state = record_action_in_state(ctx.game_state, action)
+    process_claim_button(img, ctx.claim_template, ctx.config)
 
     # Check for BATTLE button via template matching
     battle_button_pos = None
@@ -2634,11 +2556,7 @@ def automation_loop_tick():
     # Build screen state (inlined from build_screen_state)
     log.debug('build screen state')
     
-    # Check known markers (inlined from check_known_markers)
-    w, h = frame.image_size
-    if w <= 0 or h <= 0:
-        log.warning("Invalid image size from OCR frame: (%d, %d)", w, h)
-        return
+
     # Extract wave number for comparison
     wave_num_str, _ = extract_wave_from_frame(frame)
     wave_num = None
@@ -2649,7 +2567,7 @@ def automation_loop_tick():
             pass
     
     texts: tuple[str, float, float] = [(r.text, r.fx, r.fy) for r in frame.results]
-    perks_mode = [t for t in texts if t[0] == 'Perks' and abs(t[1]-0.612) < 0.05 and abs(t[2]-0.098) < 0.05]
+    perks_mode = [t for t in texts if t[0] == 'Perks' and abs(t[1]-0.612) < 0.1 and abs(t[2]-0.098) < 0.1]
     choose = [t for t in texts if t[0] == 'Choose' and abs(t[1]-0.522) < 0.05 and abs(t[2]-0.206) < 0.05]
     log.debug('perks_mode: %s, choose: %s', perks_mode, choose)
     if perks_mode and choose:
@@ -2694,14 +2612,6 @@ def automation_loop_tick():
         log.info('Seen upgrade mode selector: %s', seen)
         want_upgrades = UPGRADE_PRIORITY[ctx.upgrade_state][0] if ctx.upgrade_state < len(UPGRADE_PRIORITY) else None   
 
-        if want_upgrades and seen != want_upgrades and False:
-            log.info(f"Upgrade mode selector seen: {seen}, but want: {want_upgrades}")
-            if want_upgrades == 'ATTACK':
-                do_click("Clicking 'ATTACK' for upgrades", 0.321, 0.985)
-            elif want_upgrades == 'UTILITY':
-                do_click("Clicking 'UTILITY' for upgrades", 0.7, 0.985)
-            elif want_upgrades == 'DEFENSE':
-                do_click("Clicking 'DEFENSE' for upgrades", 0.5105, 0.985)
         if seen:
             ctx.last_seen_upgrades = time.time()
         else:
@@ -2745,45 +2655,46 @@ def automation_loop_tick():
                 coins = value * multiplier
 
     # Use refactored perk detection
-    perk_result = detect_perks(frame)
-    perk_text = perk_result['perk_text']
-    perk_text_join = perk_result['perk_text_join']
-    perk_text_priority = perk_result['perk_text_priority']
-    clean = perk_result['all_matched']
-    log.debug('perk text: %s', perk_text)
-    if perk_text and mode == 'perks':
-        log.debug(f"Perk text by row: {perk_text_join}")
-
-        if len(perk_text_join) not in [3,4] or not clean:
-            log.warning(f"Unexpected number of meaningful perk rows detected: {len(perk_text_join)}. Expected 3 or 4. Detected rows: {list(perk_text_join.keys())}")
-        # save a copy of the screenshot as evidence for debugging
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        debug_path = ctx.config.debug_dir / f"perk_rows_{timestamp}.png"
-        img.save(debug_path)
-        log.info(f"Saved debug screenshot for unexpected perk rows: {debug_path}")        
-        # write a JSON file with perk_text_join and perk_text_priority for debugging alongside the screenshot
-        debug_json_path = ctx.config.debug_dir / f"perk_rows_{timestamp}.json"
-        # create/append to perks.log with a jsonl format containing wave, timestamp in epoch seconds, timestamp as iso string, perk_text_join, perk_text_priority
-        with open(ctx.config.debug_dir / "perks.jsonl", "a") as log_file:
-            log_entry = {
-                "timestamp": time.time(),
-                "timestamp_iso": datetime.datetime.now().isoformat(),
-                "wave": wave_num_str,
-                "perk_text_join": perk_text_join,
-                "perk_text_priority": perk_text_priority,
-            }
-            log_file.write(json.dumps(log_entry) + "\n")
-        # pick the row with the highest priority (lowest index)
-        if perk_text_priority:
-            best_row, best_choice, best_idx = perk_text_priority[0]
-            log.info(f"Best perk choice: '{best_choice}' in row {best_row} with text '{perk_text_join[best_row]}'")
-            # click the perk in that row
-            message = f"Clicking perk at row {best_row} (choice: '{best_choice}')"
-            do_click(message, 0.671, PERK_ROWS[best_row][1])
-            close_perks()
-        
-    if perks_mode and not choose:
+    if mode == 'perks' and time.time() < ctx.no_perk_until:
+        log.info(f"Perk cooldown active - skipping perk check for {ctx.no_perk_until - time.time():.0f}s more, closing window")
         close_perks()
+    else:
+        perk_result = detect_perks(frame)
+        perk_text = perk_result['perk_text']
+        perk_text_join = perk_result['perk_text_join']
+        perk_text_priority = perk_result['perk_text_priority']
+        clean = perk_result['all_matched']
+        log.debug('perk text: %s', perk_text)
+        if mode == 'perks' and not perk_text:
+            log.info("Perks mode active but no selectable perks detected - closing window and suppressing perk checks for 1200s")
+            close_perks()
+            ctx.no_perk_until = time.time() + 1200.0
+        elif perk_text and mode == 'perks':
+            log.debug(f"Perk text by row: {perk_text_join}")
+
+            if len(perk_text_join) not in [3,4] or not clean:
+                log.warning(f"Unexpected number of meaningful perk rows detected: {len(perk_text_join)}. Expected 3 or 4. Detected rows: {list(perk_text_join.keys())}")
+            # create/append to perks.log with a jsonl format containing wave, timestamp in epoch seconds, timestamp as iso string, perk_text_join, perk_text_priority
+            with open(ctx.config.debug_dir / "perks.jsonl", "a") as log_file:
+                log_entry = {
+                    "timestamp": time.time(),
+                    "timestamp_iso": datetime.datetime.now().isoformat(),
+                    "wave": wave_num_str,
+                    "perk_text_join": perk_text_join,
+                    "perk_text_priority": perk_text_priority,
+                }
+                log_file.write(json.dumps(log_entry) + "\n")
+            # pick the row with the highest priority (lowest index)
+            if perk_text_priority:
+                best_row, best_choice, best_idx = perk_text_priority[0]
+                log.info(f"Best perk choice: '{best_choice}' in row {best_row} with text '{perk_text_join[best_row]}'")
+                # click the perk in that row
+                message = f"Clicking perk at row {best_row} (choice: '{best_choice}')"
+                do_click(message, 0.671, PERK_ROWS[best_row][1])
+                close_perks()
+
+        if perks_mode and not choose:
+            close_perks()
     
     # Detect and log upgrade buttons
     upgrade_buttons = detect_upgrade_buttons(frame, img, ctx.config)
@@ -2803,6 +2714,7 @@ def automation_loop_tick():
         ctx.upgrade_scroll_start = 0.0
         ctx.upgrade_scroll_direction = 'down'
         ctx.free_upgrade_cycle_start = 0.0
+        ctx.no_perk_until = 0.0
 
     # Timed upgrade purchasing (only when on main game screen with upgrades visible)
     if mode == 'main':
@@ -2878,6 +2790,59 @@ def automation_loop_tick():
         wave_history=new_wave_history
     )
     ctx.status = "running"
+
+def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
+    if gem_pos:
+        gx, gy, angle_from_north = gem_pos
+        img_w, img_h = img.size
+        cx_px = _GEM_ORBIT_CENTER_FX * img_w
+        cy_px = _GEM_ORBIT_CENTER_FY * img_h
+        orbit_r_px = math.hypot(gx - cx_px, gy - cy_px)
+            # Advance angle by elapsed time × 30°/s (clockwise)
+        dt = time.time() - img_capture_time
+        advanced_angle = angle_from_north + 30.0 * dt
+        adv_rad = math.radians(advanced_angle)
+        click_x = int(cx_px + orbit_r_px * math.sin(adv_rad))
+        click_y = int(cy_px - orbit_r_px * math.cos(adv_rad))
+        message = f"Floating gem at ({gx},{gy}) angle={angle_from_north:.1f}° dt={dt:.3f}s → clicking ({click_x},{click_y}) adv_angle={advanced_angle:.1f}°"
+
+        log.info(message)
+            # append to debug/gems.jsonl
+        with (ctx.config.debug_dir / "gems.jsonl").open("a") as f:
+            json.dump({
+                    "timestamp": time.time(),
+                    'localtime': datetime.datetime.now().isoformat(),
+                    "message": message,
+                    "gem_position": {"x": gx, "y": gy},
+                    "click_position": {"x": click_x, "y": click_y},
+                    "angle_from_north": angle_from_north,
+                    "advanced_angle": advanced_angle,
+                    "dt": dt
+                }, f)
+            f.write("\n")
+        execute_click(click_x, click_y, ctx.window_rect, ctx.config)
+            # Post-click verification: re-capture and re-detect
+        time.sleep(0.3)
+        post_img = capture_window(ctx.window_rect)
+        if post_img is not None:
+            post_pos = detect_floating_gem(post_img, ctx.gem_template, ctx.config)
+            if post_pos is None:
+                log.info("Gem click HIT - gem no longer detected")
+            else:
+                log.info(
+                        f"Gem click MISS - gem still at ({post_pos[0]},{post_pos[1]}) "
+                        f"angle={post_pos[2]:.1f}°"
+                    )
+            with (ctx.config.debug_dir / "gems.jsonl").open("a") as f:
+                json.dump({
+                        "timestamp": time.time(),
+                        'localtime': datetime.datetime.now().isoformat(),
+                        "post_click_verification": True,
+                        "gem_still_present": post_pos is not None,
+                        "post_gem_position": {"x": post_pos[0], "y": post_pos[1]} if post_pos else None,
+                        "post_gem_angle": post_pos[2] if post_pos else None
+                    }, f)
+                f.write("\n")
 
 
 def automation_loop_run(ctx: RuntimeContext):
