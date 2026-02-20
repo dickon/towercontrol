@@ -301,6 +301,7 @@ class GameState:
     action_history: Tuple[Dict[str, Any], ...] = ()
     error_count: int = 0
     battle_start_time: Optional[float] = None
+    tier: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -1693,7 +1694,6 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             r for r in frame.results
             if fx_min <= r.fx <= fx_max and fy_min <= r.fy <= fy_max
         ]
-        pprint.pprint(box_results)
         # ── Label (left portion of box) ────────────────────────────────────
         label_texts = [
             r.text.strip() for r in box_results
@@ -2012,6 +2012,22 @@ def process_claim_button(img: Optional[Image.Image], claim_template: Optional[np
         log.debug(f"CLAIM button detection failed: {e}")
 
 
+def process_battle_button(img: Optional[Image.Image]) -> None:
+    """Detect BATTLE button via template matching and click it if found."""
+    global ctx
+    log = logging.getLogger(__name__)
+
+    battle_button_pos = None
+    if ctx.battle_template is not None:
+        battle_button_pos = detect_template_in_region(img, ctx.battle_template, "BATTLE button", 0.28, 0.71, 0.88, 0.91, threshold=0.98)
+    else:
+        log.error('no battle button template')
+    if battle_button_pos:
+        log.info(f"BATTLE button detected via template at {battle_button_pos} - clicking to start game!")
+        do_click("Clicking BATTLE button", battle_button_pos[0], battle_button_pos[1])
+        mark_battle_start()
+
+
 def detect_template_in_region(
     img: Optional[Image.Image],
     template: Optional[np.ndarray],
@@ -2060,6 +2076,44 @@ def detect_template_in_region(
         log.debug(f"{label} detection failed: {e}")
         return None
 
+
+
+def update_tier_from_frame(frame: OCRFrame) -> None:
+    """Detect the tier number from OCR results and update ctx.game_state.tier.
+
+    Searches for 'Tier N' in OCR output, either as a single result or as
+    'Tier' followed by a nearby digit result.  When no tier is found the
+    state is left unchanged.
+    """
+    global ctx
+    log = logging.getLogger(__name__)
+
+    tier_num: Optional[int] = None
+
+    for r in frame.results:
+        # Single token: "Tier 4", "Tier 5", etc.
+        m = re.fullmatch(r'Tier\s+(\d+)', r.text, re.IGNORECASE)
+        if m:
+            tier_num = int(m.group(1))
+            break
+
+        # Two adjacent tokens: "Tier" then a standalone digit nearby
+        if r.text.lower() == 'tier':
+            for other in frame.results:
+                if other is r:
+                    continue
+                if re.fullmatch(r'\d+', other.text):
+                    if abs(other.fx - r.fx) < 0.12 and abs(other.fy - r.fy) < 0.05:
+                        tier_num = int(other.text)
+                        break
+            if tier_num is not None:
+                break
+
+    if tier_num is not None:
+        log.info("Tier detected: %d", tier_num)
+        ctx.game_state = replace(ctx.game_state, tier=tier_num)
+    else:
+        log.info("No tier found in frame; state unchanged")
 
 
 def get_last_action_time(state: GameState, action_type: ActionType) -> float:
@@ -2537,7 +2591,8 @@ def automation_loop_tick():
     w, h = frame.image_size
     ctx.latest_image = img
     ctx.frame = frame
-    
+    update_tier_from_frame(frame)
+
     # Check for floating gem and click it with dead reckoning
     if ctx.gem_template is not None:
         gem_pos = detect_floating_gem(img, ctx.gem_template, ctx.config)
@@ -2547,11 +2602,7 @@ def automation_loop_tick():
     process_claim_button(img, ctx.claim_template, ctx.config)
 
     # Check for BATTLE button via template matching
-    battle_button_pos = None
-    if ctx.battle_template is not None:
-        battle_button_pos = detect_template_in_region(img, ctx.battle_template, "BATTLE button", 0.28, 0.71, 0.88, 0.91, threshold=0.98)
-    else:
-        log.error('no battle button template')
+    process_battle_button(img)
 
     # Build screen state (inlined from build_screen_state)
     log.debug('build screen state')
@@ -2575,11 +2626,6 @@ def automation_loop_tick():
         mode = 'perks'        
     else:
         mode = 'main'
-    if battle_button_pos:
-        mode = 'home'
-        log.info(f"BATTLE button detected via template at {battle_button_pos} - clicking to start game!")
-        do_click("Clicking BATTLE button", battle_button_pos[0], battle_button_pos[1])
-        mark_battle_start()
     log.info(f"Detected mode: {mode}")
     perk_text = {}
     near_perk = [r for r in frame.results if r.is_near(0.6056, 0.035, 0.1)]
