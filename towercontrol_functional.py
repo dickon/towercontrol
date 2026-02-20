@@ -112,9 +112,19 @@ UPGRADE_PRIORITY = [
     ('UTILITY', 'Enemy Health level Skip', 1e8, True),
     ('ATTACK', 'Damage', None, False),
     ('DEFENSE', 'Health', None, False),
-    ('DEFENSE', 'Health Regen', None, False),
+    ('DEFENSE', 'Shockwave Size', None, True),
+    ('DEFENSE', 'Shockwave Frequency', None, True),
+    ('DEFENSE', 'Land Mine Chance', None, True),
+    ('DEFENSE', 'Land Mine Damage', None, True),
+    ('DEFENSE', 'Land Mine Radius', None, True),
+    ('DEFENSE', 'Death Defy', None, True),
+    ('DEFENSE', 'Wall Health', 1e8, True),
+    ('DEFENSE', 'Wall Rebuild', 1e8, True),
+    ('DEFENSE', 'Health Regen', 1e8, False),
     ('UTILITY', 'Enemy Attack level Skip', 1e9, True),
     ('UTILITY', 'Enemy Health level Skip', 1e9, True),
+    ('DEFENSE', 'Wall Health', 1e9, True),
+    ('DEFENSE', 'Wall Rebuild', 1e9, True),
     ('DEFENSE', 'Defense Absoslute', None, False)
 ]
 
@@ -153,6 +163,7 @@ class Config:
     ocr_confidence: float = 40.0
     tesseract_cmd: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
     click_pause: float = 5.0
+    swipe_pause: float = 1.0
     input_delay: float = 0.15
     loop_tick: float = 20.0
     web_host: str = "127.0.0.1"
@@ -165,8 +176,8 @@ class Config:
         "more": (470, 920),
     })
     scroll_region: Tuple[int, int, int, int] = (20, 200, 500, 650)
-    upgrade_interval: float = 30.0           # seconds between upgrade purchase attempts
-    upgrade_scroll_timeout: float = 20.0     # seconds scrolling down before switching to up
+    upgrade_interval: float = 2.0            # seconds between upgrade purchase attempts
+    upgrade_scroll_timeout: float = 120.0     # seconds scrolling down before switching to up
     free_upgrade_cycle_seconds: float = 120.0  # seconds per category in free-upgrade mode
 
     @property
@@ -942,7 +953,7 @@ def do_click(message, click_x_frac, click_y_frac):
     click_y = int(click_y_frac * h)
     log.info(f'{message} at ({click_x_frac:.4f}, {click_y_frac:.4f}) -> pixels ({click_x}, {click_y})')
     if ctx.window_rect and ctx.config:
-        execute_click(click_x, click_y, ctx.window_rect, ctx.config)
+        execute_click(click_x, click_y, ctx.window_rect, ctx.config, reason=message)
 
 def close_perks():
     do_click("Closing perks mode by clicking 'X'", 0.878, 0.100)
@@ -1661,7 +1672,6 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
     # ── Step 1: Locate the white-bordered boxes ────────────────────────────
     boxes_px = _find_upgrade_boxes(img)
     log.debug(f"detect_upgrade_buttons: found {len(boxes_px)} candidate boxes")
-    log.info('upgrade boxes')
 
     # save out a debug image with the box corners marked in yellow
     debug_img = img.copy()
@@ -1803,7 +1813,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
         }
         upgrades[label] = info
 
-        log.info(
+        log.debug(
             f"Upgrade box '{label}': "
             f"level={current_value!r}, "
             f"cost={'MAX' if is_max else repr(cost_value)}, "
@@ -1997,7 +2007,7 @@ def process_claim_button(img: Optional[Image.Image], claim_template: Optional[np
             last_claim_time = get_last_action_time(ctx.game_state, ActionType.CLICK)
             if time.time() - last_claim_time > 2.0:
                 log.info(f"CLAIM button detected via template at {claim_pos} - clicking!")
-                execute_click(claim_pos[0], claim_pos[1], ctx.window_rect, config)
+                execute_click(claim_pos[0], claim_pos[1], ctx.window_rect, config, reason="claim")
                 # Update action history
                 action = Action(
                     action_type=ActionType.CLICK,
@@ -2062,12 +2072,12 @@ def detect_template_in_region(
 
         result = cv2.matchTemplate(search_region, template, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
-        log.info('%s template check: max_val=%.3f at location %s', label, max_val, max_loc)
+        log.debug('%s template check: max_val=%.3f at location %s', label, max_val, max_loc)
         if max_val >= threshold:
             match_x = max_loc[0] + x_start + template.shape[1] // 2
             match_y = max_loc[1] + y_start + template.shape[0] // 2
             fx, fy = match_x / w, match_y / h
-            log.info(f"{label} detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f}")
+            log.debug(f"{label} detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f}")
             return (fx, fy)
 
         return None
@@ -2180,10 +2190,9 @@ def _do_upgrade_scroll(direction: str, w: int, h: int) -> None:
     log = logging.getLogger(__name__)
     if not ctx.window_rect:
         return
-    scroll_x = int(0.5 * w)
-    scroll_y = int(0.75 * h)
-    log.info(f"Scrolling upgrades {direction}")
-    execute_swipe(scroll_x, scroll_y, 200, direction, ctx.window_rect, ctx.config, True)
+    scroll_x = int(0.595 * w)
+    scroll_y = int(0.8325 * h)
+    execute_swipe(scroll_x, scroll_y, 100, direction, ctx.window_rect, ctx.config, True)
 
 
 def _advance_upgrade_state() -> None:
@@ -2298,7 +2307,6 @@ def handle_upgrade_action(seen_page: Optional[str],
     # Purchase
     fx, fy = target_info['button_position']
     fx = fx +  0.1
-    log.info(f"Buying '{want_label}' (cost={target_info['cost']}) at ({fx:.3f}, {fy:.3f})")
     do_click(f"Buying upgrade '{want_label}'", fx, fy)
     ctx.last_upgrade_action = now
 
@@ -2377,7 +2385,7 @@ def cleanup_old_click_debug_files(config: Config, keep_count: int = 20) -> None:
         log.warning(f"Failed to cleanup old click_debug files: {e}")
 
 
-def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_front: bool = False) -> bool:
+def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_front: bool = False, reason: str = "") -> bool:
     """Execute click action. Side effect."""
     log = logging.getLogger(__name__)
     
@@ -2407,7 +2415,8 @@ def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_fro
             
             # Save debug image
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            debug_path = config.debug_dir / f"click_debug_{timestamp}.png"
+            reason_slug = ("_" + re.sub(r"[^\w]+", "_", reason).strip("_")) if reason else ""
+            debug_path = config.debug_dir / f"click_debug_{timestamp}{reason_slug}.png"
             debug_img.save(debug_path)
             log.info(f"Debug screenshot saved: {debug_path}")
             
@@ -2430,7 +2439,7 @@ def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_fro
     ax, ay = to_absolute_coords(x, y, rect)
     log.debug(f"click({x}, {y}) → abs({ax}, {ay})")
     pyautogui.click(ax, ay, interval=config.click_pause)
-    log.info(f"Clicked at ({ax}, {ay}); sleep for {config.click_pause:.2f} seconds")
+    log.info(f"Clicked at ({ax}, {ay}); sleep for {config.click_pause:.2f} seconds" + (f"  [{reason}]" if reason else ""))
     time.sleep(config.click_pause)
 
     return True
@@ -2444,14 +2453,14 @@ def execute_swipe(x: int, y: int, distance: int, direction: str,
     
     log = logging.getLogger(__name__)
     ax, ay = to_absolute_coords(x, y, rect)
-    offset = -distance if direction == "up" else distance
+    offset = distance if direction == "up" else -distance
     
     log.info(f"swipe_{direction}({x}, {y}, {distance})")
     pyautogui.moveTo(ax, ay)
     pyautogui.drag(0, offset, duration=0.3)
     log.info(f"Swiped {direction} from ({ax}, {ay}) by {offset} pixels")
     log.info('sleep for %.2f seconds', config.click_pause)
-    time.sleep(config.click_pause)
+    time.sleep(config.swipe_pause)
     return True
 
 
@@ -2463,7 +2472,7 @@ def execute_action(action: Action, rect: Optional[WindowRect],
 
     if action.action_type == ActionType.CLICK and rect:
         log.info('clicking at (%d, %d) relative to window', action.x, action.y)
-        execute_click(action.x, action.y, rect, config)
+        execute_click(action.x, action.y, rect, config, reason=action.reason)
 
     elif action.action_type == ActionType.SWIPE_UP and rect:
         execute_swipe(action.x, action.y, action.amount or 300,
@@ -2502,12 +2511,14 @@ class RuntimeContext:
     last_seen_upgrades: float = 0.0
     upgrade_state: int = 0
     last_upgrade_action: float = 0.0        # timestamp of last upgrade purchase attempt
-    last_upgrade_buttons_seen: float = 0.0  # timestamp when upgrade buttons were last visible
+    last_seen_upgrades: float = 0.0  # timestamp when upgrade buttons were last visible
+    recover_stage: int = 0
     upgrade_scroll_start: float = 0.0       # when current scroll direction started (0 = not scrolling)
     upgrade_scroll_direction: str = 'down'  # 'down' or 'up'
     free_upgrade_category: int = 0          # index into FREE_UPGRADE_CATEGORIES
     free_upgrade_cycle_start: float = 0.0   # when the current free-upgrade category started
     no_perk_until: float = 0.0              # skip perk processing until this timestamp (set when no perks selectable)
+
     def update_window(self):
         """Update window rect if needed."""
         if time.time() - self.last_window_check > 2.0:
@@ -2522,6 +2533,10 @@ def mark_battle_start():
     log.info("Battle start detected - marking in state")
     ctx.game_state = replace(ctx.game_state, battle_start_time=time.time())
     ctx.upgrade_state = 0
+    ctx.upgrade_scroll_start = 0.0
+    ctx.upgrade_scroll_direction = 'down'
+    ctx.free_upgrade_cycle_start = 0.0
+    ctx.no_perk_until = 0.0
 
 def click_if_present(name, condition, callback=None):
     global ctx
@@ -2530,7 +2545,7 @@ def click_if_present(name, condition, callback=None):
     log.debug(f'Marks found for condition "{name}"   : {marks}')
     if marks:
         log.info(f"Condition met for '{marks[0].text}' at ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking!")
-        execute_click(marks[0].center[0], marks[0].center[1], ctx.window_rect, ctx.config)
+        execute_click(marks[0].center[0], marks[0].center[1], ctx.window_rect, ctx.config, reason=name)
         if callback:
             callback()
 
@@ -2560,7 +2575,7 @@ def do_ocr():
         ocr_t0 = time.time()
         frame = process_ocr(img, ctx.config, ctx.ocr_reader)
         ocr_t1 = time.time()
-        log.info(f"OCR completed in {ocr_t1 - ocr_t0:.2f} seconds with {len(frame.results)} results")
+        log.info(f"------------------ OCR completed in {ocr_t1 - ocr_t0:.2f} seconds with {len(frame.results)} results")
         if frame:
             save_debug_files(img, frame, ctx.config)
         else:
@@ -2582,8 +2597,6 @@ def automation_loop_tick():
     """Single tick of automation loop."""
     global ctx
     log = logging.getLogger(__name__)
-    log.info("----------------- TiCK")
-
     result = do_ocr()
     if result is None:
         return
@@ -2628,10 +2641,8 @@ def automation_loop_tick():
         mode = 'main'
     log.info(f"Detected mode: {mode}")
     perk_text = {}
-    near_perk = [r for r in frame.results if r.is_near(0.6056, 0.035, 0.1)]
-    log.debug(f'near perk: {[ (r.fx, r.fy) for r in near_perk]}')
     click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281)))
-
+    click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.5951,   0.8168))
     click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429))
     game_stats_mark = [r for r in frame.results if r.text == 'GAME' and r.is_near(  0.5171,   0.2491) or r.text == 'STATS' and r.is_near(  0.6667,   0.2491)]
     defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
@@ -2642,34 +2653,22 @@ def automation_loop_tick():
         do_click("Seen game stats, clicking to exit", 0.7601, 0.7496)
     seen = None  # which upgrade sub-tab is currently visible; set inside if mode == 'main'
     if mode == 'main':
-        if defense_marks:
-            seen = 'DEFENSE'
-            
-            #do_click("Seen defense, Clicking 'ATTACK'", 0.321, 0.985)
-        elif attack_marks:
-            seen = 'ATTACK'
-
-            #do_click("Seen attack,Clicking 'UTILITY'", 0.7, 0.985)
-        elif utility_marks:
-            seen = 'UTILITY'
-            #do_click("Seen utiliy, Clicking 'DEFENSE'", 0.5105, 0.985)
-        else:
-            seen = None
-        log.info('Seen upgrade mode selector: %s', seen)
+        seen = 'DEFENSE' if defense_marks else 'ATTACK' if attack_marks else 'UTILITY' if utility_marks else None
+        log.info(f'Seen upgrade mode selector: {seen} at {ctx.upgrade_state} {UPGRADE_PRIORITY[ctx.upgrade_state]}')
         want_upgrades = UPGRADE_PRIORITY[ctx.upgrade_state][0] if ctx.upgrade_state < len(UPGRADE_PRIORITY) else None   
 
         if seen:
             ctx.last_seen_upgrades = time.time()
         else:
             delay = time.time() - ctx.last_seen_upgrades
-            log.info('Seen no upgrade mode selector for %.2f seconds', delay)
-            if delay > 60.0 and False:
-                do_click("Seen nothing Clicking 'DEFENSE'", 0.5105, 0.985)
+            if delay > 15.0:
+                pos = (0.5105, 0.985) if want_upgrades == 'DEFENSE' else (0.3232, 0.9711) if want_upgrades == 'ATTACK' else (0.7000, 0.9719)
+                do_click(f"Seen no upgrades for {delay} so clicking upgrades tab for {want_upgrades}", pos[0], pos[1])
             
-        click_if_present('perk', lambda r: r.text.lower() in ["perk", "perk:", 'park', 'new perk'] and r.is_near(0.6056, 0.035, 0.1))
-        newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.42, 0.00, 0.8, 0.10, threshold=0.99)
+        newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.42, 0.00, 0.8, 0.10, threshold=0.9)
         if newperk_pos:
             do_click("Clicking new perk icon (template match)", newperk_pos[0], newperk_pos[1])
+            mode = 'perks'
     for r in frame.results:
         cx, cy = r.center
         
@@ -2747,21 +2746,20 @@ def automation_loop_tick():
     if upgrade_buttons:
         text = [ f'{k} ({v["cost"]})' for k,v in upgrade_buttons.items()]
         log.info(f'upgrades detected : {", ".join(text)}')
-        ctx.last_upgrade_buttons_seen = time.time()
-    elif mode == 'main' and time.time() - ctx.last_upgrade_buttons_seen > 30.0:
-        log.info("No upgrade buttons visible for 30s - clicking (0.6, 0.9) to dismiss popup")
-        do_click("Dismiss popup blocking upgrades", 0.6, 0.9)
-        ctx.last_upgrade_buttons_seen = time.time()
+        ctx.last_seen_upgrades = time.time()
+        ctx.recover_stage = 0
+    elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 30.0 and ctx.recover_stage == 0:
+        log.info("No upgrade buttons visible for 30s - clicking low moddle to dismiss popup")
+        do_click("Dismiss popup blocking upgrades", 0.58, 0.9)
+        ctx.recover_stage = 1
+    elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 45.0 and ctx.recover_stage == 1:
+        log.info("No upgrade buttons visible for 45s - clicking top right to dismiss wave")
+        do_click('Dismiss wave info', 0.9129, 0.1411)
 
     # Game-restart detection: reset upgrade state when wave drops sharply
     if check_wave_restart(ctx.game_state):
         log.info("Wave drop detected - resetting upgrade state (game restarted)")
-        ctx.upgrade_state = 0
-        ctx.upgrade_scroll_start = 0.0
-        ctx.upgrade_scroll_direction = 'down'
-        ctx.free_upgrade_cycle_start = 0.0
-        ctx.no_perk_until = 0.0
-
+        mark_battle_start()
     # Timed upgrade purchasing (only when on main game screen with upgrades visible)
     if mode == 'main':
         handle_upgrade_action(seen, upgrade_buttons, w, h)
@@ -2866,7 +2864,7 @@ def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
                     "dt": dt
                 }, f)
             f.write("\n")
-        execute_click(click_x, click_y, ctx.window_rect, ctx.config)
+        execute_click(click_x, click_y, ctx.window_rect, ctx.config, reason="floating gem")
             # Post-click verification: re-capture and re-detect
         time.sleep(0.3)
         post_img = capture_window(ctx.window_rect)
@@ -2947,7 +2945,7 @@ def setup_logging():
     
     # Create formatters
     formatter = logging.Formatter(
-        "%(asctime)s  %(name)-24s  %(levelname)-7s  %(message)s",
+        "%(asctime)s  %(levelname)-7s  %(message)s",
         datefmt="%H:%M:%S"
     )
     
@@ -3042,11 +3040,12 @@ def main():
         claim_template=claim_template,
         battle_template=battle_template,
         newperk_template=newperk_template,
+        last_upgrade_action=time.time(),
         running=True,
         status="running",
         input_enabled=False,
     )
-    ctx.last_upgrade_buttons_seen = time.time()
+    ctx.last_seen_upgrades = time.time()
 
     # Run automation loop on main thread
     try:
