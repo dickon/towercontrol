@@ -126,7 +126,9 @@ UPGRADE_PRIORITY = [
     ('DEFENSE', 'Wall Health', 1e9, True),
     ('DEFENSE', 'Wall Rebuild', 1e9, True),
     ('DEFENSE', 'Health Regen', None, False),
-    ('DEFENSE', 'Defense Absoslute', None, False)
+    ('DEFENSE', 'Defense Absolute', None, False),
+    ('DEFENSE', 'Wall Health', None, True),
+
 ] 
 
 UPGRADE_PRIORITY_HIGH_TIER = [
@@ -135,8 +137,7 @@ UPGRADE_PRIORITY_HIGH_TIER = [
     ('DEFENSE', 'Wall Health', 1e6, True),
     ('DEFENSE', 'Health Regen', 1e6, False),
     ('DEFENSE', 'Health', None, False),
-    ('DEFENSE', 'Health', None, False),
-]
+] + UPGRADE_PRIORITY
 
 FLOATER_POSITIONS = [
     (0.6694, 0.3016)
@@ -2371,9 +2372,9 @@ def handle_upgrade_action(seen_page: Optional[str],
         if ctx.upgrades_finished_time is None:
             ctx.upgrades_finished_time = now
         elif now - ctx.upgrades_finished_time > 1800.0:  # 30 minutes:
-            log.info("Upgrade priority complete for 30s - resetting to start")
             ctx.upgrade_state = 0
             ctx.upgrades_finished_time = None
+        log.info("Upgrade priority complete for 30s - resetting to start")
         return
 
     want_page, want_label, cost_threshold, needs_scroll = prio[ctx.upgrade_state]
