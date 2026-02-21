@@ -2322,14 +2322,14 @@ def _advance_upgrade_state() -> None:
 
 
 def check_wave_restart(game_state: GameState) -> bool:
-    """Return True if the wave number has dropped sharply, indicating a game restart."""
+    """Return True if the wave number has dropped sharply for at least 6 consecutive readings."""
     history = game_state.wave_history
-    if len(history) < 4:
+    if len(history) < 7:
         return False
-    latest_wave = history[-1][0]
-    # Peak of the 4 entries before the latest one
-    recent_peak = max(w for w, _ in history[-5:-1])
-    return latest_wave < recent_peak - 100
+    # All of the last 6 readings must be well below the peak from before them
+    recent = history[-6:]
+    peak = max(w for w, _ in history[:-6])
+    return all(w < peak - 100 for w, _ in recent)
 
 
 def handle_upgrade_action(seen_page: Optional[str],
@@ -2403,17 +2403,34 @@ def handle_upgrade_action(seen_page: Optional[str],
     # Found - reset scroll tracking
     ctx.upgrade_scroll_start = 0.0
 
-    # Maxed?
-    if target_info['cost'] is None or cost_threshold is not None and target_info['cost'] > cost_threshold:
+    # Batch-advance: skip all visible maxed/over-threshold upgrades in a single tick
+    while target_info['cost'] is None or (cost_threshold is not None and target_info['cost'] > cost_threshold):
         reason = "cost exceeds threshold" if target_info['cost'] is not None else "upgrade is maxed"
-        log.info(f"'{want_label}' {reason}- advancing to next priority upgrade")
+        log.info(f"'{want_label}' {reason} - advancing to next priority upgrade")
         _advance_upgrade_state()
         ctx.last_upgrade_action = now
-        return
 
-    # Purchase
+        if ctx.upgrade_state >= len(UPGRADE_PRIORITY):
+            return
+
+        want_page, want_label, cost_threshold, needs_scroll = UPGRADE_PRIORITY[ctx.upgrade_state]
+
+        # Stop batch if the next upgrade is on a different tab or not currently visible
+        if want_page != seen_page:
+            return
+
+        target_info = None
+        for label, info in upgrade_buttons.items():
+            if label.lower() == want_label.lower():
+                target_info = info
+                break
+
+        if target_info is None:
+            return  # Not visible - will scroll next tick
+
+    # Purchase the first affordable upgrade found
     fx, fy = target_info['button_position']
-    fx = fx +  0.1
+    fx = fx + 0.1
     do_click(f"Buying upgrade '{want_label}'", fx, fy)
     ctx.last_upgrade_action = now
 
