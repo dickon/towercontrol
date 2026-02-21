@@ -16,6 +16,7 @@ import io
 import os
 import json
 import logging
+import logging.handlers
 import re
 import time
 import pprint
@@ -3018,36 +3019,43 @@ def initialize_ocr_backend(config: Config):
 
 def setup_logging():
     """Configure logging."""
+    import sys
+
+    # Force stdout to line-buffered so console output appears immediately.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+
     # Create logs directory
     log_dir = Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(exist_ok=True)
-    
-    # Create log filename with timestamp
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = log_dir / f"towercontrol_{timestamp}.log"
-    
+
+    # Fixed filename; rotates at 5 MB, keeps 5 backups.
+    log_file = log_dir / "towercontrol.log"
+
     # Create formatters
     formatter = logging.Formatter(
         "%(asctime)s  %(levelname)-7s  %(message)s",
         datefmt="%H:%M:%S"
     )
-    
+
     # Setup root logger
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    
-    # Console handler
-    console_handler = logging.StreamHandler()
+    logger.setLevel(logging.DEBUG)
+
+    # Console handler — INFO and above
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
-    
-    # File handler
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setLevel(logging.DEBUG)  # Log more detail to file
+
+    # Rotating file handler — DEBUG and above
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
-    
+
     logging.getLogger(__name__).info(f"Logging to file: {log_file}")
 
 
