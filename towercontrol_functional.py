@@ -127,7 +127,9 @@ UPGRADE_PRIORITY = [
     ('DEFENSE', 'Wall Rebuild', 1e9, True),
     ('DEFENSE', 'Health Regen', None, False),
     ('DEFENSE', 'Defense Absoslute', None, False)
-] if True else [
+] 
+
+UPGRADE_PRIORITY_HIGH_TIER = [
     ('ATTACK', 'Damage', None, False),
     ('DEFENSE', 'Health', 1e6, False),
     ('DEFENSE', 'Wall Health', 1e6, True),
@@ -186,6 +188,7 @@ class Config:
     scroll_region: Tuple[int, int, int, int] = (20, 200, 500, 650)
     upgrade_interval: float = 2.0            # seconds between upgrade purchase attempts
     upgrade_scroll_timeout: float = 120.0     # seconds scrolling down before switching to up
+    high_tier_threshold: int = 12            # tier >= this uses UPGRADE_PRIORITY_HIGH_TIER
 
     @property
     def screenshots_dir(self) -> Path:
@@ -2308,16 +2311,25 @@ def _do_upgrade_scroll(direction: str, w: int, h: int, message) -> None:
     execute_swipe(scroll_x, scroll_y, 400, direction, ctx.window_rect, ctx.config, True)
 
 
+def _active_upgrade_priority() -> list:
+    """Return the upgrade priority list appropriate for the current tier."""
+    tier = ctx.game_state.tier
+    if tier is not None and tier >= ctx.config.high_tier_threshold:
+        return UPGRADE_PRIORITY_HIGH_TIER
+    return UPGRADE_PRIORITY
+
+
 def _advance_upgrade_state() -> None:
-    """Move to the next item in UPGRADE_PRIORITY and reset scroll tracking."""
+    """Move to the next item in the active upgrade priority and reset scroll tracking."""
     global ctx
     log = logging.getLogger(__name__)
     ctx.upgrade_state += 1
     ctx.upgrade_scroll_start = 0.0
     ctx.upgrade_scroll_direction = 'down'
-    if ctx.upgrade_state < len(UPGRADE_PRIORITY):
+    prio = _active_upgrade_priority()
+    if ctx.upgrade_state < len(prio):
         log.info(f"Advanced to upgrade state {ctx.upgrade_state}: "
-                 f"'{UPGRADE_PRIORITY[ctx.upgrade_state][1]}'")
+                 f"'{prio[ctx.upgrade_state][1]}'")
     else:
         log.info("All priority upgrades complete")
 
@@ -2354,16 +2366,17 @@ def handle_upgrade_action(seen_page: Optional[str],
     if now - ctx.last_upgrade_action < ctx.config.upgrade_interval:
         return
 
-    if ctx.upgrade_state >= len(UPGRADE_PRIORITY):
+    prio = _active_upgrade_priority()
+    if ctx.upgrade_state >= len(prio):
         if ctx.upgrades_finished_time is None:
             ctx.upgrades_finished_time = now
         elif now - ctx.upgrades_finished_time > 1800.0:  # 30 minutes:
             log.info("Upgrade priority complete for 30s - resetting to start")
             ctx.upgrade_state = 0
-            ctx.upgrades_finished_time = None   
+            ctx.upgrades_finished_time = None
         return
 
-    want_page, want_label, cost_threshold, needs_scroll = UPGRADE_PRIORITY[ctx.upgrade_state]
+    want_page, want_label, cost_threshold, needs_scroll = prio[ctx.upgrade_state]
     log.info(f"Upgrade state {ctx.upgrade_state}: targeting '{want_label}' on {want_page} tab "
              f"(threshold={cost_threshold}, needs_scroll={needs_scroll})")
 
@@ -2388,7 +2401,7 @@ def handle_upgrade_action(seen_page: Optional[str],
         # Not visible - scroll to find it
         if ctx.upgrade_scroll_start == 0.0:
             ctx.upgrade_scroll_start = now
-            ctx.upgrade_scroll_direction = 'down' if UPGRADE_PRIORITY[ctx.upgrade_state][3] else 'up'
+            ctx.upgrade_scroll_direction = 'down' if prio[ctx.upgrade_state][3] else 'up'
             log.info(f"'{want_label}' not on screen - beginning scroll  {ctx.upgrade_scroll_direction}")
 
         elapsed = now - ctx.upgrade_scroll_start
@@ -2411,10 +2424,10 @@ def handle_upgrade_action(seen_page: Optional[str],
         _advance_upgrade_state()
         ctx.last_upgrade_action = now
 
-        if ctx.upgrade_state >= len(UPGRADE_PRIORITY):
+        if ctx.upgrade_state >= len(prio):
             return
 
-        want_page, want_label, cost_threshold, needs_scroll = UPGRADE_PRIORITY[ctx.upgrade_state]
+        want_page, want_label, cost_threshold, needs_scroll = prio[ctx.upgrade_state]
 
         # Stop batch if the next upgrade is on a different tab or not currently visible
         if want_page != seen_page:
@@ -2728,8 +2741,9 @@ def automation_loop_tick():
     seen = None  # which upgrade sub-tab is currently visible; set inside if mode == 'main'
     if mode == 'main':
         seen = 'DEFENSE' if defense_marks else 'ATTACK' if attack_marks else 'UTILITY' if utility_marks else None
-        log.info(f'Seen upgrade mode selector: {seen} at {ctx.upgrade_state} {UPGRADE_PRIORITY[ctx.upgrade_state]}')
-        want_upgrades = UPGRADE_PRIORITY[ctx.upgrade_state][0] if ctx.upgrade_state < len(UPGRADE_PRIORITY) else None   
+        prio = _active_upgrade_priority()
+        log.info(f'Seen upgrade mode selector: {seen} at {ctx.upgrade_state} {prio[ctx.upgrade_state] if ctx.upgrade_state < len(prio) else None}')
+        want_upgrades = prio[ctx.upgrade_state][0] if ctx.upgrade_state < len(prio) else None   
 
         if seen:
             ctx.last_seen_upgrades = time.time()
