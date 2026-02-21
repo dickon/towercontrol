@@ -80,7 +80,7 @@ PERK_CHOICES = [
     r'Perk Wave Requirement( -[\d\.]+%)?',
     r'(Increase )?Max Game Speed( by \-[\d\.]+)?',
     r'(x[\d\.]+ )?All Coins Bonuses',
-    r'[\d\.]+ Damage',
+    r'^(x?[\d\.]+ )?Damage\b',
     r'Chain Lightning Damage( x[\d\.]+)?',
     r'Golden Tower Bonus( x[\d\.]+)?',
     r'(\d*\s*)?More Smart Missiles',
@@ -103,7 +103,6 @@ PERK_CHOICES = [
     r'Unlock Spotlight',
     r'Interest( x[\d\.]+)?',    
     r'(x[\d\.]*\s*)?Defense Absolute',
-    r'.*but boss.*',
     r'x1.89 coins, but -10.0% tower max',
     ]
 
@@ -557,7 +556,9 @@ def run_pytesseract_ocr(img: np.ndarray, config: Config) -> List[OCRResult]:
         for i in range(n):
             txt = data["text"][i].strip()
             conf = float(data["conf"][i])
-            if conf >= config.ocr_confidence and len(txt) >= 2:
+            # Allow single-digit tokens so tier numbers like "4" or "5" aren't
+            # silently dropped. All other single-char tokens are still filtered.
+            if conf >= config.ocr_confidence and (len(txt) >= 2 or txt.isdigit()):
                 bbox = (data["left"][i], data["top"][i],
                        data["width"][i], data["height"][i])
                 results.append(OCRResult(text=txt, bbox=bbox, confidence=conf))
@@ -805,6 +806,67 @@ def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
         header_recovery = _ocr_upgrade_header_recovery(arr, config)
         if header_recovery:
             scaled_results = _merge_ocr_results([scaled_results, header_recovery])
+
+    # Recovery pass: tier digit detection
+    # If a standalone "Tier" token is found but no adjacent digit token,
+    # crop the small region to its right and run a focused Tesseract pass
+    # with a digit+S whitelist (S is the common OCR misread of "5").
+    _OCR_DIGIT_MAP = str.maketrans('SOILBZG', '5011826')
+    tier_found = any(
+        re.search(r'Tier\s*\d', r.text.translate(_OCR_DIGIT_MAP), re.IGNORECASE)
+        for r in scaled_results
+    )
+    if not tier_found and pytesseract:
+        tier_r = next(
+            (r for r in scaled_results if re.fullmatch(r'Tier', r.text, re.IGNORECASE)),
+            None,
+        )
+        if tier_r:
+            try:
+                tier_cx = int(tier_r.fx * w)
+                tier_cy = int(tier_r.fy * h)
+                x_lo = tier_cx + 5
+                x_hi = min(w, tier_cx + max(100, int(w * 0.10)))
+                y_lo = max(0, tier_cy - max(30, int(h * 0.05)))
+                y_hi = min(h, tier_cy + max(30, int(h * 0.05)))
+                roi = arr[y_lo:y_hi, x_lo:x_hi]
+                if roi.size > 0:
+                    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                    up = cv2.resize(gray_roi, None, fx=3.0, fy=3.0,
+                                    interpolation=cv2.INTER_CUBIC)
+                    _, thr = cv2.threshold(up, 0, 255,
+                                           cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
+                    found_digit: Optional[int] = None
+                    # Try inverted OTSU first (works when text is light on dark bg),
+                    # then normal OTSU (dark text on light bg).
+                    for inv in (True, False):
+                        img_to_ocr = cv2.bitwise_not(thr) if inv else thr
+                        pad = cv2.copyMakeBorder(img_to_ocr, 15, 15, 15, 15,
+                                                 cv2.BORDER_CONSTANT, value=255)
+                        digit_text = pytesseract.image_to_string(
+                            pad, lang=config.ocr_lang,
+                            config="--psm 11 --oem 3 -c tessedit_char_whitelist=0123456789S",
+                            timeout=5,
+                        ).strip().translate(_OCR_DIGIT_MAP)
+                        m_digit = re.search(r'(?<!\d)(\d{1,2})(?!\d)', digit_text)
+                        if m_digit:
+                            n = int(m_digit.group(1))
+                            if 1 <= n <= 20:
+                                found_digit = n
+                                break
+                    m_digit = None  # clear; use found_digit below
+                    if found_digit is not None and 1 <= found_digit <= 20:
+                        cx = (x_lo + x_hi) // 2
+                        synthetic = OCRResult(
+                            text=str(found_digit),
+                            bbox=(cx - 5, tier_cy - 10, 15, 20),
+                            confidence=50.0,
+                            image_size=(w, h),
+                        )
+                        scaled_results = scaled_results + [synthetic]
+            except Exception:
+                pass
 
     # Save preprocessed debug image (first variant)
     try:
@@ -1363,16 +1425,21 @@ def _find_upgrade_boxes(img: Image.Image) -> List[Tuple[int, int, int, int]]:
         f"v_peaks={[p + x_left for p in v_peaks]}"
     )
 
-    # Build boxes from consecutive pairs of separator lines
+    # Build boxes from consecutive pairs of separator lines.
+    # Append the panel bottom as a fallback "last separator" so that the
+    # bottom box is detected even when its closing border line is faint or
+    # falls outside the scan area.
+    h_peaks_for_boxes = h_peaks + [ph]
+
     boxes: List[Tuple[int, int, int, int]] = []
     min_bh = h_img * 0.05   # at least 5 % of image height
     max_bh = h_img * 0.22   # at most 22 % of image height
     min_bw = w_img * 0.10   # at least 10 % of image width
     max_bw = w_img * 0.55   # at most 55 % of image width
 
-    for i in range(len(h_peaks) - 1):
-        y1 = h_peaks[i] + y_top
-        y2 = h_peaks[i + 1] + y_top
+    for i in range(len(h_peaks_for_boxes) - 1):
+        y1 = h_peaks_for_boxes[i] + y_top
+        y2 = h_peaks_for_boxes[i + 1] + y_top
         bh = y2 - y1
         if not (min_bh <= bh <= max_bh):
             continue
@@ -1549,21 +1616,30 @@ def _ocr_box_value(img: Image.Image, box_x: int, box_y: int,
             best_roi = arr[box_y: box_y + int(box_h * 0.60), x_start:x_end]
 
         gray = cv2.cvtColor(best_roi, cv2.COLOR_BGR2GRAY)
-        if gray.mean() > 120:   # skip if area is unexpectedly bright
-            return None
-
-        # ── Step 2: CLAHE + OTSU for robust light-on-dark text ────────────
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
-        enhanced = clahe.apply(gray)
-        upscaled = cv2.resize(enhanced, None, fx=3.0, fy=3.0,
+        upscaled = cv2.resize(gray, None, fx=3.0, fy=3.0,
                                interpolation=cv2.INTER_CUBIC)
         _, thresh = cv2.threshold(upscaled, 0, 255,
                                    cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        # Invert to black-on-white then pad
-        padded = cv2.copyMakeBorder(
-            cv2.bitwise_not(thresh), 20, 20, 20, 20,
-            cv2.BORDER_CONSTANT, value=255,
-        )
+
+        # ── Step 2: Prepare black-on-white image for Tesseract ─────────────
+        if gray.mean() > 120:
+            # Bright background with dark text: OTSU already gives
+            # white background + black text — no inversion needed.
+            padded = cv2.copyMakeBorder(thresh, 20, 20, 20, 20,
+                                        cv2.BORDER_CONSTANT, value=255)
+        else:
+            # Dark background with light text: CLAHE first for better
+            # contrast, then OTSU + invert to get black-on-white.
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
+            enhanced = clahe.apply(gray)
+            upscaled = cv2.resize(enhanced, None, fx=3.0, fy=3.0,
+                                   interpolation=cv2.INTER_CUBIC)
+            _, thresh = cv2.threshold(upscaled, 0, 255,
+                                       cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            padded = cv2.copyMakeBorder(
+                cv2.bitwise_not(thresh), 20, 20, 20, 20,
+                cv2.BORDER_CONSTANT, value=255,
+            )
 
         pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
         text = pytesseract.image_to_string(
@@ -1582,19 +1658,41 @@ def _match_upgrade_label(texts: List[str]) -> Optional[str]:
     Sorts known labels by word-count descending so longer / more-specific
     labels (e.g. "Thorn Damage") match before shorter ones (e.g. "Damage").
 
+    Two passes:
+    1. Require ALL label words to be present.
+    2. For labels with 3+ words, allow at most one word to be missing
+       (handles OCR dropping words like "Per" in "Damage Per Meter").
+
     Returns the matched label string, or None if no match found.
     """
     texts_lower = [t.lower() for t in texts]
     sorted_labels = sorted(ALL_UPGRADE_LABELS, key=lambda l: len(l.split()), reverse=True)
 
+    def _word_found(word: str) -> bool:
+        return any(word in lt or lt in word for lt in texts_lower)
+
+    # Score each label; pick the best.
+    # Full match scores matched_count; partial (N-1 for N>=3) scores matched_count - 0.5.
+    # This ensures "Damage Per Meter" (2/3, score=1.5) beats "Damage" (1/1, score=1.0)
+    # when both "Damage" and "Meter" are present in the OCR texts.
+    best_label: Optional[str] = None
+    best_score: float = 0.0
+
     for known_label in sorted_labels:
         known_words = known_label.lower().replace('/', ' ').split()
-        if all(
-            any(word in lt or lt in word for lt in texts_lower)
-            for word in known_words
-        ):
-            return known_label
-    return None
+        n = len(known_words)
+        matched = sum(1 for w in known_words if _word_found(w))
+        if matched == n:
+            score = float(matched)
+        elif n >= 3 and matched == n - 1:
+            score = matched - 0.5
+        else:
+            continue
+        if score > best_score:
+            best_score = score
+            best_label = known_label
+
+    return best_label
 
 
 def _parse_upgrade_value(texts: List[str]) -> Optional[float]:
@@ -1607,15 +1705,17 @@ def _parse_upgrade_value(texts: List[str]) -> Optional[float]:
     """
     for text in texts:
         text = text.strip()
-        # Percentage (e.g. "95.90%")
-        pct = re.match(r'^([0-9,.]+)\s*%', text)
+        # Percentage (e.g. "95.90%", "| 63.40% |", "vel 6.25%")
+        # Use re.search so leading OCR artefacts (pipes, letters) are ignored.
+        pct = re.search(r'([0-9,.]+)\s*%', text)
         if pct:
             try:
                 return float(pct.group(1).replace(',', ''))
             except ValueError:
                 pass
-        # Number optionally followed by a unit suffix (e.g. "107.30B/sec")
-        num = re.match(r'^([0-9,.]+\s*[KMBT]?)(?:/\w+)?$', text, re.IGNORECASE)
+        # Number optionally followed by a unit suffix (e.g. "107.30B/sec").
+        # re.search tolerates leading/trailing OCR noise.
+        num = re.search(r'([0-9,.]+\s*[KMBT]?)(?:/\w+)?', text, re.IGNORECASE)
         if num:
             parsed = parse_number_with_suffix(num.group(1).strip())
             if parsed is not None:
@@ -1784,7 +1884,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
                                     f"'{ocr_text}' → {parsed}"
                                 )
 
-            if purchase_count == 1:
+            if purchase_count is None:
                 count = _ocr_box_purchase_count(img, box_x, box_y, box_w, box_h, config)
                 if count is not None:
                     purchase_count = count
@@ -2106,12 +2206,19 @@ def update_tier_from_frame(frame: OCRFrame) -> None:
 
     tier_num: Optional[int] = None
 
+    # Common OCR letter→digit substitutions (e.g. 5→S, 0→O, 1→I/l)
+    _OCR_DIGIT_MAP = str.maketrans('SOILBZG', '5011826')
+
     for r in frame.results:
-        # Single token: "Tier 4", "Tier 5", etc.
-        m = re.fullmatch(r'Tier\s+(\d+)', r.text, re.IGNORECASE)
+        # Single token: "Tier 4", "Tier4", "TierS" (S misread as 5), etc.
+        # Apply common OCR digit-substitution corrections before matching.
+        corrected = r.text.translate(_OCR_DIGIT_MAP)
+        m = re.fullmatch(r'Tier\s*(\d+)', corrected, re.IGNORECASE)
         if m:
-            tier_num = int(m.group(1))
-            break
+            n = int(m.group(1))
+            if 1 <= n <= 20:
+                tier_num = n
+                break
 
         # Two adjacent tokens: "Tier" then a standalone digit nearby
         if r.text.lower() == 'tier':
@@ -2119,8 +2226,9 @@ def update_tier_from_frame(frame: OCRFrame) -> None:
                 if other is r:
                     continue
                 if re.fullmatch(r'\d+', other.text):
-                    if abs(other.fx - r.fx) < 0.12 and abs(other.fy - r.fy) < 0.05:
-                        tier_num = int(other.text)
+                    n = int(other.text)
+                    if 1 <= n <= 20 and abs(other.fx - r.fx) < 0.12 and abs(other.fy - r.fy) < 0.05:
+                        tier_num = n
                         break
             if tier_num is not None:
                 break
