@@ -127,6 +127,13 @@ UPGRADE_PRIORITY = [
     ('DEFENSE', 'Wall Rebuild', 1e9, True),
     ('DEFENSE', 'Health Regen', None, False),
     ('DEFENSE', 'Defense Absoslute', None, False)
+] if True else [
+    ('ATTACK', 'Damage', None, False),
+    ('DEFENSE', 'Health', 1e6, False),
+    ('DEFENSE', 'Wall Health', 1e6, True),
+    ('DEFENSE', 'Health Regen', 1e6, False),
+    ('DEFENSE', 'Health', None, False),
+    ('DEFENSE', 'Health', None, False),
 ]
 
 FLOATER_POSITIONS = [
@@ -179,7 +186,6 @@ class Config:
     scroll_region: Tuple[int, int, int, int] = (20, 200, 500, 650)
     upgrade_interval: float = 2.0            # seconds between upgrade purchase attempts
     upgrade_scroll_timeout: float = 120.0     # seconds scrolling down before switching to up
-    free_upgrade_cycle_seconds: float = 120.0  # seconds per category in free-upgrade mode
 
     @property
     def screenshots_dir(self) -> Path:
@@ -2029,7 +2035,7 @@ def process_battle_button(img: Optional[Image.Image]) -> None:
 
     battle_button_pos = None
     if ctx.battle_template is not None:
-        battle_button_pos = detect_template_in_region(img, ctx.battle_template, "BATTLE button", 0.28, 0.71, 0.88, 0.91, threshold=0.98)
+        battle_button_pos = detect_template_in_region(img, ctx.battle_template, "BATTLE button", 0.28, 0.71, 0.88, 0.91, threshold=0.95)
     else:
         log.error('no battle button template')
     if battle_button_pos:
@@ -2161,8 +2167,6 @@ def find_claimable_buttons(state: GameState) -> List[UIElement]:
 # UPGRADE AUTOMATION
 # ============================================================================
 
-FREE_UPGRADE_CATEGORIES = ['ATTACK', 'DEFENSE', 'UTILITY']
-
 CATEGORY_UPGRADES: Dict[str, set] = {
     'ATTACK': set(ATTACK_UPGRADES),
     'DEFENSE': set(DEFENSE_UPGRADES),
@@ -2206,7 +2210,7 @@ def _advance_upgrade_state() -> None:
         log.info(f"Advanced to upgrade state {ctx.upgrade_state}: "
                  f"'{UPGRADE_PRIORITY[ctx.upgrade_state][1]}'")
     else:
-        log.info("All priority upgrades complete - entering free upgrade mode")
+        log.info("All priority upgrades complete")
 
 
 def check_wave_restart(game_state: GameState) -> bool:
@@ -2227,10 +2231,8 @@ def handle_upgrade_action(seen_page: Optional[str],
 
     Called every tick; only acts when upgrade_interval seconds have elapsed.
     Steps:
-      1. If upgrade_state is past the end of UPGRADE_PRIORITY, hand off to
-         handle_free_upgrade_mode.
-      2. Ensure the correct upgrade sub-tab (ATTACK/DEFENSE/UTILITY) is open.
-      3. Look for the target upgrade label among visible buttons.
+      1. Ensure the correct upgrade sub-tab (ATTACK/DEFENSE/UTILITY) is open.
+      2. Look for the target upgrade label among visible buttons.
          - Not found → scroll (down first, switch to up after upgrade_scroll_timeout).
          - Found, cost is None (MAX) → advance to next priority item.
          - Found, cost exceeds threshold → advance to next priority item.
@@ -2244,7 +2246,12 @@ def handle_upgrade_action(seen_page: Optional[str],
         return
 
     if ctx.upgrade_state >= len(UPGRADE_PRIORITY):
-        handle_free_upgrade_mode(seen_page, upgrade_buttons)
+        if ctx.upgrades_finished_time is None:
+            ctx.upgrades_finished_time = now
+        elif now - ctx.upgrades_finished_time > 1800.0:  # 30 minutes:
+            log.info("Upgrade priority complete for 30s - resetting to start")
+            ctx.upgrade_state = 0
+            ctx.upgrades_finished_time = None   
         return
 
     want_page, want_label, cost_threshold, needs_scroll = UPGRADE_PRIORITY[ctx.upgrade_state]
@@ -2289,16 +2296,9 @@ def handle_upgrade_action(seen_page: Optional[str],
     ctx.upgrade_scroll_start = 0.0
 
     # Maxed?
-    if target_info['cost'] is None:
-        log.info(f"'{want_label}' is maxed - advancing to next priority upgrade")
-        _advance_upgrade_state()
-        ctx.last_upgrade_action = now
-        return
-
-    # Exceeds cost threshold?
-    if cost_threshold is not None and target_info['cost'] > cost_threshold:
-        log.info(f"'{want_label}' cost {target_info['cost']:.0f} > threshold {cost_threshold:.0f} "
-                 f"- advancing to next priority upgrade")
+    if target_info['cost'] is None or cost_threshold is not None and target_info['cost'] > cost_threshold:
+        reason = "cost exceeds threshold" if target_info['cost'] is not None else "upgrade is maxed"
+        log.info(f"'{want_label}' {reason}- advancing to next priority upgrade")
         _advance_upgrade_state()
         ctx.last_upgrade_action = now
         return
@@ -2307,53 +2307,6 @@ def handle_upgrade_action(seen_page: Optional[str],
     fx, fy = target_info['button_position']
     fx = fx +  0.1
     do_click(f"Buying upgrade '{want_label}'", fx, fy)
-    ctx.last_upgrade_action = now
-
-
-def handle_free_upgrade_mode(seen_page: Optional[str],
-                             upgrade_buttons: Dict[str, Any]) -> None:
-    """Purchase any available (non-maxed) upgrade, cycling ATTACK→DEFENSE→UTILITY every 2 min."""
-    global ctx
-    log = logging.getLogger(__name__)
-    now = time.time()
-
-    if now - ctx.last_upgrade_action < ctx.config.upgrade_interval:
-        return
-
-    # Initialise cycle timer on first entry into this mode
-    if ctx.free_upgrade_cycle_start == 0.0:
-        ctx.free_upgrade_cycle_start = now
-
-    # Rotate category after free_upgrade_cycle_seconds
-    if now - ctx.free_upgrade_cycle_start >= ctx.config.free_upgrade_cycle_seconds:
-        ctx.free_upgrade_category = (ctx.free_upgrade_category + 1) % len(FREE_UPGRADE_CATEGORIES)
-        ctx.free_upgrade_cycle_start = now
-        log.info(f"Free upgrade cycle: now targeting "
-                 f"{FREE_UPGRADE_CATEGORIES[ctx.free_upgrade_category]}")
-
-    want_page = FREE_UPGRADE_CATEGORIES[ctx.free_upgrade_category]
-    log.info(f"Free upgrade mode: looking for any available {want_page} upgrade")
-
-    if seen_page is None:
-        return
-
-    if seen_page != want_page:
-        log.info(f"Free upgrade: switching from {seen_page} to {want_page}")
-        _click_upgrade_tab(want_page)
-        ctx.last_upgrade_action = now
-        return
-
-    category_labels = CATEGORY_UPGRADES[want_page]
-    for label, info in upgrade_buttons.items():
-        if label in category_labels and info['cost'] is not None:
-            fx, fy = info['button_position']
-            log.info(f"Free upgrade: buying '{label}' (cost={info['cost']}) "
-                     f"at ({fx:.3f}, {fy:.3f})")
-            do_click(f"Free upgrade: '{label}'", fx, fy)
-            ctx.last_upgrade_action = now
-            return
-
-    log.info(f"Free upgrade: no available {want_page} upgrades visible this tick")
     ctx.last_upgrade_action = now
 
 
@@ -2512,10 +2465,8 @@ class RuntimeContext:
     recover_stage: int = 0
     upgrade_scroll_start: float = 0.0       # when current scroll direction started (0 = not scrolling)
     upgrade_scroll_direction: str = 'down'  # 'down' or 'up'
-    free_upgrade_category: int = 0          # index into FREE_UPGRADE_CATEGORIES
-    free_upgrade_cycle_start: float = 0.0   # when the current free-upgrade category started
     no_perk_until: float = 0.0              # skip perk processing until this timestamp (set when no perks selectable)
-
+    upgrades_finished_time: Optional[int] = None
     def update_window(self):
         """Update window rect if needed."""
         if time.time() - self.last_window_check > 2.0:
@@ -2532,7 +2483,6 @@ def mark_battle_start():
     ctx.upgrade_state = 0
     ctx.upgrade_scroll_start = 0.0
     ctx.upgrade_scroll_direction = 'down'
-    ctx.free_upgrade_cycle_start = 0.0
     ctx.no_perk_until = 0.0
 
 def click_if_present(name, condition, callback=None):
@@ -2637,6 +2587,7 @@ def automation_loop_tick():
     else:
         mode = 'main'
     log.info(f"Detected mode: {mode}")
+    perk_just_clicked = False  # True when we clicked the perk icon this tick (overlay not open yet)
     perk_text = {}
     click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281)))
     click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.5951,   0.8168))
@@ -2669,6 +2620,7 @@ def automation_loop_tick():
             if newperk_pos:
                 do_click("Clicking new perk icon (template match)", newperk_pos[0], newperk_pos[1])
                 mode = 'perks'
+                perk_just_clicked = True  # overlay not visible yet; detect_perks will run next tick
     for r in frame.results:
         cx, cy = r.center
         
@@ -2700,7 +2652,9 @@ def automation_loop_tick():
                 coins = value * multiplier
 
     # Use refactored perk detection
-    if mode == 'perks' and time.time() < ctx.no_perk_until:
+    if mode == 'perks' and perk_just_clicked:
+        log.info("Just clicked perk icon this tick - overlay not yet visible, deferring perk detection to next tick")
+    elif mode == 'perks' and time.time() < ctx.no_perk_until:
         log.info(f"Perk cooldown active - skipping perk check for {ctx.no_perk_until - time.time():.0f}s more, closing window")
         close_perks()
     else:
