@@ -462,6 +462,79 @@ class TestDefenseAbsoluteCost:
             f"Defense Absolute upgrades_to_purchase should be 504, got {count}"
 
 
+class TestLandMineCostUnknown:
+    """Test upgrade detection on test_images/land_mine_cost_unknown.png.
+
+    Image shows DEFENSE UPGRADES screen:
+      - Land Mine Chance:  30.00%  / Max
+      - Land Mine Damage:  38.43T  / Max   <-- key: currently parsed as OCR failed
+      - Land Mine Radius:  1.65    / Max
+      - Death Defy:        30.00%  / Max
+      - Wall Health:       69.70%  / (partially visible)
+      - Wall Rebuild:      570s    / (partially visible)
+
+    Bug: Land Mine Damage cost button is misread as OCR failure instead of Max.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        """Set up test fixtures."""
+        self.config = Config()
+        test_image = Path("test_images/land_mine_cost_unknown.png")
+        if not test_image.exists():
+            pytest.skip(f"Test image not found: {test_image}")
+        self.img = Image.open(test_image)
+        self.frame = process_ocr(self.img, self.config)
+        self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
+
+    def test_land_mine_damage_detected(self):
+        """Verify Land Mine Damage upgrade is detected."""
+        assert 'Land Mine Damage' in self.upgrades, \
+            f"Land Mine Damage should be detected. Found: {list(self.upgrades.keys())}"
+
+    @pytest.mark.xfail(reason="Land Mine Damage Max button misread as OCR failure (cost=None, is_max=False)")
+    def test_land_mine_damage_is_max(self):
+        """Verify Land Mine Damage button shows Max (is_max=True, cost=None).
+
+        FAILING: The Max button on Land Mine Damage is currently parsed as an
+        OCR failure (cost=None, is_max=False) instead of Max (is_max=True).
+        """
+        assert 'Land Mine Damage' in self.upgrades, "Land Mine Damage should be detected"
+
+        info = self.upgrades['Land Mine Damage']
+        assert info['is_max'] is True, \
+            f"Land Mine Damage should be is_max=True, got is_max={info['is_max']}, cost={info['cost']}"
+        assert info['cost'] is None, \
+            f"Land Mine Damage should have cost=None (Max), got cost={info['cost']}"
+
+    def test_land_mine_chance_is_max(self):
+        """Verify Land Mine Chance is detected as Max."""
+        assert 'Land Mine Chance' in self.upgrades, \
+            f"Land Mine Chance should be detected. Found: {list(self.upgrades.keys())}"
+
+        info = self.upgrades['Land Mine Chance']
+        assert info['is_max'] is True, \
+            f"Land Mine Chance should be is_max=True, got is_max={info['is_max']}, cost={info['cost']}"
+
+    def test_land_mine_radius_is_max(self):
+        """Verify Land Mine Radius is detected as Max."""
+        assert 'Land Mine Radius' in self.upgrades, \
+            f"Land Mine Radius should be detected. Found: {list(self.upgrades.keys())}"
+
+        info = self.upgrades['Land Mine Radius']
+        assert info['is_max'] is True, \
+            f"Land Mine Radius should be is_max=True, got is_max={info['is_max']}, cost={info['cost']}"
+
+    def test_death_defy_is_max(self):
+        """Verify Death Defy is detected as Max."""
+        assert 'Death Defy' in self.upgrades, \
+            f"Death Defy should be detected. Found: {list(self.upgrades.keys())}"
+
+        info = self.upgrades['Death Defy']
+        assert info['is_max'] is True, \
+            f"Death Defy should be is_max=True, got is_max={info['is_max']}, cost={info['cost']}"
+
+
 class TestParseNumberWithSuffix:
     """Test cases for parse_number_with_suffix helper function."""
 
