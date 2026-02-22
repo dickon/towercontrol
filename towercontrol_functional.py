@@ -86,17 +86,17 @@ PERK_CHOICES = [
     r'Golden Tower Bonus( x[\d\.]+)?',
     r'(\d*\s*)?More Smart Missiles',
     r'(\d*\s*)?(Wave )?On Death Wave',
+    r'Defense percent( \+[\d\.]+%)?',
     r'Bounce Shot( \+\d+)?',
     r'Black Hole Duration( \+[\d\.]+s)?',
+    r'Chrono Field Duration( \+[\d\.]+s)?',
     r'Unlock Chrono Field',
     r'(x[\d\.]+ )?Max Health',
     r'Upgrade Chance for all'
     r'Unlock poison swamp',
     r'(x[\d\.]+ )?Cash Bonus',
     r'Spotlight Damage Bonus( x[\d\.]+)?',
-    r'Defense percent( \+[\d\.]+%)?',
     r'(x?[\d\.]+ )?Health Regen',
-    r'Chrono Field Duration( \+[\d\.]+s)?',
     r'Swamp Radius( x[\d\.]+)?',
     r'Extra Set Of Inner Mines',
     r'Orbs( \+\d+)?',
@@ -175,7 +175,7 @@ class Config:
     ocr_lang: str = "eng"
     ocr_confidence: float = 40.0
     tesseract_cmd: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-    click_pause: float = 5.0
+    click_pause: float = 1.0
     swipe_pause: float = 1.0
     input_delay: float = 0.15
     loop_tick: float = 20.0
@@ -2769,7 +2769,7 @@ def automation_loop_tick():
         seen = 'DEFENSE' if defense_marks else 'ATTACK' if attack_marks else 'UTILITY' if utility_marks else None
         ctx.upgrade_mode_seen = seen
         prio = _active_upgrade_priority()
-        log.debug(f'Seen upgrade mode selector: {seen} at {ctx.upgrade_state} {prio[ctx.upgrade_state] if ctx.upgrade_state < len(prio) else None}')
+        log.info(f'Seen upgrade mode selector: {seen} at {ctx.upgrade_state} {prio[ctx.upgrade_state] if ctx.upgrade_state < len(prio) else None}')
         want_upgrades = prio[ctx.upgrade_state][0] if ctx.upgrade_state < len(prio) else None   
 
         if seen:
@@ -2817,19 +2817,15 @@ def automation_loop_tick():
                 multipliers = {'K': 1_000, 'M': 1_000_000, 'B': 1_000_000_000, 'T': 1_000_000_000_000}
                 multiplier = multipliers.get(suffix, 1)
                 coins = value * multiplier
-
+    perk_result = detect_perks(frame)
+    perk_text = perk_result['perk_text']
+    perk_text_join = perk_result['perk_text_join']
+    perk_text_priority = perk_result['perk_text_priority']
+    clean = perk_result['all_matched']
     # Use refactored perk detection
-    if mode == 'perks' and perk_just_clicked:
-        log.info("Just clicked perk icon this tick - overlay not yet visible, deferring perk detection to next tick")
-    elif mode == 'perks' and time.time() < ctx.no_perk_until:
-        log.info(f"Perk cooldown active - skipping perk check for {ctx.no_perk_until - time.time():.0f}s more, closing window")
-        close_perks()
+    if mode == 'perks' and perk_just_clicked and not clean:
+        log.info("Just clicked perk icon this tick - overlay not yet cleanly visible, deferring perk detection to next tick")
     else:
-        perk_result = detect_perks(frame)
-        perk_text = perk_result['perk_text']
-        perk_text_join = perk_result['perk_text_join']
-        perk_text_priority = perk_result['perk_text_priority']
-        clean = perk_result['all_matched']
         log.debug('perk text: %s', perk_text)
         if mode == 'perks' and not perk_text:
             log.info("Perks mode active but no selectable perks detected - closing window and suppressing perk checks for 1200s")
@@ -2857,7 +2853,6 @@ def automation_loop_tick():
                 # click the perk in that row
                 message = f"Clicking perk at row {best_row} (choice: '{best_choice}')"
                 do_click(message, 0.671, PERK_ROWS[best_row][1])
-                close_perks()
             else:
                 log.info(f"No perk matched any known pattern - closing window and suppressing perk checks for 1200s. Rows: {perk_text_join}")
                 close_perks()
@@ -2949,7 +2944,7 @@ def automation_loop_tick():
                 else:
                     log.info(base_message)
             else:
-                log.info(f"tier {ctx.game_state.tier} | Wave progress: {wave} (collecting data...)")
+                log.info(f"{base_message} | Wave progress: {wave} (collecting data...)")
         except (ValueError, TypeError):
             pass
     
