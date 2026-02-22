@@ -112,7 +112,7 @@ UPGRADE_PRIORITY = [
     ('UTILITY', 'Enemy Health level Skip', 1e8, True),
     ('ATTACK', 'Damage', None, False),
     ('DEFENSE', 'Health', None, False),
-    ('DEFENSE', 'Shockwave Size', None, True),
+    ('DEFENSE', 'Shockwave Size', None, True), 
     ('DEFENSE', 'Shockwave Frequency', None, True),
     ('DEFENSE', 'Land Mine Chance', None, True),
     ('DEFENSE', 'Land Mine Damage', None, True),
@@ -2239,10 +2239,7 @@ def update_tier_from_frame(frame: OCRFrame) -> None:
                 break
 
     if tier_num is not None:
-        log.info("Tier detected: %d", tier_num)
         ctx.game_state = replace(ctx.game_state, tier=tier_num)
-    else:
-        log.info("No tier found in frame; state unchanged")
 
 
 def get_last_action_time(state: GameState, action_type: ActionType) -> float:
@@ -2374,7 +2371,7 @@ def handle_upgrade_action(seen_page: Optional[str],
         elif now - ctx.upgrades_finished_time > 1800.0:  # 30 minutes:
             ctx.upgrade_state = 0
             ctx.upgrades_finished_time = None
-        log.info("Upgrade priority complete for 30s - resetting to start")
+            log.info("Upgrade priority reset after 30 minutes")
         return
 
     want_page, want_label, cost_threshold, needs_scroll = prio[ctx.upgrade_state]
@@ -2607,6 +2604,7 @@ class RuntimeContext:
     upgrade_scroll_direction: str = 'down'  # 'down' or 'up'
     no_perk_until: float = 0.0              # skip perk processing until this timestamp (set when no perks selectable)
     upgrades_finished_time: Optional[int] = None
+    ocr_time: float = 0.0
     def update_window(self):
         """Update window rect if needed."""
         if time.time() - self.last_window_check > 2.0:
@@ -2619,7 +2617,7 @@ def mark_battle_start():
     global ctx
     log = logging.getLogger(__name__)
     log.info("Battle start detected - marking in state")
-    ctx.game_state = replace(ctx.game_state, battle_start_time=time.time())
+    ctx.game_state = replace(ctx.game_state, battle_start_time=time.time(), wave_history=[])
     ctx.upgrade_state = 0
     ctx.upgrade_scroll_start = 0.0
     ctx.upgrade_scroll_direction = 'down'
@@ -2662,7 +2660,7 @@ def do_ocr():
         ocr_t0 = time.time()
         frame = process_ocr(img, ctx.config, ctx.ocr_reader)
         ocr_t1 = time.time()
-        log.info(f"------------------ OCR completed in {ocr_t1 - ocr_t0:.2f} seconds with {len(frame.results)} results")
+        ctx.ocr_time = ocr_t1 - ocr_t0
         if frame:
             save_debug_files(img, frame, ctx.config)
         else:
@@ -2913,14 +2911,15 @@ def automation_loop_tick():
                 last_wave, last_time = new_wave_history[-1]
                 time_diff_hours = (last_time - first_time) / 3600.0
                 
+                base_message = f'***** Tier {ctx.game_state.tier} | Wave progress: {wave} | Upgrade state: {ctx.upgrade_state} ({UPGRADE_PRIORITY[ctx.upgrade_state][1] if ctx.upgrade_state < len(UPGRADE_PRIORITY) else "N/A"}) OCR time {ctx.ocr_time:.2f}s'
                 if time_diff_hours > 0:
                     waves_diff = last_wave - first_wave
                     waves_per_hour = waves_diff / time_diff_hours
-                    log.info(f"Wave progress: {wave} | Rate: {waves_per_hour:.1f} waves/hour (based on {len(new_wave_history)} samples over {time_diff_hours*60:.1f} min)")
+                    log.info(f"{base_message} | Rate: {waves_per_hour:.1f} waves/hour (based on {len(new_wave_history)} samples over {time_diff_hours*60:.1f} min)")
                 else:
-                    log.info(f"Wave progress: {wave}")
+                    log.info(base_message)
             else:
-                log.info(f"Wave progress: {wave} (collecting data...)")
+                log.info(f"tier {ctx.game_state.tier} | Wave progress: {wave} (collecting data...)")
         except (ValueError, TypeError):
             pass
     
