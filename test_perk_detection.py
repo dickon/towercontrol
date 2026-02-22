@@ -564,6 +564,65 @@ class TestUtilityUpgradesDetection(unittest.TestCase):
         )
 
 
+class TestAttackDamageMax(unittest.TestCase):
+    """Test OCR + upgrade detection on test_images/attack_damage_max.png.
+
+    The image should show the ATTACK UPGRADES screen with 'Damage' at MAX.
+
+    FLAKEY: OCR sometimes fails to match the Damage label or misreads the Max
+    button, resulting in no 'Damage' entry in the detected upgrades dict.
+    This test documents the desired behaviour and will fail on OCR-miss runs.
+    """
+
+    IMAGE_PATH = TEST_IMAGES_DIR / "attack_damage_max.png"
+
+    @classmethod
+    def setUpClass(cls):
+        if not cls.IMAGE_PATH.exists():
+            raise unittest.SkipTest(f"Test image not found: {cls.IMAGE_PATH}")
+        cls.config = Config()
+        cls.ocr_reader = initialize_ocr_backend(cls.config)
+        cls.img = Image.open(cls.IMAGE_PATH).convert("RGB")
+        cls.frame = process_ocr(cls.img, cls.config, cls.ocr_reader)
+
+    def test_ocr_produces_results(self):
+        """OCR pipeline returns non-empty results for attack_damage_max.png."""
+        self.assertGreater(len(self.frame.results), 0,
+                           "OCR should detect text in attack_damage_max.png")
+
+    def test_damage_upgrade_detected(self):
+        """detect_upgrade_buttons finds the 'Damage' attack upgrade.
+
+        FLAKEY: OCR sometimes returns no match for this label.
+        """
+        upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
+
+        print(f"\nDetected {len(upgrades)} upgrade buttons:")
+        for label, info in upgrades.items():
+            cost_display = "MAX" if info['is_max'] else (
+                f"{info['cost']:.2f}" if info['cost'] is not None else "?")
+            print(f"  {label}: {cost_display}")
+
+        self.assertIn('Damage', upgrades,
+                      f"'Damage' upgrade should be detected. Found: {list(upgrades.keys())}")
+
+    def test_damage_is_max(self):
+        """The 'Damage' upgrade button should be at MAX (is_max=True, cost=None).
+
+        FLAKEY: Depends on test_damage_upgrade_detected passing first.
+        """
+        upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
+
+        self.assertIn('Damage', upgrades,
+                      f"'Damage' upgrade should be detected. Found: {list(upgrades.keys())}")
+
+        info = upgrades['Damage']
+        self.assertTrue(info['is_max'],
+                        f"'Damage' should be at MAX (is_max=True), got is_max={info['is_max']}, cost={info['cost']}")
+        self.assertIsNone(info['cost'],
+                          f"'Damage' at MAX should have cost=None, got {info['cost']}")
+
+
 class TestFloatingGemDetection(unittest.TestCase):
     """Test floating gem detection on floater images and non-floater images.
 
@@ -632,6 +691,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestPerkDetectionImage130242))
     suite.addTests(loader.loadTestsFromTestCase(TestUpgradeDetectionUnexpected1771282888))
     suite.addTests(loader.loadTestsFromTestCase(TestUtilityUpgradesDetection))
+    suite.addTests(loader.loadTestsFromTestCase(TestAttackDamageMax))
     suite.addTests(loader.loadTestsFromTestCase(TestFloatingGemDetection))
 
     runner = unittest.TextTestRunner(verbosity=2)
