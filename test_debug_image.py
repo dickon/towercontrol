@@ -73,6 +73,8 @@ class TestUtilityUpgrades1771264045:
             assert isinstance(label, str), f"Label should be string, got {type(label)}"
             assert 'current_value' in info, f"Missing 'current_value' for {label}"
             assert 'cost' in info, f"Missing 'cost' for {label}"
+            assert 'is_max' in info, f"Missing 'is_max' for {label}"
+            assert isinstance(info['is_max'], bool), f"is_max for {label} should be bool, got {type(info['is_max'])}"
             assert 'upgrades_to_purchase' in info, f"Missing 'upgrades_to_purchase' for {label}"
             assert 'cell_color' in info, f"Missing 'cell_color' for {label}"
             assert 'cell_color_name' in info, f"Missing 'cell_color_name' for {label}"

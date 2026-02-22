@@ -132,6 +132,8 @@ UPGRADE_PRIORITY = [
 ] 
 
 UPGRADE_PRIORITY_HIGH_TIER = [
+    ('ATTACK', 'Damage', 1e6, False),
+    ('ATTACK', 'Damage Per Meter', None, False),
     ('ATTACK', 'Damage', None, False),
     ('DEFENSE', 'Health', 1e6, False),
     ('DEFENSE', 'Wall Health', 1e6, True),
@@ -343,7 +345,8 @@ class Action:
 class UpgradeInfo(TypedDict):
     """Information about a detected upgrade button."""
     current_value: Optional[float]  # Current numerical value of the stat
-    cost: Optional[float]  # Cost to upgrade (None if MAX)
+    cost: Optional[float]  # Cost to upgrade (None if MAX or OCR failed)
+    is_max: bool  # True only when upgrade is explicitly detected as maxed
     upgrades_to_purchase: int  # Number of upgrades to buy (default 1)
     cell_color: Tuple[int, int, int]  # RGB color of the button cell
     cell_color_name: str  # English name for the cell color (e.g. "dark red", "dark blue")
@@ -1542,15 +1545,17 @@ def _ocr_box_cost(img: Image.Image, box_x: int, box_y: int,
             return None
 
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        if gray.mean() > 120:   # skip bright-background buttons (already readable)
-            return None
-
         upscaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-        inverted = cv2.bitwise_not(upscaled)
-        thresh = cv2.adaptiveThreshold(
-            inverted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY, 31, 10,
-        )
+        if gray.mean() > 150:
+            # Bright background (e.g. blue/teal cost button) - dark text on light bg
+            _, thresh = cv2.threshold(upscaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        else:
+            # Dark or medium background (e.g. gray/dark-red Max button) - light text on dark bg
+            inverted = cv2.bitwise_not(upscaled)
+            thresh = cv2.adaptiveThreshold(
+                inverted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 31, 10,
+            )
 
         pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
         text = pytesseract.image_to_string(
@@ -1745,6 +1750,12 @@ def _parse_upgrade_cost(texts: List[str]) -> Tuple[bool, Optional[float]]:
         parsed = parse_number_with_suffix(cleaned)
         if parsed is not None:
             return False, parsed
+    # Second pass: short strings with no digits or '$' are OCR misreads of "Max"
+    # (e.g. EasyOCR reads "Max" as "(ME" or "oe" on darker buttons)
+    for text in texts:
+        stripped = text.strip()
+        if 2 <= len(stripped) <= 6 and re.fullmatch(r'[^\d$]+', stripped):
+            return True, None
     return False, None
 
 
@@ -1830,9 +1841,12 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
         current_value = _parse_upgrade_value(value_texts)
 
         # ── Cost (lower-right / button portion) ────────────────────────────
+        # Use 50% (not 55%) as the vertical divider so that Max-button OCR results
+        # that land just above the midpoint are still captured as cost texts.
+        fy_cost_mid = fy_min + (fy_max - fy_min) * 0.50
         cost_texts = [
             r.text.strip() for r in box_results
-            if r.fx >= fx_mid and r.fy >= fy_mid
+            if r.fx >= fx_mid and r.fy >= fy_cost_mid
         ]
         is_max, cost_value = _parse_upgrade_cost(cost_texts)
 
@@ -1916,6 +1930,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
         info: UpgradeInfo = {
             'current_value': current_value,
             'cost': cost_value,
+            'is_max': is_max,
             'upgrades_to_purchase': purchase_count,
             'cell_color': cell_color,
             'cell_color_name': rgb_to_color_name(*cell_color),
@@ -2415,9 +2430,15 @@ def handle_upgrade_action(seen_page: Optional[str],
     # Found - reset scroll tracking
     ctx.upgrade_scroll_start = 0.0
 
+    # If cost is unknown (OCR failed and not explicitly maxed), skip this tick
+    if target_info['cost'] is None and not target_info['is_max']:
+        log.warning(f"'{want_label}' cost unknown (OCR failed) - skipping this tick")
+        ctx.last_upgrade_action = now
+        return
+
     # Batch-advance: skip all visible maxed/over-threshold upgrades in a single tick
-    while target_info['cost'] is None or (cost_threshold is not None and target_info['cost'] > cost_threshold):
-        reason = "cost exceeds threshold" if target_info['cost'] is not None else "upgrade is maxed"
+    while target_info['is_max'] or (cost_threshold is not None and target_info['cost'] is not None and target_info['cost'] > cost_threshold):
+        reason = "cost exceeds threshold" if not target_info['is_max'] else "upgrade is maxed"
         log.info(f"'{want_label}' {reason} - advancing to next priority upgrade")
         _advance_upgrade_state()
         ctx.last_upgrade_action = now
@@ -2439,6 +2460,11 @@ def handle_upgrade_action(seen_page: Optional[str],
 
         if target_info is None:
             return  # Not visible - will scroll next tick
+
+        # If cost is unknown on the next item too, stop the batch
+        if target_info['cost'] is None and not target_info['is_max']:
+            log.warning(f"'{want_label}' cost unknown (OCR failed) - stopping batch advance")
+            return
 
     # Purchase the first affordable upgrade found
     fx, fy = target_info['button_position']
@@ -2605,6 +2631,7 @@ class RuntimeContext:
     no_perk_until: float = 0.0              # skip perk processing until this timestamp (set when no perks selectable)
     upgrades_finished_time: Optional[int] = None
     ocr_time: float = 0.0
+    upgrade_mode_seen: str = None
     def update_window(self):
         """Update window rect if needed."""
         if time.time() - self.last_window_check > 2.0:
@@ -2740,12 +2767,13 @@ def automation_loop_tick():
     seen = None  # which upgrade sub-tab is currently visible; set inside if mode == 'main'
     if mode == 'main':
         seen = 'DEFENSE' if defense_marks else 'ATTACK' if attack_marks else 'UTILITY' if utility_marks else None
+        ctx.upgrade_mode_seen = seen
         prio = _active_upgrade_priority()
-        log.info(f'Seen upgrade mode selector: {seen} at {ctx.upgrade_state} {prio[ctx.upgrade_state] if ctx.upgrade_state < len(prio) else None}')
+        log.debug(f'Seen upgrade mode selector: {seen} at {ctx.upgrade_state} {prio[ctx.upgrade_state] if ctx.upgrade_state < len(prio) else None}')
         want_upgrades = prio[ctx.upgrade_state][0] if ctx.upgrade_state < len(prio) else None   
 
         if seen:
-            ctx.last_seen_upgrades = time.time()
+            ctx.last_seen_upgrades = time.time() 
         else:
             delay = time.time() - ctx.last_seen_upgrades
             if delay > 15.0:
@@ -2841,7 +2869,7 @@ def automation_loop_tick():
     # Detect and log upgrade buttons
     upgrade_buttons = detect_upgrade_buttons(frame, img, ctx.config)
     if upgrade_buttons:
-        text = [ f'{k} ({v["cost"]})' for k,v in upgrade_buttons.items()]
+        text = [ f'{k} ({"MAX" if v["is_max"] else v["cost"]})' for k,v in upgrade_buttons.items()]
         log.info(f'upgrades detected : {", ".join(text)}')
         ctx.last_seen_upgrades = time.time()
         ctx.recover_stage = 0
@@ -2911,7 +2939,9 @@ def automation_loop_tick():
                 last_wave, last_time = new_wave_history[-1]
                 time_diff_hours = (last_time - first_time) / 3600.0
                 
-                base_message = f'***** Tier {ctx.game_state.tier} | Wave progress: {wave} | Upgrade state: {ctx.upgrade_state} ({UPGRADE_PRIORITY[ctx.upgrade_state][1] if ctx.upgrade_state < len(UPGRADE_PRIORITY) else "N/A"}) OCR time {ctx.ocr_time:.2f}s'
+                # set pri_list to the active upgrade priority list
+                pri_list = _active_upgrade_priority()
+                base_message = f'***** Tier {ctx.game_state.tier} | Wave progress: {wave} | Upgrade state: {ctx.upgrade_state} ({pri_list[ctx.upgrade_state][1] if ctx.upgrade_state < len(pri_list) else "N/A"}) OCR time {ctx.ocr_time:.2f}s upgrade mode {ctx.upgrade_mode_seen}'
                 if time_diff_hours > 0:
                     waves_diff = last_wave - first_wave
                     waves_per_hour = waves_diff / time_diff_hours

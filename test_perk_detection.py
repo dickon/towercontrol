@@ -465,17 +465,19 @@ class TestUpgradeDetectionUnexpected1771282888(unittest.TestCase):
 
         print(f"\nUpgrade MAX status:")
         for label, info in upgrades.items():
-            is_max = info['cost'] is None
-            status_symbol = "✓" if is_max else "✗"
-            cost_display = "MAX" if is_max else f"{info['cost']:.2f}"
+            is_max = info['is_max']
+            status_symbol = "[OK]" if is_max else "[X]"
+            cost_display = "MAX" if is_max else (f"{info['cost']:.2f}" if info['cost'] is not None else "?unknown")
             print(f"  {status_symbol} {label}: {cost_display}")
 
         # Check that all upgrades have MAX status (including dark red buttons)
         for label, info in upgrades.items():
+            self.assertTrue(info['is_max'],
+                           f"Upgrade '{label}' should have is_max=True (dark red button should be detected as MAX) but got is_max={info['is_max']}, cost={info['cost']}")
             self.assertIsNone(info['cost'],
                            f"Upgrade '{label}' should be at MAX (dark red button should be detected as MAX) but got: {info['cost']}")
 
-        print(f"✓ All {len(upgrades)} upgrades confirmed at MAX status")
+        print(f"[OK] All {len(upgrades)} upgrades confirmed at MAX status")
 
 
 class TestUtilityUpgradesDetection(unittest.TestCase):

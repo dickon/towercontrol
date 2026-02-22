@@ -2,6 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(python3:*)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\dicko\\.claude\\projects\\c--Users-dicko-src-towercontrol\\memory"
     ]
   }
 }
