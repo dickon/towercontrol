@@ -1519,6 +1519,48 @@ def _ocr_box_purchase_count(img: Image.Image, box_x: int, box_y: int,
         return None
 
 
+def _ocr_box_label(img: Image.Image, box_x: int, box_y: int,
+                   box_w: int, box_h: int, config: Config) -> Optional[str]:
+    """Run targeted OCR on the label area (left ~45 %) of an upgrade box.
+
+    Labels (e.g. "Damage", "Attack Speed") are typically rendered as white
+    text on a dark/near-black background.  We invert and OTSU-threshold
+    before running Tesseract so the characters are dark-on-white.
+
+    Returns the raw OCR text string, or None if nothing useful was found.
+    """
+    if not pytesseract or img is None:
+        return None
+    try:
+        arr = image_to_bgr_array(img)
+        h_arr, w_arr = arr.shape[:2]
+
+        x_start = box_x + 2
+        x_end = min(w_arr, box_x + int(box_w * 0.45))
+        y_start = box_y + 2
+        y_end = min(h_arr, box_y + box_h - 2)
+
+        roi = arr[y_start:y_end, x_start:x_end]
+        if roi.size == 0:
+            return None
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        upscaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        inverted = cv2.bitwise_not(upscaled)
+        _, thresh = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        padded = cv2.copyMakeBorder(thresh, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=255)
+
+        pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
+        text = pytesseract.image_to_string(
+            padded, lang=config.ocr_lang,
+            config="--psm 6 --oem 3",
+            timeout=5,
+        ).strip()
+        return text if text else None
+    except Exception:
+        return None
+
+
 def _ocr_box_cost(img: Image.Image, box_x: int, box_y: int,
                   box_w: int, box_h: int, config: Config) -> Optional[str]:
     """Run targeted OCR on the cost-button area (right ~55 % × lower ~45 %) of a box.
@@ -1869,6 +1911,20 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
 
         # ── Targeted OCR fallbacks ─────────────────────────────────────────
         if config is not None:
+            # Label fallback: if global OCR missed the label text (common for
+            # white-on-dark labels like "Damage"), run Tesseract on the label
+            # region and try matching again.
+            if label is None:
+                ocr_text = _ocr_box_label(img, box_x, box_y, box_w, box_h, config)
+                if ocr_text:
+                    words = [w.strip() for w in re.split(r'[\s\n]+', ocr_text)
+                             if len(w.strip()) >= 2]
+                    label = _match_upgrade_label(words)
+                    if label:
+                        log.debug(
+                            f"Recovered label via targeted OCR: {ocr_text!r} → '{label}'"
+                        )
+
             if current_value is None and label is not None:
                 ocr_text = _ocr_box_value(img, box_x, box_y, box_w, box_h, config)
                 if ocr_text:
