@@ -166,6 +166,8 @@ function handleState(s) {
   }
 
   renderOcrList(s.ocr_results || []);
+  renderUpgradePriority(s.upgrade_priority || [], s.upgrade_state ?? 0);
+  renderUpgradesSeen(s.upgrade_seen || {});
 
   // Action log
   const logEl = document.getElementById("actionLog");
@@ -204,6 +206,8 @@ function handleState(s) {
 
   updateParamValues(s.strategy_params || {});
   renderPerkHistory(s.perk_selection_history || []);
+  renderUpgradePurchaseHistory(s.upgrade_purchase_history || []);
+  renderUpgradeAdvanceHistory(s.upgrade_advance_history || []);
 }
 
 // ── Context table ────────────────────────────────────────────────────────
@@ -277,6 +281,173 @@ function renderPerkHistory(history) {
       `<td class="text-muted ps-2">${t}</td>` +
       `<td class="text-info">${esc(p.wave ?? "?")}</td>` +
       `<td>${label}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+// ── Upgrade purchase history ──────────────────────────────────────────────
+
+function renderUpgradePurchaseHistory(history) {
+  const tbody = document.getElementById("upgradePurchaseTable");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  for (const p of [...history].reverse()) {
+    const tr = document.createElement("tr");
+    const t  = new Date(p.timestamp * 1000).toLocaleTimeString();
+    const cost = p.cost != null ? p.cost.toLocaleString() : "—";
+    tr.innerHTML =
+      `<td class="text-muted ps-2">${t}</td>` +
+      `<td class="text-info">${esc(p.wave ?? "?")}</td>` +
+      `<td>${esc(p.upgrade_name)}</td>` +
+      `<td class="text-end pe-2 text-warning">${esc(cost)}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+// ── Upgrade advance history ───────────────────────────────────────────────
+
+function renderUpgradeAdvanceHistory(history) {
+  const tbody = document.getElementById("upgradeAdvanceTable");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  for (const p of [...history].reverse()) {
+    const tr = document.createElement("tr");
+    const t  = new Date(p.timestamp * 1000).toLocaleTimeString();
+    tr.innerHTML =
+      `<td class="text-muted ps-2">${t}</td>` +
+      `<td class="text-info">${esc(p.wave ?? "?")}</td>` +
+      `<td class="text-secondary">${esc(p.from_upgrade)}</td>` +
+      `<td class="text-success">${esc(p.to_upgrade)}</td>` +
+      `<td class="text-muted">${esc(p.reason)}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+// ── Upgrade priority ─────────────────────────────────────────────────────
+
+function fmtCap(v) {
+  if (v == null) return "";
+  if (v >= 1e9) return (v / 1e9).toFixed(v % 1e9 === 0 ? 0 : 1) + "B";
+  if (v >= 1e6) return (v / 1e6).toFixed(v % 1e6 === 0 ? 0 : 1) + "M";
+  if (v >= 1e3) return (v / 1e3).toFixed(v % 1e3 === 0 ? 0 : 1) + "K";
+  return String(v);
+}
+
+const TAB_COLOUR = { ATTACK: "#f77", DEFENSE: "#6cf", UTILITY: "#8f8" };
+
+function renderUpgradePriority(list, currentState) {
+  const tbody = document.getElementById("upgradePriorityTable");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  list.forEach((item, i) => {
+    const isActive = i === currentState;
+    const isDone   = i < currentState;
+    const tr = document.createElement("tr");
+    tr.style.cursor = "pointer";
+    if (isActive) tr.style.background = "#3a3000";
+    else if (isDone) tr.style.opacity = "0.45";
+    const tabCol = TAB_COLOUR[item.page] || "#aaa";
+    tr.innerHTML =
+      `<td class="ps-2 text-muted">${isActive ? "▶" : i}</td>` +
+      `<td style="color:${tabCol}">${esc(item.page)}</td>` +
+      `<td>${esc(item.label)}${item.needs_scroll ? ' <span class="text-muted" title="needs scroll">↕</span>' : ""}</td>` +
+      `<td class="text-end pe-2 text-muted">${esc(fmtCap(item.cost_threshold))}</td>`;
+    tr.addEventListener("click", () => {
+      api("upgrade_state", { index: i }).catch(e => console.error("upgrade_state error", e));
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+// ── Detected upgrades ────────────────────────────────────────────────────
+
+function fmtNum(v) {
+  if (v == null) return "—";
+  const abs = Math.abs(v);
+  if (abs >= 1e12) return (v / 1e12).toFixed(abs % 1e12 === 0 ? 0 : 2) + "T";
+  if (abs >= 1e9)  return (v / 1e9 ).toFixed(abs % 1e9  === 0 ? 0 : 2) + "B";
+  if (abs >= 1e6)  return (v / 1e6 ).toFixed(abs % 1e6  === 0 ? 0 : 2) + "M";
+  if (abs >= 1e3)  return (v / 1e3 ).toFixed(abs % 1e3  === 0 ? 0 : 1) + "K";
+  return String(v);
+}
+
+function fmtAgo(sec) {
+  if (sec == null) return "—";
+  if (sec < 60)  return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  return `${Math.floor(sec / 3600)}h ago`;
+}
+
+// Expanded crop modal (shared singleton)
+let _cropModal = null;
+function _showCropModal(label, src) {
+  if (!_cropModal) {
+    _cropModal = document.createElement("div");
+    _cropModal.style.cssText =
+      "position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;" +
+      "justify-content:center;z-index:9999;cursor:zoom-out";
+    _cropModal.addEventListener("click", () => (_cropModal.style.display = "none"));
+    const img = document.createElement("img");
+    img.id = "cropModalImg";
+    img.style.cssText = "max-width:90vw;max-height:90vh;image-rendering:pixelated;border:2px solid #555";
+    const cap = document.createElement("div");
+    cap.id = "cropModalCap";
+    cap.style.cssText = "position:absolute;bottom:8%;color:#eee;font-size:0.9rem;text-shadow:0 0 4px #000";
+    _cropModal.appendChild(img);
+    _cropModal.appendChild(cap);
+    document.body.appendChild(_cropModal);
+  }
+  document.getElementById("cropModalImg").src = src;
+  document.getElementById("cropModalCap").textContent = label;
+  _cropModal.style.display = "flex";
+}
+
+function renderUpgradesSeen(seen) {
+  const tbody = document.getElementById("upgradeSeenTable");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  const entries = Object.entries(seen).sort((a, b) => a[0].localeCompare(b[0]));
+  if (!entries.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="5" class="text-muted ps-2">No upgrades detected yet</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const [label, d] of entries) {
+    const tr = document.createElement("tr");
+    const stale = d.seen_ago > 30;
+    if (stale) tr.style.opacity = "0.5";
+
+    let costCell;
+    if (d.is_max) {
+      costCell = `<span style="color:#f77">MAX</span>`;
+    } else if (d.cost != null) {
+      costCell = `<span style="color:#fc3">${esc(fmtNum(d.cost))}</span>`;
+    } else {
+      costCell = `<span class="text-muted">—</span>`;
+    }
+
+    const xCount = d.upgrades_to_purchase > 1
+      ? ` <span class="text-muted">×${d.upgrades_to_purchase}</span>` : "";
+
+    const thumbCell = d.crop_b64
+      ? `<img src="data:image/jpeg;base64,${d.crop_b64}"
+              style="height:32px;cursor:zoom-in;image-rendering:pixelated"
+              title="Click to enlarge">`
+      : `<span class="text-muted" style="font-size:0.65rem">no img</span>`;
+
+    tr.innerHTML =
+      `<td class="ps-2">${esc(label)}${xCount}</td>` +
+      `<td style="color:#8cf">${esc(fmtNum(d.current_value))}</td>` +
+      `<td>${costCell}</td>` +
+      `<td class="text-end pe-2 text-muted">${esc(fmtAgo(d.seen_ago))}</td>` +
+      `<td class="pe-1">${thumbCell}</td>`;
+
+    if (d.crop_b64) {
+      const imgEl = tr.querySelector("img");
+      const src = `data:image/jpeg;base64,${d.crop_b64}`;
+      imgEl.addEventListener("click", (e) => { e.stopPropagation(); _showCropModal(label, src); });
+    }
     tbody.appendChild(tr);
   }
 }

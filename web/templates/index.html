@@ -54,9 +54,28 @@
           </div>
         </div>
 
+        <!-- Detected upgrades -->
+        <div class="card bg-black border-secondary mt-3">
+          <div class="card-header">Detected Upgrades</div>
+          <div class="card-body p-0" style="max-height:420px;overflow-y:auto">
+            <table class="table table-sm table-dark mb-0" style="font-size:0.75rem">
+              <thead class="text-muted" style="position:sticky;top:0;background:#000">
+                <tr>
+                  <th class="ps-2">Upgrade</th>
+                  <th>Value</th>
+                  <th>Cost</th>
+                  <th class="text-end pe-2">Seen</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="upgradeSeenTable"></tbody>
+            </table>
+          </div>
+        </div>
+
       </div>
 
-      <!-- Right column: log (top) + controls + state -->
+      <!-- Right column: log (top) + history + controls + state -->
       <div class="col-lg-5">
 
         <!-- Log stream — top of right column -->
@@ -74,6 +93,94 @@
           </div>
           <div id="logPane" style="height:440px;overflow-y:auto;background:#0a0a0a;padding:6px">
             <pre id="logContent" class="mb-0" style="font-size:0.72rem;line-height:1.35;color:#aaa;white-space:pre-wrap;word-break:break-all"></pre>
+          </div>
+        </div>
+
+        <!-- Strategy params -->
+        <div class="card bg-black border-secondary mt-3">
+          <div class="card-header">Strategy Parameters</div>
+          <div class="card-body" id="paramsContainer">
+            <em class="text-muted">Loading…</em>
+          </div>
+        </div>
+
+        <!-- Upgrade priority -->
+        <div class="card bg-black border-secondary mt-3">
+          <div class="card-header">Upgrade Priority</div>
+          <div class="card-body p-0" style="max-height:300px;overflow-y:auto">
+            <table class="table table-sm table-dark table-hover mb-0" style="font-size:0.75rem">
+              <thead class="text-muted" style="position:sticky;top:0;background:#000">
+                <tr>
+                  <th class="ps-2" style="width:2rem">#</th>
+                  <th style="width:5rem">Tab</th>
+                  <th>Upgrade</th>
+                  <th class="text-end pe-2">Cap</th>
+                </tr>
+              </thead>
+              <tbody id="upgradePriorityTable"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Action log -->
+        <div class="card bg-black border-secondary mt-3">
+          <div class="card-header">Recent Actions</div>
+          <div class="card-body p-1" style="max-height:260px;overflow-y:auto">
+            <ul id="actionLog" class="list-unstyled mb-0 small"></ul>
+          </div>
+        </div>
+
+        <!-- Perk history -->
+        <div class="card bg-black border-secondary mt-3">
+          <div class="card-header">Perk History</div>
+          <div class="card-body p-0" style="max-height:260px;overflow-y:auto">
+            <table class="table table-sm table-dark mb-0" style="font-size:0.75rem">
+              <thead class="text-muted" style="position:sticky;top:0;background:#000">
+                <tr>
+                  <th class="ps-2">Time</th>
+                  <th>Wave</th>
+                  <th>Perk selected</th>
+                </tr>
+              </thead>
+              <tbody id="perkHistoryTable"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Upgrade purchase history -->
+        <div class="card bg-black border-secondary mt-3">
+          <div class="card-header">Upgrade Purchases</div>
+          <div class="card-body p-0" style="max-height:300px;overflow-y:auto">
+            <table class="table table-sm table-dark mb-0" style="font-size:0.75rem">
+              <thead class="text-muted" style="position:sticky;top:0;background:#000">
+                <tr>
+                  <th class="ps-2">Time</th>
+                  <th>Wave</th>
+                  <th>Upgrade</th>
+                  <th class="text-end pe-2">Cost</th>
+                </tr>
+              </thead>
+              <tbody id="upgradePurchaseTable"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Upgrade advance history -->
+        <div class="card bg-black border-secondary mt-3">
+          <div class="card-header">Upgrade Progression</div>
+          <div class="card-body p-0" style="max-height:260px;overflow-y:auto">
+            <table class="table table-sm table-dark mb-0" style="font-size:0.75rem">
+              <thead class="text-muted" style="position:sticky;top:0;background:#000">
+                <tr>
+                  <th class="ps-2">Time</th>
+                  <th>Wave</th>
+                  <th>From</th>
+                  <th>To</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody id="upgradeAdvanceTable"></tbody>
+            </table>
           </div>
         </div>
 
@@ -115,39 +222,6 @@
           <div class="card-body p-0">
             <table class="table table-sm table-dark mb-0" style="font-size:0.75rem">
               <tbody id="ctxTable"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Strategy params -->
-        <div class="card bg-black border-secondary mt-3">
-          <div class="card-header">Strategy Parameters</div>
-          <div class="card-body" id="paramsContainer">
-            <em class="text-muted">Loading…</em>
-          </div>
-        </div>
-
-        <!-- Action log -->
-        <div class="card bg-black border-secondary mt-3">
-          <div class="card-header">Recent Actions</div>
-          <div class="card-body p-1" style="max-height:260px;overflow-y:auto">
-            <ul id="actionLog" class="list-unstyled mb-0 small"></ul>
-          </div>
-        </div>
-
-        <!-- Perk history -->
-        <div class="card bg-black border-secondary mt-3">
-          <div class="card-header">Perk History</div>
-          <div class="card-body p-0" style="max-height:260px;overflow-y:auto">
-            <table class="table table-sm table-dark mb-0" style="font-size:0.75rem">
-              <thead class="text-muted" style="position:sticky;top:0;background:#000">
-                <tr>
-                  <th class="ps-2">Time</th>
-                  <th>Wave</th>
-                  <th>Perk selected</th>
-                </tr>
-              </thead>
-              <tbody id="perkHistoryTable"></tbody>
             </table>
           </div>
         </div>

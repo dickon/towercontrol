@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import datetime
+import base64
 import io
 import os
 import json
@@ -324,6 +325,8 @@ class GameState:
     wave_history: Tuple[Tuple[int, float], ...] = ()  # (wave_number, timestamp)
     action_history: Tuple[Dict[str, Any], ...] = ()
     perk_selection_history: Tuple[Dict[str, Any], ...] = ()  # {timestamp, wave, selected, text}
+    upgrade_purchase_history: Tuple[Dict[str, Any], ...] = ()  # {timestamp, wave, upgrade_name, cost}
+    upgrade_advance_history: Tuple[Dict[str, Any], ...] = ()   # {timestamp, wave, from_upgrade, to_upgrade, reason}
     error_count: int = 0
     battle_start_time: Optional[float] = None
     tier: Optional[int] = None
@@ -353,6 +356,7 @@ class UpgradeInfo(TypedDict):
     cell_color_name: str  # English name for the cell color (e.g. "dark red", "dark blue")
     label_position: Tuple[float, float]  # Fractional position (fx, fy) of the label
     button_position: Tuple[float, float]  # Fractional position (fx, fy) of the button center
+    box_rect: Tuple[float, float, float, float]  # (fx_min, fy_min, fx_max, fy_max) fractional bounds
 
 
 # ============================================================================
@@ -497,7 +501,6 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
         # Create text table
         with open(txt_path, 'w', encoding='utf-8') as f:
             f.write(f"Debug Capture: {timestamp}\n")
-            f.write(f"Image Size: {img_width} x {img_height}\n")
             f.write(f"Total OCR Elements: {len(frame.results)}\n")
             f.write("\n" + "="*100 + "\n")
             f.write(f"{'Text':<30} | {'X_Frac':<8} | {'Y_Frac':<8} | {'W_Frac':<8} | {'H_Frac':<8} | {'Conf':<6}\n")
@@ -2057,6 +2060,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             'cell_color_name': rgb_to_color_name(*cell_color),
             'label_position': label_pos,
             'button_position': button_pos,
+            'box_rect': (fx_min, fy_min, fx_max, fy_max),
         }
         upgrades[label] = info
 
@@ -2444,7 +2448,7 @@ def _active_upgrade_priority() -> list:
     return UPGRADE_PRIORITY
 
 
-def _advance_upgrade_state() -> None:
+def _advance_upgrade_state(from_label: str = "", reason: str = "") -> None:
     """Move to the next item in the active upgrade priority and reset scroll tracking."""
     global ctx
     log = logging.getLogger(__name__)
@@ -2452,11 +2456,23 @@ def _advance_upgrade_state() -> None:
     ctx.upgrade_scroll_start = 0.0
     ctx.upgrade_scroll_direction = 'down'
     prio = _active_upgrade_priority()
+    to_label = prio[ctx.upgrade_state][1] if ctx.upgrade_state < len(prio) else "—"
     if ctx.upgrade_state < len(prio):
         log.info(f"Advanced to upgrade state {ctx.upgrade_state}: "
-                 f"'{prio[ctx.upgrade_state][1]}'")
+                 f"'{to_label}'")
     else:
         log.info("All priority upgrades complete")
+    advance_entry = {
+        "timestamp": time.time(),
+        "wave": ctx.game_state.wave,
+        "from_upgrade": from_label,
+        "to_upgrade": to_label,
+        "reason": reason,
+    }
+    new_advance_history = (*ctx.game_state.upgrade_advance_history, advance_entry)
+    if len(new_advance_history) > 200:
+        new_advance_history = new_advance_history[-200:]
+    ctx.game_state = replace(ctx.game_state, upgrade_advance_history=new_advance_history)
 
 
 def check_wave_restart(game_state: GameState) -> bool:
@@ -2552,7 +2568,7 @@ def handle_upgrade_action(seen_page: Optional[str],
     while target_info['is_max'] or (cost_threshold is not None and target_info['cost'] is not None and target_info['cost'] > cost_threshold):
         reason = "cost exceeds threshold" if not target_info['is_max'] else "upgrade is maxed"
         log.info(f"'{want_label}' {reason} - advancing to next priority upgrade")
-        _advance_upgrade_state()
+        _advance_upgrade_state(from_label=want_label, reason=reason)
         ctx.last_upgrade_action = now
 
         if ctx.upgrade_state >= len(prio):
@@ -2583,6 +2599,16 @@ def handle_upgrade_action(seen_page: Optional[str],
     fx = fx + 0.1
     do_click(f"Buying upgrade '{want_label}'", fx, fy)
     ctx.last_upgrade_action = now
+    purchase_entry = {
+        "timestamp": now,
+        "wave": ctx.game_state.wave,
+        "upgrade_name": want_label,
+        "cost": target_info['cost'],
+    }
+    new_purchase_history = (*ctx.game_state.upgrade_purchase_history, purchase_entry)
+    if len(new_purchase_history) > 500:
+        new_purchase_history = new_purchase_history[-500:]
+    ctx.game_state = replace(ctx.game_state, upgrade_purchase_history=new_purchase_history)
 
 
 # ============================================================================
@@ -2754,6 +2780,7 @@ class RuntimeContext:
     upgrades_finished_time: Optional[int] = None
     ocr_time: float = 0.0
     upgrade_mode_seen: str = None
+    upgrade_seen: dict = field(default_factory=dict)  # label → {timestamp, current_value, cost, is_max, crop_b64, …}
     def update_window(self):
         """Update window rect if needed."""
         if time.time() - self.last_window_check > 2.0:
@@ -3001,6 +3028,28 @@ def automation_loop_tick():
         log.info(f'upgrades detected : {", ".join(text)}')
         ctx.last_seen_upgrades = time.time()
         ctx.recover_stage = 0
+        _now = time.time()
+        for _label, _info in upgrade_buttons.items():
+            _crop_b64 = None
+            _rect = _info.get('box_rect')
+            if _rect is not None:
+                try:
+                    _fx0, _fy0, _fx1, _fy1 = _rect
+                    _crop = img.crop((int(_fx0 * w), int(_fy0 * h), int(_fx1 * w), int(_fy1 * h)))
+                    _buf = io.BytesIO()
+                    _crop.save(_buf, format='JPEG', quality=70)
+                    _crop_b64 = base64.b64encode(_buf.getvalue()).decode()
+                except Exception:
+                    pass
+            ctx.upgrade_seen[_label] = {
+                'timestamp': _now,
+                'current_value': _info.get('current_value'),
+                'cost': _info.get('cost'),
+                'is_max': _info.get('is_max', False),
+                'upgrades_to_purchase': _info.get('upgrades_to_purchase'),
+                'cell_color_name': _info.get('cell_color_name', ''),
+                'crop_b64': _crop_b64,
+            }
     elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 30.0 and ctx.recover_stage == 0:
         log.info("No upgrade buttons visible for 30s - clicking low moddle to dismiss popup")
         do_click("Dismiss popup blocking upgrades", 0.58, 0.9)

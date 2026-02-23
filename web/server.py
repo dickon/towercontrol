@@ -156,6 +156,46 @@ def _build_state() -> dict:
         for p in gs.perk_selection_history[-50:]
     ]
 
+    state["upgrade_purchase_history"] = [
+        {"timestamp": p.get("timestamp", 0), "wave": p.get("wave"),
+         "upgrade_name": p.get("upgrade_name", "?"), "cost": p.get("cost")}
+        for p in gs.upgrade_purchase_history[-200:]
+    ]
+
+    state["upgrade_advance_history"] = [
+        {"timestamp": p.get("timestamp", 0), "wave": p.get("wave"),
+         "from_upgrade": p.get("from_upgrade", "?"), "to_upgrade": p.get("to_upgrade", "?"),
+         "reason": p.get("reason", "?")}
+        for p in gs.upgrade_advance_history[-50:]
+    ]
+
+    try:
+        now = _time.time()
+        state["upgrade_seen"] = {
+            label: {
+                "seen_ago": round(now - d["timestamp"], 0),
+                "current_value": d.get("current_value"),
+                "cost": d.get("cost"),
+                "is_max": d.get("is_max", False),
+                "upgrades_to_purchase": d.get("upgrades_to_purchase"),
+                "cell_color_name": d.get("cell_color_name", ""),
+                "crop_b64": d.get("crop_b64"),
+            }
+            for label, d in c.upgrade_seen.items()
+        }
+    except Exception:
+        pass
+
+    try:
+        prio = _mod._active_upgrade_priority()
+        state["upgrade_priority"] = [
+            {"page": p[0], "label": p[1], "cost_threshold": p[2], "needs_scroll": p[3]}
+            for p in prio
+        ]
+        state["upgrade_state"] = c.upgrade_state
+    except Exception:
+        pass
+
     state["strategy_params"] = {
         "input_enabled": c.input_enabled,
         "loop_tick":     c.config.loop_tick,
@@ -421,6 +461,24 @@ async def api_params_schema():
             "label": "Input enabled", "type": "bool",
         },
     }
+
+
+@fapp.post("/api/upgrade_state")
+async def api_upgrade_state(request: Request):
+    body = await request.json()
+    c = _ctx()
+    if c is None:
+        return {"ok": False, "reason": "no ctx"}
+    try:
+        idx = int(body["index"])
+        prio = _mod._active_upgrade_priority()
+        if 0 <= idx <= len(prio):
+            c.upgrade_state = idx
+            logging.getLogger(__name__).info("Upgrade state set to %d via web UI", idx)
+            return {"ok": True, "index": idx}
+        return {"ok": False, "reason": "index out of range"}
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc)}
 
 
 @fapp.post("/api/params")
