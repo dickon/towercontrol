@@ -130,6 +130,44 @@ class TestUtilityUpgrades1771264045:
                 assert 300000 < info['cost'] < 400000, \
                     f"Recovery Amount cost should be ~340310, got {info['cost']}"
 
+    def test_package_change_is_max(self):
+        """Verify Package Chance is detected as Max (cost=None, is_max=True).
+
+        FAILING: Currently shows cost=None but is_max=False due to OCR failure
+        where the "Max" text is not detected in the cell.
+        Need to improve OCR detection of "Max" in upgrade cells.
+        """
+        assert 'Package Chance' in self.upgrades, "Package Chance should be detected"
+
+        info = self.upgrades['Package Chance']
+        assert info['is_max'] is True, f"Package Chance should be MAX, got is_max={info['is_max']}" 
+
+    def test_enemy_attack_level_skip_is_unaffordable(self):
+        """Verify Enemy Attack Level Skip is detected as unaffordable (dark blue border).
+
+        FAILING: Currently shows is_affordable=True due to OCR failure where the cost text is not detected,
+        causing it to default to affordable. Need to improve OCR detection of cost text in upgrade cells.
+        """
+        assert 'Enemy Attack Level Skip' in self.upgrades, "Enemy Attack Level Skip should be detected"
+
+        info = self.upgrades['Enemy Attack Level Skip']
+        assert info['is_affordable'] is False, f"Enemy Attack Level Skip should be unaffordable (dark blue border), got is_affordable={info['is_affordable']}"
+
+    def test_max_recovery_is_affordable(self):
+        """Verify Max Recovery is not classified as unaffordable.
+
+        The border colour for this button does not fall in the standard blue
+        range used for explicit affordable/unaffordable detection, so
+        is_affordable=None (unknown) is acceptable — the bot will still attempt
+        to purchase it.  is_affordable=False would be wrong.
+        """
+        assert 'Max Recovery' in self.upgrades, "Max Recovery should be detected"
+
+        info = self.upgrades['Max Recovery']
+        assert info['is_affordable'] is not False, (
+            f"Max Recovery must not be classified as unaffordable, "
+            f"got is_affordable={info['is_affordable']}"
+        )
 
 class TestUtilityUpgrades1771351783:
     """Test upgrade detection on test image 1771351783 (UTILITY upgrades with specific values).

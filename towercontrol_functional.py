@@ -1529,16 +1529,20 @@ def classify_inner_box_state(
 ) -> str:
     """Classify inner-box border colour → 'max' | 'affordable' | 'unaffordable' | 'unknown'.
 
-    The right sub-panel (value + cost button) is surrounded by a thin coloured
-    outline whose hue encodes the button state. The background on both sides of
-    the border is dark (#212053), so only the perimeter strip of the inner-box
-    region is sampled; pixels with low saturation (S ≤ 80) are discarded as
-    background/text noise, leaving only the coloured border pixels.
+    Scans the entire right sub-panel region for pixels whose hue falls in the
+    target ranges.  This is more robust than perimeter-strip sampling because:
+      • The outer white box border sits at the very edge of the region and would
+        dominate thin strips, but white pixels have S≈0 and are filtered out.
+      • The dark navy background (#212053) has H≈120 (S>80 so it passes a
+        saturation-only filter), but H=120 is outside [90,115] so a hue-gated
+        scan excludes it entirely.
+      • The coloured inner-box border (H≈100-104) is the *only* source of pixels
+        in [90,115] with high saturation, regardless of how far it is inset.
 
     OpenCV HSV reference colours (H 0-180, S/V 0-255):
       max (#73732a):          H≈30, S≈162, V≈115  → H in [20,45],  S>80
-      affordable (#0d78b1):   H≈100, S≈236, V≈177 → H in [90,115], S>150, V>150
-      unaffordable (#144b7e): H≈104, S≈214, V≈126 → H in [90,115], S>150, V≤150
+      affordable (#0d78b1):   H≈100, S≈236, V≈177 → H in [90,115], S>80, V>135
+      unaffordable (#144b7e): H≈104, S≈214, V≈126 → H in [90,115], S>80, V≤135
     """
     if img is None:
         return 'unknown'
@@ -1554,40 +1558,35 @@ def classify_inner_box_state(
         if rh < 6 or rw < 6:
             return 'unknown'
 
-        # Border strip thickness: ~8% of box height / 5% of box width, min 3 px
-        bt = max(3, int(rh * 0.08))
-        bl = max(3, int(rw * 0.05))
-
-        # Collect perimeter pixels (top, bottom, left, right strips)
-        strips = np.concatenate([
-            region[:bt, :].reshape(-1, 3),       # top
-            region[-bt:, :].reshape(-1, 3),      # bottom
-            region[:, :bl].reshape(-1, 3),       # left
-            region[:, -bl:].reshape(-1, 3),      # right
-        ])                                        # shape (N, 3), RGB
-
-        # Convert RGB → BGR → HSV
-        bgr = strips[:, ::-1].reshape(-1, 1, 3).astype(np.uint8)
+        # Convert entire region RGB → BGR → HSV
+        bgr = region[:, :, ::-1].reshape(-1, 1, 3).astype(np.uint8)
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).reshape(-1, 3)
+        h_vals = hsv[:, 0]
+        s_vals = hsv[:, 1]
+        v_vals = hsv[:, 2]
 
-        colored = hsv[hsv[:, 1] > 80]            # keep saturated border pixels
-        if len(colored) < 10:
-            return 'unknown'
-
-        med_h = int(np.median(colored[:, 0]))
-        med_v = int(np.median(colored[:, 2]))
+        sat = s_vals > 80             # discard white borders and unsaturated noise
 
         log = logging.getLogger(__name__)
-        log.debug(
-            f"classify_inner_box_state: med_h={med_h} med_v={med_v} "
-            f"(from {len(colored)} colored pixels)"
-        )
 
-        if 20 <= med_h <= 45:
+        # Max state: olive/yellow-green border (H in [20,45])
+        max_v = v_vals[sat & (h_vals >= 20) & (h_vals <= 45)]
+        if len(max_v) >= 10:
+            log.debug(f"classify_inner_box_state: max ({len(max_v)} olive px)")
             return 'max'
-        if 90 <= med_h <= 115:
-            return 'affordable' if med_v > 150 else 'unaffordable'
-        return 'unknown'
+
+        # Affordable/unaffordable: blue border (H in [90,115])
+        # Background #212053 has H≈120 → excluded by this hue gate
+        blue_v = v_vals[sat & (h_vals >= 90) & (h_vals <= 115)]
+        if len(blue_v) < 10:
+            return 'unknown'
+
+        med_v = int(np.median(blue_v))
+        log.debug(
+            f"classify_inner_box_state: med_v={med_v} "
+            f"(from {len(blue_v)} blue px)"
+        )
+        return 'affordable' if med_v > 135 else 'unaffordable'
     except Exception:
         return 'unknown'
 
@@ -2653,9 +2652,16 @@ def handle_upgrade_action(seen_page: Optional[str],
         ctx.last_upgrade_action = now
         return
 
-    # Unaffordable: visible but can't buy yet — wait without advancing priority
+    # Unaffordable: visible but can't buy yet.
+    # If cost also exceeds the priority threshold, skip it rather than waiting.
     if target_info.get('is_affordable') is False:
-        log.info(f"'{want_label}' unaffordable (cost={target_info['cost']}) - skipping tick")
+        cost = target_info['cost']
+        if cost_threshold is not None and cost is not None and cost > cost_threshold:
+            reason = "unaffordable and cost exceeds threshold"
+            log.info(f"'{want_label}' unaffordable (cost={cost}) > threshold {cost_threshold} - advancing")
+            _advance_upgrade_state(from_label=want_label, reason=reason)
+        else:
+            log.info(f"'{want_label}' unaffordable (cost={cost}) - skipping tick")
         ctx.last_upgrade_action = now
         return
 
