@@ -1526,6 +1526,7 @@ def classify_inner_box_state(
     img: Image.Image,
     fy_min: float, fy_max: float,
     fx_mid: float, fx_max: float,
+    label: str = ""
 ) -> str:
     """Classify inner-box border colour → 'max' | 'affordable' | 'unaffordable' | 'unknown'.
 
@@ -1571,8 +1572,8 @@ def classify_inner_box_state(
 
         # Max state: olive/yellow-green border (H in [20,45])
         max_v = v_vals[sat & (h_vals >= 20) & (h_vals <= 45)]
-        if len(max_v) >= 10:
-            log.debug(f"classify_inner_box_state: max ({len(max_v)} olive px)")
+        if len(max_v) >= 1000:
+            log.info(f"classify_inner_box_state: {label} max ({len(max_v)} olive px)")
             return 'max'
 
         # Affordable/unaffordable: blue border (H in [90,115])
@@ -1582,11 +1583,12 @@ def classify_inner_box_state(
             return 'unknown'
 
         med_v = int(np.median(blue_v))
-        log.debug(
-            f"classify_inner_box_state: med_v={med_v} "
-            f"(from {len(blue_v)} blue px)"
+        result = 'affordable' if med_v > 95 else 'unaffordable'
+        log.info(
+            f"label {label} classify_inner_box_state: med_v={med_v} "
+            f"(from {len(blue_v)} blue px) → {result}"
         )
-        return 'affordable' if med_v > 135 else 'unaffordable'
+        return result
     except Exception:
         return 'unknown'
 
@@ -2033,7 +2035,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             cost_value = None
 
         # Inner-box border colour → affordability state
-        _box_state = classify_inner_box_state(img, fy_min, fy_max, fx_mid, fx_max)
+        _box_state = classify_inner_box_state(img, fy_min, fy_max, fx_mid, fx_max, label)
         if _box_state == 'max' and not is_max:
             is_max = True       # olive border = additional MAX fallback
             cost_value = None
@@ -2666,7 +2668,7 @@ def handle_upgrade_action(seen_page: Optional[str],
         return
 
     # Batch-advance: skip all visible maxed/over-threshold upgrades in a single tick
-    while target_info['is_max'] or (cost_threshold is not None and target_info['cost'] is not None and target_info['cost'] > cost_threshold):
+    while target_info['is_max'] or (cost_threshold is not None and target_info['cost'] is not None and target_info['cost'] > cost_threshold) and target_info['is_affordable'] == False:
         reason = "cost exceeds threshold" if not target_info['is_max'] else "upgrade is maxed"
         log.info(f"'{want_label}' {reason} - advancing to next priority upgrade")
         _advance_upgrade_state(from_label=want_label, reason=reason)
@@ -3128,7 +3130,7 @@ def automation_loop_tick():
     # Detect and log upgrade buttons
     upgrade_buttons = detect_upgrade_buttons(frame, img, ctx.config)
     if upgrade_buttons:
-        text = [ f'{k} ({"MAX" if v["is_max"] else v["cost"]})' for k,v in upgrade_buttons.items()]
+        text = [ f'{k} ({"MAX" if v["is_max"] else v["cost"]}) ({"AFFORDABLE" if v.get("is_affordable") else "UNAFFORDABLE" if v.get("is_affordable") is False else "UNKNOWN"})' for k,v in upgrade_buttons.items()]
         log.info(f'upgrades detected : {", ".join(text)}')
         ctx.last_seen_upgrades = time.time()
         ctx.recover_stage = 0
