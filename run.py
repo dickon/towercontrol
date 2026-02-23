@@ -22,7 +22,6 @@ Limitations:
 """
 
 import importlib
-import sys
 import threading
 
 import pyautogui
@@ -47,6 +46,25 @@ def _watch_and_reload(path: str) -> None:
             print(f"[hot-reload] Reload error: {exc}")
 
 
+def _start_web_server() -> None:
+    """Wait for ctx to be created by main(), then start the web server."""
+    import time
+    from web.server import start_server
+
+    # main() creates ctx during initialisation; poll until it appears.
+    for _ in range(60):
+        if getattr(mod, "ctx", None) is not None:
+            break
+        time.sleep(0.5)
+
+    c = getattr(mod, "ctx", None)
+    if c is None:
+        print("[web] ctx not available after 30 s — web server not started")
+        return
+
+    start_server(mod, c.config.debug_dir, host=c.config.web_host, port=c.config.web_port)
+
+
 if __name__ == "__main__":
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE = 0.02
@@ -55,6 +73,10 @@ if __name__ == "__main__":
 
     watcher = threading.Thread(target=_watch_and_reload, args=(src,), daemon=True)
     watcher.start()
+
+    # Start web server in a daemon thread; it waits for ctx before binding.
+    web_starter = threading.Thread(target=_start_web_server, daemon=True, name="web-starter")
+    web_starter.start()
 
     # Delegate argv so all existing CLI args still work
     mod.main()

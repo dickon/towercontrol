@@ -11,41 +11,74 @@
 <body class="bg-dark text-light">
 
   <!-- Navbar -->
-  <nav class="navbar navbar-dark bg-black px-3">
-    <span class="navbar-brand mb-0 h1">&#x1f3ef; TowerControl</span>
+  <nav class="navbar navbar-dark bg-black px-3 d-flex justify-content-between">
+    <div class="d-flex align-items-center gap-3">
+      <span class="navbar-brand mb-0 h1">&#x1f3ef; TowerControl</span>
+      <a class="btn btn-outline-secondary btn-sm" href="/captures">&#128247; Captures</a>
+    </div>
     <span id="statusBadge" class="badge bg-secondary">offline</span>
   </nav>
 
   <div class="container-fluid mt-3">
     <div class="row g-3">
 
-      <!-- Left column: game capture -->
+      <!-- Left column: game view + OCR list -->
       <div class="col-lg-7">
+
+        <!-- Game view with coordinate inspector -->
         <div class="card bg-black border-secondary">
-          <div class="card-header d-flex justify-content-between">
+          <div class="card-header d-flex justify-content-between align-items-center">
             <span>Game View</span>
-            <small id="windowInfo" class="text-muted"></small>
+            <div class="d-flex align-items-center gap-2">
+              <span id="coordDisplay" class="text-info small font-monospace" style="min-width:160px;text-align:right"></span>
+              <small id="windowInfo" class="text-muted"></small>
+            </div>
           </div>
           <div class="card-body p-1 text-center position-relative">
-            <canvas id="gameCanvas" class="game-canvas"></canvas>
+            <div style="position:relative;display:inline-block;max-width:100%">
+              <canvas id="gameCanvas" class="game-canvas"></canvas>
+              <canvas id="overlayCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none"></canvas>
+            </div>
             <div id="noImage" class="overlay-msg">No capture&mdash;is BlueStacks running?</div>
           </div>
         </div>
 
-        <!-- OCR raw text -->
+        <!-- OCR results list -->
         <div class="card bg-black border-secondary mt-3">
-          <div class="card-header">OCR Text</div>
-          <div class="card-body" style="max-height:180px;overflow-y:auto">
-            <pre id="ocrText" class="mb-0 text-info small"></pre>
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span>OCR Elements</span>
+            <span id="ocrCount" class="text-muted small"></span>
+          </div>
+          <div class="card-body p-0" style="max-height:360px;overflow-y:auto">
+            <ul id="ocrList" class="list-unstyled mb-0"></ul>
           </div>
         </div>
+
       </div>
 
-      <!-- Right column: controls & state -->
+      <!-- Right column: log (top) + controls + state -->
       <div class="col-lg-5">
 
-        <!-- Controls -->
+        <!-- Log stream — top of right column -->
         <div class="card bg-black border-secondary">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span>Log</span>
+            <div class="d-flex align-items-center gap-2">
+              <span id="logStatus" class="badge bg-secondary" style="font-size:0.65rem">connecting</span>
+              <div class="form-check form-switch mb-0 d-flex align-items-center gap-1">
+                <input class="form-check-input" type="checkbox" id="logAutoScroll" checked />
+                <label class="form-check-label small" for="logAutoScroll">auto-scroll</label>
+              </div>
+              <button class="btn btn-outline-secondary btn-sm py-0 px-2" onclick="clearLog()">clear</button>
+            </div>
+          </div>
+          <div id="logPane" style="height:440px;overflow-y:auto;background:#0a0a0a;padding:6px">
+            <pre id="logContent" class="mb-0" style="font-size:0.72rem;line-height:1.35;color:#aaa;white-space:pre-wrap;word-break:break-all"></pre>
+          </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="card bg-black border-secondary mt-3">
           <div class="card-header">Controls</div>
           <div class="card-body">
             <div class="btn-group w-100 mb-2">
@@ -54,9 +87,15 @@
               <button class="btn btn-info btn-sm"    onclick="api('resume')">&#9654; Resume</button>
               <button class="btn btn-danger btn-sm"  onclick="api('stop')">&#9632; Stop</button>
             </div>
-            <button class="btn btn-outline-light btn-sm w-100 mb-2"
-                    onclick="api('scan')">&#128269; Full Scan</button>
-            <div class="text-muted small">Click on the game image to inject a click.</div>
+            <div class="d-flex gap-2 mb-2">
+              <button class="btn btn-outline-light btn-sm flex-grow-1"
+                      onclick="api('scan')">&#128269; Full Scan</button>
+              <button class="btn btn-outline-warning btn-sm flex-grow-1"
+                      onclick="confirmRestart()">&#8635; Restart Context</button>
+            </div>
+            <div class="text-muted small">
+              Click image to inject a click. Hover to inspect coordinates.
+            </div>
           </div>
         </div>
 
@@ -70,22 +109,13 @@
           </div>
         </div>
 
-        <!-- State -->
+        <!-- Full context state -->
         <div class="card bg-black border-secondary mt-3">
-          <div class="card-header">State</div>
-          <div class="card-body">
-            <dl class="row mb-0 small">
-              <dt class="col-5">Screen</dt>
-              <dd class="col-7" id="currentScreen">—</dd>
-              <dt class="col-5">Wave</dt>
-              <dd class="col-7" id="currentWave">—</dd>
-              <dt class="col-5">Elements</dt>
-              <dd class="col-7" id="elementCount">—</dd>
-              <dt class="col-5">Tabs scanned</dt>
-              <dd class="col-7" id="tabsScanned">—</dd>
-              <dt class="col-5">Errors</dt>
-              <dd class="col-7" id="errorCount">0</dd>
-            </dl>
+          <div class="card-header">Context</div>
+          <div class="card-body p-0">
+            <table class="table table-sm table-dark mb-0" style="font-size:0.75rem">
+              <tbody id="ctxTable"></tbody>
+            </table>
           </div>
         </div>
 

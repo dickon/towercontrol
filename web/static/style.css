@@ -43,3 +43,17 @@ body {
 .badge-paused    { background-color: #ffc107 !important; color: #000 !important; }
 .badge-stopped   { background-color: #dc3545 !important; }
 .badge-no_window { background-color: #6c757d !important; }
+
+/* Override Bootstrap's dark body color for use on dark backgrounds */
+:root { --bs-body-color: #fff; }
+
+/* Force readable white-on-black text throughout the dark UI */
+.text-muted          { color: #aaa !important; }
+.card-body           { color: #fff; }
+.table-dark          { --bs-table-color: #fff; --bs-table-striped-color: #fff; }
+.table-dark td,
+.table-dark th       { color: #fff !important; }
+.table-dark td.text-muted { color: #aaa !important; }
+dl dt                { color: #aaa; }
+dl dd                { color: #fff; }
+#actionLog .text-muted  { color: #aaa !important; }

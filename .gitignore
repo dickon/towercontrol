@@ -75,3 +75,5 @@ debug/capture_*.png
 debug/capture_*.txt
 debug_upgrade_boxes.png
 logs/*.log*
+web/__pycache__/__init__.cpython-313.pyc
+web/__pycache__/server.cpython-313.pyc

@@ -179,7 +179,7 @@ class Config:
     swipe_pause: float = 1.0
     input_delay: float = 0.15
     loop_tick: float = 20.0
-    web_host: str = "127.0.0.1"
+    web_host: str = "0.0.0.0"
     web_port: int = 7700
     tab_y: int = 920
     tab_positions: Dict[str, Tuple[int, int]] = field(default_factory=lambda: {
@@ -412,6 +412,29 @@ def image_to_bgr_array(img: Image.Image) -> np.ndarray:
     return arr[:, :, ::-1].copy()
 
 
+class _CaptureLogBuffer(logging.Handler):
+    """In-memory log handler that accumulates records between captures."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lines: list = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._lines.append(self.format(record))
+        except Exception:
+            pass
+
+    def drain(self) -> list:
+        """Return accumulated lines and reset for the next capture."""
+        lines, self._lines = self._lines, []
+        return lines
+
+
+# Singleton buffer registered into the root logger by setup_logging()
+_capture_log_buffer = _CaptureLogBuffer()
+
+
 def _rotate_capture_files(config: Config, prefix: str = "capture", keep: int = 100) -> None:
     """Keep only the last N renamed capture files per group, deleting older ones."""
     log = logging.getLogger(__name__)
@@ -489,6 +512,9 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
         annotated_img.save(annotated_path)
         log.debug(f"Saved annotated debug image: {annotated_path}")
         
+        # Drain log buffer *before* writing (the save itself emits debug lines)
+        log_lines = _capture_log_buffer.drain()
+
         # Create text table
         with open(txt_path, 'w', encoding='utf-8') as f:
             f.write(f"Debug Capture: {timestamp}\n")
@@ -497,15 +523,22 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
             f.write("\n" + "="*100 + "\n")
             f.write(f"{'Text':<30} | {'X_Frac':<8} | {'Y_Frac':<8} | {'W_Frac':<8} | {'H_Frac':<8} | {'Conf':<6}\n")
             f.write("="*100 + "\n")
-            
+
             for result in frame.results:
                 x, y, w, h = result.bbox
                 w_frac = w / img_width if img_width > 0 else 0.0
                 h_frac = h / img_height if img_height > 0 else 0.0
-                
+
                 text_display = result.text[:28] + ".." if len(result.text) > 30 else result.text
                 f.write(f"r.text == '{text_display}' and r.is_near({result.fx:>8.4f}, {result.fy:>8.4f})\n")
-        
+
+            if log_lines:
+                f.write("\n" + "="*100 + "\n")
+                f.write("LOG SINCE LAST CAPTURE\n")
+                f.write("="*100 + "\n")
+                for line in log_lines:
+                    f.write(line + "\n")
+
         log.debug(f"Saved debug text: {txt_path}")
     except Exception as e:
         log.error(f"Failed to save debug files: {e}")
@@ -3203,6 +3236,11 @@ def setup_logging():
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
+
+    # In-memory buffer for capture.txt — DEBUG and above
+    _capture_log_buffer.setLevel(logging.DEBUG)
+    _capture_log_buffer.setFormatter(formatter)
+    logger.addHandler(_capture_log_buffer)
 
     logging.getLogger(__name__).info(f"Logging to file: {log_file}")
 
