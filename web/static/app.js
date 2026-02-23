@@ -6,6 +6,7 @@ const API    = (path) => `${location.origin}/api/${path}`;
 let ws      = null;
 let canvas, ctx, overlay, octx;
 let imgNatW = 0, imgNatH = 0;   // natural size of the last received image
+let _clickCrosshair = null;     // {fx, fy} of pinned action crosshair, or null
 
 // ── Bootstrap ───────────────────────────────────────────────────────────
 
@@ -171,11 +172,33 @@ function handleState(s) {
   logEl.innerHTML = "";
   for (const a of (s.recent_actions || []).slice(-15).reverse()) {
     const li = document.createElement("li");
-    const t  = new Date(a.time * 1000).toLocaleTimeString();
-    li.innerHTML =
+    li.className = "d-flex align-items-baseline gap-1 py-0";
+    const t = new Date(a.time * 1000).toLocaleTimeString();
+    const hasCoords = a.fx != null && a.fy != null;
+
+    // Crosshair button (only for clicks with coords)
+    if (hasCoords) {
+      const btn = document.createElement("button");
+      btn.className = "action-xhair-btn btn btn-sm p-0";
+      btn.style.cssText = "font-size:0.7rem;line-height:1;min-width:1.3rem;color:#555;background:none;border:1px solid #333;border-radius:3px;flex-shrink:0";
+      btn.title = `Show crosshair at (${a.fx}, ${a.fy})`;
+      btn.textContent = "⊕";
+      const fx = a.fx, fy = a.fy;
+      btn.addEventListener("click", (e) => { e.stopPropagation(); toggleActionCrosshair(btn, fx, fy); });
+      li.appendChild(btn);
+    }
+
+    const info = document.createElement("span");
+    info.className = "flex-grow-1";
+    const coordStr = hasCoords
+      ? `<span class="text-muted" style="font-size:0.68rem"> (${a.fx},${a.fy}) px(${a.ax},${a.ay})</span>`
+      : "";
+    info.innerHTML =
       `<span class="text-muted">${t}</span> ` +
       `<span class="text-warning">${esc(a.type)}</span> ` +
-      `<span>${esc(a.reason || "")}</span>`;
+      `<span>${esc(a.reason || "")}</span>` +
+      coordStr;
+    li.appendChild(info);
     logEl.appendChild(li);
   }
 
@@ -321,6 +344,40 @@ function drawOverlay(hoverResult) {
   }
   // Draw hover box on top (if any)
   if (hoverResult) _drawBox(hoverResult, /*pinned=*/false);
+  // Draw pinned click crosshair (if any)
+  if (_clickCrosshair) _drawCrosshair(_clickCrosshair.fx, _clickCrosshair.fy);
+}
+
+function _drawCrosshair(fx, fy) {
+  if (!octx || !overlay.width || !overlay.height) return;
+  const cx = fx * overlay.width;
+  const cy = fy * overlay.height;
+  const arm = Math.max(40, overlay.width * 0.04);
+  octx.save();
+  octx.strokeStyle = "#ff0";
+  octx.lineWidth   = 2.5;
+  // horizontal arm
+  octx.beginPath(); octx.moveTo(cx - arm, cy); octx.lineTo(cx + arm, cy); octx.stroke();
+  // vertical arm
+  octx.beginPath(); octx.moveTo(cx, cy - arm); octx.lineTo(cx, cy + arm); octx.stroke();
+  // centre circle
+  octx.beginPath(); octx.arc(cx, cy, 7, 0, Math.PI * 2); octx.stroke();
+  octx.restore();
+}
+
+function toggleActionCrosshair(btn, fx, fy) {
+  if (_clickCrosshair && _clickCrosshair.fx === fx && _clickCrosshair.fy === fy) {
+    _clickCrosshair = null;
+    btn.style.color = "#555";
+  } else {
+    // Deactivate previous button if any
+    const prev = document.querySelector(".action-xhair-btn.active-xhair");
+    if (prev) { prev.style.color = "#555"; prev.classList.remove("active-xhair"); }
+    _clickCrosshair = { fx, fy };
+    btn.style.color = "#ff0";
+    btn.classList.add("active-xhair");
+  }
+  drawOverlay(null);
 }
 
 function _drawBox(r, pinned) {

@@ -136,7 +136,17 @@ def _build_state() -> dict:
         ]
 
     state["recent_actions"] = [
-        {"type": a.get("type", "?"), "reason": a.get("reason", ""), "time": a.get("time", 0)}
+        {
+            "type":   a.get("type", "?"),
+            "reason": a.get("reason", ""),
+            "time":   a.get("time", 0),
+            "x":      a.get("x"),
+            "y":      a.get("y"),
+            "ax":     a.get("ax"),
+            "ay":     a.get("ay"),
+            "fx":     a.get("fx"),
+            "fy":     a.get("fy"),
+        }
         for a in gs.action_history[-20:]
     ]
 

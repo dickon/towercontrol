@@ -474,11 +474,10 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
     try:
         img_path = config.debug_dir / f"{prefix}.png"
         txt_path = config.debug_dir / f"{prefix}.txt"
-        annotated_path = config.debug_dir / f"{prefix}_annotated.png"
 
         # Rename existing files to timestamped names before overwriting
         state_sfx = _state_suffix_for_capture()
-        for old_path in (img_path, txt_path, annotated_path):
+        for old_path in (img_path, txt_path):
             if old_path.exists():
                 mtime_ts = datetime.datetime.fromtimestamp(old_path.stat().st_mtime).strftime("%Y%m%d_%H%M%S_%f")
                 new_name = f"{old_path.stem}_{mtime_ts}{state_sfx}{old_path.suffix}"
@@ -490,28 +489,7 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
         # Save original image
         img.save(img_path)
         log.debug(f"Saved debug image: {img_path}")
-        
-        # Create annotated image with boxes and coordinates
-        annotated_img = img.copy()
-        draw = ImageDraw.Draw(annotated_img)
-        img_width, img_height = frame.image_size
-        
-        for result in frame.results:
-            x, y, w, h = result.bbox
-            cx, cy = result.center
-            
-            # Draw bounding box
-            box_color = (0, 255, 0) if result.confidence >= 80 else (255, 165, 0)  # Green for high conf, orange for lower
-            draw.rectangle([x, y, x + w, y + h], outline=box_color, width=2)
-            
-            # Draw text and fractional coordinates
-            label = f"{result.text}\n({result.fx:.3f}, {result.fy:.3f})"
-            # Position label above the box if there's room, otherwise below
-            label_y = max(0, y - 25) if y > 30 else y + h + 2
-            draw.text((x, label_y), label, fill=box_color)
-        
-        annotated_img.save(annotated_path)
-        log.debug(f"Saved annotated debug image: {annotated_path}")
+       
         
         # Drain log buffer *before* writing (the save itself emits debug lines)
         log_lines = _capture_log_buffer.drain()
@@ -1231,7 +1209,7 @@ def detect_perks(frame: OCRFrame) -> dict:
     }
 
 
-def record_action_in_state(state: GameState, action: Action) -> GameState:
+def record_action_in_state(state: GameState, action: Action, **extra) -> GameState:
     """Record action in history. Pure function."""
     entry = {
         "time": time.time(),
@@ -1239,6 +1217,7 @@ def record_action_in_state(state: GameState, action: Action) -> GameState:
         "reason": action.reason,
         "x": action.x,
         "y": action.y,
+        **extra,
     }
     new_history = (*state.action_history, entry)
     if len(new_history) > 200:
@@ -2275,16 +2254,7 @@ def process_claim_button(img: Optional[Image.Image], claim_template: Optional[np
             last_claim_time = get_last_action_time(ctx.game_state, ActionType.CLICK)
             if time.time() - last_claim_time > 2.0:
                 log.info(f"CLAIM button detected via template at {claim_pos} - clicking!")
-                execute_click(claim_pos[0], claim_pos[1], ctx.window_rect, config, reason="claim")
-                # Update action history
-                action = Action(
-                    action_type=ActionType.CLICK,
-                    x=claim_pos[0],
-                    y=claim_pos[1],
-                    reason="Clicking CLAIM button (template match)",
-                    priority=90
-                )
-                ctx.game_state = record_action_in_state(ctx.game_state, action)
+                execute_click(claim_pos[0], claim_pos[1], ctx.window_rect, config, reason="Clicking CLAIM button (template match)")
 
     except Exception as e:
         log.debug(f"CLAIM button detection failed: {e}")
@@ -2644,6 +2614,7 @@ def cleanup_old_click_debug_files(config: Config, keep_count: int = 20) -> None:
 
 def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_front: bool = False, reason: str = "") -> bool:
     """Execute click action. Side effect."""
+    global ctx
     log = logging.getLogger(__name__)
     
     # Capture debug screenshot with crosshairs BEFORE clicking
@@ -2698,6 +2669,15 @@ def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_fro
     pyautogui.click(ax, ay, interval=config.click_pause)
     log.info(f"Clicked at ({ax}, {ay}); sleep for {config.click_pause:.2f} seconds" + (f"  [{reason}]" if reason else ""))
     time.sleep(config.click_pause)
+
+    if ctx is not None:
+        fx = round(x / rect.width,  4) if rect.width  else 0.0
+        fy = round(y / rect.height, 4) if rect.height else 0.0
+        ctx.game_state = record_action_in_state(
+            ctx.game_state,
+            Action(action_type=ActionType.CLICK, x=x, y=y, reason=reason),
+            ax=ax, ay=ay, fx=fx, fy=fy,
+        )
 
     return True
 
