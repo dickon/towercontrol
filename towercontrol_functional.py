@@ -351,6 +351,7 @@ class UpgradeInfo(TypedDict):
     current_value: Optional[float]  # Current numerical value of the stat
     cost: Optional[float]  # Cost to upgrade (None if MAX or OCR failed)
     is_max: bool  # True only when upgrade is explicitly detected as maxed
+    is_affordable: Optional[bool]  # True=can afford, False=cannot, None=maxed/unknown
     upgrades_to_purchase: int  # Number of upgrades to buy (default 1)
     cell_color: Tuple[int, int, int]  # RGB color of the button cell
     cell_color_name: str  # English name for the cell color (e.g. "dark red", "dark blue")
@@ -474,7 +475,8 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
     """Save debug image and text file with fractional positions of OCR elements."""
     log = logging.getLogger(__name__)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-
+    img_width = frame.image_size[0] if frame.image_size[0] > 0 else img.width
+    img_height = frame.image_size[1] if frame.image_size[1] > 0 else img.height
     try:
         img_path = config.debug_dir / f"{prefix}.png"
         txt_path = config.debug_dir / f"{prefix}.txt"
@@ -1520,6 +1522,76 @@ def _find_upgrade_boxes(img: Image.Image) -> List[Tuple[int, int, int, int]]:
     return sorted(boxes, key=lambda b: (b[1], b[0]))
 
 
+def classify_inner_box_state(
+    img: Image.Image,
+    fy_min: float, fy_max: float,
+    fx_mid: float, fx_max: float,
+) -> str:
+    """Classify inner-box border colour → 'max' | 'affordable' | 'unaffordable' | 'unknown'.
+
+    The right sub-panel (value + cost button) is surrounded by a thin coloured
+    outline whose hue encodes the button state. The background on both sides of
+    the border is dark (#212053), so only the perimeter strip of the inner-box
+    region is sampled; pixels with low saturation (S ≤ 80) are discarded as
+    background/text noise, leaving only the coloured border pixels.
+
+    OpenCV HSV reference colours (H 0-180, S/V 0-255):
+      max (#73732a):          H≈30, S≈162, V≈115  → H in [20,45],  S>80
+      affordable (#0d78b1):   H≈100, S≈236, V≈177 → H in [90,115], S>150, V>150
+      unaffordable (#144b7e): H≈104, S≈214, V≈126 → H in [90,115], S>150, V≤150
+    """
+    if img is None:
+        return 'unknown'
+    try:
+        arr = np.array(img)          # RGB
+        h_img, w_img = arr.shape[:2]
+        xs = int(fx_mid * w_img)
+        xe = int(fx_max * w_img)
+        ys = int(fy_min * h_img)
+        ye = int(fy_max * h_img)
+        region = arr[ys:ye, xs:xe]   # shape (H, W, 3), RGB
+        rh, rw = region.shape[:2]
+        if rh < 6 or rw < 6:
+            return 'unknown'
+
+        # Border strip thickness: ~8% of box height / 5% of box width, min 3 px
+        bt = max(3, int(rh * 0.08))
+        bl = max(3, int(rw * 0.05))
+
+        # Collect perimeter pixels (top, bottom, left, right strips)
+        strips = np.concatenate([
+            region[:bt, :].reshape(-1, 3),       # top
+            region[-bt:, :].reshape(-1, 3),      # bottom
+            region[:, :bl].reshape(-1, 3),       # left
+            region[:, -bl:].reshape(-1, 3),      # right
+        ])                                        # shape (N, 3), RGB
+
+        # Convert RGB → BGR → HSV
+        bgr = strips[:, ::-1].reshape(-1, 1, 3).astype(np.uint8)
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).reshape(-1, 3)
+
+        colored = hsv[hsv[:, 1] > 80]            # keep saturated border pixels
+        if len(colored) < 10:
+            return 'unknown'
+
+        med_h = int(np.median(colored[:, 0]))
+        med_v = int(np.median(colored[:, 2]))
+
+        log = logging.getLogger(__name__)
+        log.debug(
+            f"classify_inner_box_state: med_h={med_h} med_v={med_v} "
+            f"(from {len(colored)} colored pixels)"
+        )
+
+        if 20 <= med_h <= 45:
+            return 'max'
+        if 90 <= med_h <= 115:
+            return 'affordable' if med_v > 150 else 'unaffordable'
+        return 'unknown'
+    except Exception:
+        return 'unknown'
+
+
 def _ocr_box_purchase_count(img: Image.Image, box_x: int, box_y: int,
                              box_w: int, box_h: int, config: Config) -> Optional[int]:
     """Extract the "xNNN" purchase count from the top-right corner of an upgrade box.
@@ -1961,6 +2033,20 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             is_max = True
             cost_value = None
 
+        # Inner-box border colour → affordability state
+        _box_state = classify_inner_box_state(img, fy_min, fy_max, fx_mid, fx_max)
+        if _box_state == 'max' and not is_max:
+            is_max = True       # olive border = additional MAX fallback
+            cost_value = None
+        if is_max:
+            is_affordable: Optional[bool] = None
+        elif _box_state == 'affordable':
+            is_affordable = True
+        elif _box_state == 'unaffordable':
+            is_affordable = False
+        else:
+            is_affordable = None
+
         # ── Purchase count (xNNN to right of box)
         purchase_count = None
         for r in box_results:            
@@ -2010,6 +2096,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
                     if targeted_is_max:
                         is_max = True
                         cost_value = None
+                        is_affordable = None   # MAX overrides any earlier affordability guess
                         log.debug(
                             f"Recovered MAX for '{label}' via targeted OCR: '{ocr_text}'"
                         )
@@ -2055,6 +2142,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             'current_value': current_value,
             'cost': cost_value,
             'is_max': is_max,
+            'is_affordable': is_affordable,
             'upgrades_to_purchase': purchase_count,
             'cell_color': cell_color,
             'cell_color_name': rgb_to_color_name(*cell_color),
@@ -2068,6 +2156,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             f"Upgrade box '{label}': "
             f"level={current_value!r}, "
             f"cost={'MAX' if is_max else repr(cost_value)}, "
+            f"affordable={is_affordable!r}, "
             f"x_count={purchase_count}"
         )
 
@@ -2564,6 +2653,12 @@ def handle_upgrade_action(seen_page: Optional[str],
         ctx.last_upgrade_action = now
         return
 
+    # Unaffordable: visible but can't buy yet — wait without advancing priority
+    if target_info.get('is_affordable') is False:
+        log.info(f"'{want_label}' unaffordable (cost={target_info['cost']}) - skipping tick")
+        ctx.last_upgrade_action = now
+        return
+
     # Batch-advance: skip all visible maxed/over-threshold upgrades in a single tick
     while target_info['is_max'] or (cost_threshold is not None and target_info['cost'] is not None and target_info['cost'] > cost_threshold):
         reason = "cost exceeds threshold" if not target_info['is_max'] else "upgrade is maxed"
@@ -3046,6 +3141,7 @@ def automation_loop_tick():
                 'current_value': _info.get('current_value'),
                 'cost': _info.get('cost'),
                 'is_max': _info.get('is_max', False),
+                'is_affordable': _info.get('is_affordable'),
                 'upgrades_to_purchase': _info.get('upgrades_to_purchase'),
                 'cell_color_name': _info.get('cell_color_name', ''),
                 'crop_b64': _crop_b64,

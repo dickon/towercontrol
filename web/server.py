@@ -177,6 +177,7 @@ def _build_state() -> dict:
                 "current_value": d.get("current_value"),
                 "cost": d.get("cost"),
                 "is_max": d.get("is_max", False),
+                "is_affordable": d.get("is_affordable"),
                 "upgrades_to_purchase": d.get("upgrades_to_purchase"),
                 "cell_color_name": d.get("cell_color_name", ""),
                 "crop_b64": d.get("crop_b64"),

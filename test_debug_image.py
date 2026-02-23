@@ -376,9 +376,11 @@ class TestHealthRegenMax:
         """Verify Health Regen cost is MAX (None) — the button shows 'Max' in the image."""
         assert 'Health Regen' in self.upgrades, "Health Regen should be detected"
 
-        cost = self.upgrades['Health Regen']['cost']
-        assert cost is None, \
-            f"Health Regen should be at MAX (cost=None), got {cost}"
+        info = self.upgrades['Health Regen']
+        assert info['cost'] is None, \
+            f"Health Regen should be at MAX (cost=None), got {info['cost']}"
+        assert info['is_affordable'] is None, \
+            f"Health Regen is MAX so is_affordable should be None, got {info['is_affordable']}"
 
 
 class TestDefenseAbsoluteCost:
@@ -412,16 +414,19 @@ class TestDefenseAbsoluteCost:
             f"Defense Absolute should be detected. Found: {list(self.upgrades.keys())}"
 
     def test_defense_absolute_has_cost(self):
-        """Verify Defense Absolute cost is ~7.86B (not MAX)."""
+        """Verify Defense Absolute cost is ~7.86B (not MAX) and unaffordable."""
         assert 'Defense Absolute' in self.upgrades, "Defense Absolute should be detected"
 
-        cost = self.upgrades['Defense Absolute']['cost']
+        info = self.upgrades['Defense Absolute']
+        cost = info['cost']
         assert cost is not None, \
             "Defense Absolute should have a cost, not MAX"
         expected = 7.86e9
         tolerance = expected * 0.01  # 1%
         assert abs(cost - expected) <= tolerance, \
             f"Defense Absolute cost should be ~7.86B, got {cost:.3e}"
+        assert info['is_affordable'] is False, \
+            f"Defense Absolute should be unaffordable (dark navy border), got {info['is_affordable']}"
 
     def test_all_other_upgrades_at_max(self):
         """Verify every detected upgrade except Defense Absolute is at MAX."""
@@ -432,6 +437,15 @@ class TestDefenseAbsoluteCost:
         }
         assert not non_max, \
             f"All upgrades except Defense Absolute should be MAX, but these have costs: {non_max}"
+
+        # MAX upgrades should have is_affordable=None (not applicable)
+        wrong_affordability = {
+            label: info['is_affordable']
+            for label, info in self.upgrades.items()
+            if label != 'Defense Absolute' and info['is_max'] and info['is_affordable'] is not None
+        }
+        assert not wrong_affordability, \
+            f"MAX upgrades should have is_affordable=None, got: {wrong_affordability}"
 
     def test_health_upgrade_level_is_2_65T(self):
         """Verify Health current_value (upgrade level) is ~2.65T (2.65e12).
@@ -501,6 +515,8 @@ class TestLandMineCostUnknown:
             f"Land Mine Damage should be is_max=True, got is_max={info['is_max']}, cost={info['cost']}"
         assert info['cost'] is None, \
             f"Land Mine Damage should have cost=None (Max), got cost={info['cost']}"
+        assert info['is_affordable'] is None, \
+            f"Land Mine Damage is MAX so is_affordable should be None, got {info['is_affordable']}"
 
     def test_land_mine_chance_is_max(self):
         """Verify Land Mine Chance is detected as Max."""
@@ -528,6 +544,16 @@ class TestLandMineCostUnknown:
         info = self.upgrades['Death Defy']
         assert info['is_max'] is True, \
             f"Death Defy should be is_max=True, got is_max={info['is_max']}, cost={info['cost']}"
+
+    def test_all_max_upgrades_have_null_affordability(self):
+        """All MAX upgrades in this image should have is_affordable=None (not applicable)."""
+        wrong = {
+            label: info['is_affordable']
+            for label, info in self.upgrades.items()
+            if info['is_max'] and info['is_affordable'] is not None
+        }
+        assert not wrong, \
+            f"MAX upgrades should have is_affordable=None, got: {wrong}"
 
 
 class TestParseNumberWithSuffix:

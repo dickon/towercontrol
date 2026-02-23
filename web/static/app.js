@@ -421,8 +421,11 @@ function renderUpgradesSeen(seen) {
     let costCell;
     if (d.is_max) {
       costCell = `<span style="color:#f77">MAX</span>`;
+    } else if (d.is_affordable === false && d.cost != null) {
+      costCell = `<span style="color:#888">${esc(fmtNum(d.cost))} 🔒</span>`;
     } else if (d.cost != null) {
-      costCell = `<span style="color:#fc3">${esc(fmtNum(d.cost))}</span>`;
+      const indicator = d.is_affordable === true ? ' ✓' : '';
+      costCell = `<span style="color:#fc3">${esc(fmtNum(d.cost))}${indicator}</span>`;
     } else {
       costCell = `<span class="text-muted">—</span>`;
     }
