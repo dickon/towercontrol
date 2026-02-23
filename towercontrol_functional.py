@@ -412,17 +412,57 @@ def image_to_bgr_array(img: Image.Image) -> np.ndarray:
     return arr[:, :, ::-1].copy()
 
 
+def _rotate_capture_files(config: Config, prefix: str = "capture", keep: int = 100) -> None:
+    """Keep only the last N renamed capture files per group, deleting older ones."""
+    log = logging.getLogger(__name__)
+    try:
+        debug_dir = config.debug_dir
+        for ext in ('.png', '.txt'):
+            all_files = sorted(debug_dir.glob(f"{prefix}_*{ext}"))
+            plain = [f for f in all_files if not f.stem.startswith(f"{prefix}_annotated_")]
+            annotated = [f for f in all_files if f.stem.startswith(f"{prefix}_annotated_")]
+            for group in (plain, annotated):
+                if len(group) > keep:
+                    for f in group[:-keep]:
+                        f.unlink()
+    except Exception as e:
+        log.warning(f"Failed to rotate capture files: {e}")
+
+
+def _state_suffix_for_capture() -> str:
+    """Build a filename suffix from current game state (tier, wave, upgrade mode)."""
+    try:
+        gs = ctx.game_state
+        tier_part = f"_t{gs.tier}" if gs.tier is not None else ""
+        wave_raw = re.sub(r"[^\w]", "", gs.wave) if gs.wave else ""
+        wave_part = f"_w{wave_raw}" if wave_raw else ""
+        mode_part = f"_{ctx.upgrade_mode_seen}" if ctx.upgrade_mode_seen else ""
+        return f"{tier_part}{wave_part}{mode_part}"
+    except Exception:
+        return ""
+
+
 def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: str = "capture") -> None:
     """Save debug image and text file with fractional positions of OCR elements."""
     log = logging.getLogger(__name__)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    
+
     try:
-        # Fixed filenames that overwrite
         img_path = config.debug_dir / f"{prefix}.png"
         txt_path = config.debug_dir / f"{prefix}.txt"
         annotated_path = config.debug_dir / f"{prefix}_annotated.png"
-        
+
+        # Rename existing files to timestamped names before overwriting
+        state_sfx = _state_suffix_for_capture()
+        for old_path in (img_path, txt_path, annotated_path):
+            if old_path.exists():
+                mtime_ts = datetime.datetime.fromtimestamp(old_path.stat().st_mtime).strftime("%Y%m%d_%H%M%S_%f")
+                new_name = f"{old_path.stem}_{mtime_ts}{state_sfx}{old_path.suffix}"
+                old_path.rename(old_path.parent / new_name)
+
+        # Rotate: keep only last 100 renamed files per group
+        _rotate_capture_files(config, prefix=prefix, keep=100)
+
         # Save original image
         img.save(img_path)
         log.debug(f"Saved debug image: {img_path}")
