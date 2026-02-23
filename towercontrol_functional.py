@@ -323,6 +323,7 @@ class GameState:
     wave_pos: Optional[Tuple[float, float]] = None
     wave_history: Tuple[Tuple[int, float], ...] = ()  # (wave_number, timestamp)
     action_history: Tuple[Dict[str, Any], ...] = ()
+    perk_selection_history: Tuple[Dict[str, Any], ...] = ()  # {timestamp, wave, selected, text}
     error_count: int = 0
     battle_start_time: Optional[float] = None
     tier: Optional[int] = None
@@ -2994,6 +2995,17 @@ def automation_loop_tick():
                 # click the perk in that row
                 message = f"Clicking perk at row {best_row} (choice: '{best_choice}')"
                 do_click(message, 0.671, PERK_ROWS[best_row][1])
+                # Record perk selection in game state history
+                perk_entry = {
+                    "timestamp": time.time(),
+                    "wave": wave_num_str,
+                    "selected": best_choice,
+                    "text": perk_text_join.get(best_row, ""),
+                }
+                new_perk_history = (*ctx.game_state.perk_selection_history, perk_entry)
+                if len(new_perk_history) > 100:
+                    new_perk_history = new_perk_history[-100:]
+                ctx.game_state = replace(ctx.game_state, perk_selection_history=new_perk_history)
             else:
                 log.info(f"No perk matched any known pattern - closing window and suppressing perk checks for 1200s. Rows: {perk_text_join}")
                 close_perks()

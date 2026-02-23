@@ -180,6 +180,7 @@ function handleState(s) {
   }
 
   updateParamValues(s.strategy_params || {});
+  renderPerkHistory(s.perk_selection_history || []);
 }
 
 // ── Context table ────────────────────────────────────────────────────────
@@ -237,6 +238,24 @@ function confirmRestart() {
   api("restart").then(r => {
     if (!r?.ok) console.error("Restart failed", r);
   });
+}
+
+// ── Perk history ─────────────────────────────────────────────────────────
+
+function renderPerkHistory(history) {
+  const tbody = document.getElementById("perkHistoryTable");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  for (const p of [...history].reverse()) {
+    const tr = document.createElement("tr");
+    const t  = new Date(p.timestamp * 1000).toLocaleTimeString();
+    const label = p.text && p.text !== p.selected ? esc(p.text) : esc(p.selected);
+    tr.innerHTML =
+      `<td class="text-muted ps-2">${t}</td>` +
+      `<td class="text-info">${esc(p.wave ?? "?")}</td>` +
+      `<td>${label}</td>`;
+    tbody.appendChild(tr);
+  }
 }
 
 // ── OCR list + bbox highlight ────────────────────────────────────────────

@@ -140,6 +140,12 @@ def _build_state() -> dict:
         for a in gs.action_history[-20:]
     ]
 
+    state["perk_selection_history"] = [
+        {"timestamp": p.get("timestamp", 0), "wave": p.get("wave", "?"),
+         "selected": p.get("selected", "?"), "text": p.get("text", "")}
+        for p in gs.perk_selection_history[-50:]
+    ]
+
     state["strategy_params"] = {
         "input_enabled": c.input_enabled,
         "loop_tick":     c.config.loop_tick,
