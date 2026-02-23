@@ -2979,6 +2979,9 @@ def automation_loop_tick():
 
     # Extract wave number for comparison
     wave_num_str, _ = extract_wave_from_frame(frame)
+    # Fall back to last known wave when overlay obscures the wave counter
+    if not wave_num_str:
+        wave_num_str = ctx.game_state.wave
     wave_num = None
     if wave_num_str:
         try:
