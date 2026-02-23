@@ -23,10 +23,20 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Debug output
 debug/**
+debug_capture.png
+debug_processed.png
+debug_upgrade_boxes.png
+debug/capture.png
+debug/capture.txt
+debug/capture_*.png
+debug/capture_*.txt
 
 # Project-specific
 screenshots/
+logs/*.log*
 *.log
 
 # IDE
@@ -39,41 +49,3 @@ screenshots/
 # OS
 .DS_Store
 Thumbs.db
-__pycache__/config.cpython-313.pyc
-automation/__pycache__/__init__.cpython-313.pyc
-automation/__pycache__/loop.cpython-313.pyc
-capture/__pycache__/__init__.cpython-313.pyc
-capture/__pycache__/window.cpython-313.pyc
-games/__pycache__/__init__.cpython-313.pyc
-games/__pycache__/base.cpython-313.pyc
-games/__pycache__/tower_idle.cpython-313.pyc
-debug_capture.png
-debug_processed.png
-__pycache__/config.cpython-313.pyc
-automation/__pycache__/__init__.cpython-313.pyc
-automation/__pycache__/loop.cpython-313.pyc
-capture/__pycache__/__init__.cpython-313.pyc
-capture/__pycache__/window.cpython-313.pyc
-games/__pycache__/__init__.cpython-313.pyc
-games/__pycache__/base.cpython-313.pyc
-games/__pycache__/tower_idle.cpython-313.pyc
-input/__pycache__/__init__.cpython-313.pyc
-input/__pycache__/controller.cpython-313.pyc
-ocr/__pycache__/__init__.cpython-313.pyc
-ocr/__pycache__/engine.cpython-313.pyc
-scanner/__pycache__/__init__.cpython-313.pyc
-scanner/__pycache__/ui_scanner.cpython-313.pyc
-state/__pycache__/__init__.cpython-313.pyc
-state/__pycache__/machine.cpython-313.pyc
-strategy/__pycache__/__init__.cpython-313.pyc
-strategy/__pycache__/base.cpython-313.pyc
-strategy/__pycache__/tower_idle.cpython-313.pyc
-web/__pycache__/server.cpython-313.pyc
-debug/capture.png
-debug/capture.txt
-debug/capture_*.png
-debug/capture_*.txt
-debug_upgrade_boxes.png
-logs/*.log*
-web/__pycache__/__init__.cpython-313.pyc
-web/__pycache__/server.cpython-313.pyc
