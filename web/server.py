@@ -25,6 +25,7 @@ import json
 import logging
 import queue
 import threading
+import time as _time
 from pathlib import Path
 from typing import Optional
 
@@ -145,36 +146,38 @@ def _build_state() -> dict:
     }
 
     # Full context dump
-    import time as _time
-    now = _time.time()
-    bst = gs.battle_start_time
-    state["ctx_full"] = {
-        "status":                  c.status,
-        "running":                 c.running,
-        "input_enabled":           c.input_enabled,
-        "ocr_time_s":              round(c.ocr_time, 3),
-        "upgrade_state":           c.upgrade_state,
-        "upgrade_mode_seen":       c.upgrade_mode_seen or "—",
-        "upgrade_scroll_dir":      c.upgrade_scroll_direction,
-        "upgrade_scroll_start":    round(now - c.upgrade_scroll_start, 1) if c.upgrade_scroll_start else "—",
-        "recover_stage":           c.recover_stage,
-        "no_perk_until":           round(c.no_perk_until - now, 1) if c.no_perk_until > now else "—",
-        "upgrades_finished":       c.upgrades_finished_time or "—",
-        "last_upgrade_action_ago": round(now - c.last_upgrade_action, 1) if c.last_upgrade_action else "—",
-        "last_seen_upgrades_ago":  round(now - c.last_seen_upgrades, 1) if c.last_seen_upgrades else "—",
-        "tier":                    gs.tier,
-        "wave":                    gs.wave or "—",
-        "screen":                  gs.current_screen.screen.name if gs.current_screen else "UNKNOWN",
-        "error_count":             gs.error_count,
-        "battle_start_ago":        round(now - bst, 0) if bst else "—",
-        "wave_history_len":        len(gs.wave_history),
-        "action_history_len":      len(gs.action_history),
-        "window":                  (f"{c.window_rect.width}×{c.window_rect.height}"
-                                    f" @({c.window_rect.left},{c.window_rect.top})")
-                                   if c.window_rect else "—",
-        "ocr_engine":              c.config.ocr_engine,
-        "loop_tick":               c.config.loop_tick,
-    }
+    try:
+        now = _time.time()
+        bst = gs.battle_start_time
+        state["ctx_full"] = {
+            "status":                  c.status,
+            "running":                 c.running,
+            "input_enabled":           c.input_enabled,
+            "ocr_time_s":              round(c.ocr_time, 3),
+            "upgrade_state":           c.upgrade_state,
+            "upgrade_mode_seen":       c.upgrade_mode_seen or "—",
+            "upgrade_scroll_dir":      c.upgrade_scroll_direction,
+            "upgrade_scroll_start":    round(now - c.upgrade_scroll_start, 1) if c.upgrade_scroll_start else "—",
+            "recover_stage":           c.recover_stage,
+            "no_perk_until":           round(c.no_perk_until - now, 1) if c.no_perk_until > now else "—",
+            "upgrades_finished":       c.upgrades_finished_time or "—",
+            "last_upgrade_action_ago": round(now - c.last_upgrade_action, 1) if c.last_upgrade_action else "—",
+            "last_seen_upgrades_ago":  round(now - c.last_seen_upgrades, 1) if c.last_seen_upgrades else "—",
+            "tier":                    gs.tier,
+            "wave":                    gs.wave or "—",
+            "screen":                  gs.current_screen.screen.name if gs.current_screen else "UNKNOWN",
+            "error_count":             gs.error_count,
+            "battle_start_ago":        round(now - bst, 0) if bst else "—",
+            "wave_history_len":        len(gs.wave_history),
+            "action_history_len":      len(gs.action_history),
+            "window":                  (f"{c.window_rect.width}×{c.window_rect.height}"
+                                        f" @({c.window_rect.left},{c.window_rect.top})")
+                                       if c.window_rect else "—",
+            "ocr_engine":              c.config.ocr_engine,
+            "loop_tick":               c.config.loop_tick,
+        }
+    except Exception as exc:
+        logging.getLogger(__name__).warning("ctx_full build error: %s", exc)
 
     return state
 
@@ -255,9 +258,10 @@ async def ws_endpoint(websocket: WebSocket):
             try:
                 state = _build_state()
                 await websocket.send_text(json.dumps(state))
+            except WebSocketDisconnect:
+                raise
             except Exception as exc:
-                logging.getLogger(__name__).debug("WS send error: %s", exc)
-                break
+                logging.getLogger(__name__).warning("WS send error: %s", exc)
             await asyncio.sleep(1.0)
     except WebSocketDisconnect:
         pass
