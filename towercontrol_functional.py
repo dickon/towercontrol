@@ -340,7 +340,7 @@ class GameState:
     wave_pos: Optional[Tuple[float, float]] = None
     wave_history: Tuple[Tuple[int, float], ...] = ()  # (wave_number, timestamp)
     action_history: Tuple[Dict[str, Any], ...] = ()
-    perk_selection_history: Tuple[Dict[str, Any], ...] = ()  # {timestamp, wave, selected, text}
+    perk_selection_history: List[Dict[str, Any]] = field(default_factory=list)  # {timestamp, wave, selected, text}
     upgrade_purchase_history: Tuple[Dict[str, Any], ...] = ()  # {timestamp, wave, upgrade_name, cost}
     upgrade_advance_history: Tuple[Dict[str, Any], ...] = ()   # {timestamp, wave, from_upgrade, to_upgrade, reason}
     error_count: int = 0
@@ -3181,7 +3181,7 @@ def automation_loop_tick():
                     "selected": "?",
                     "text": rows_text,
                 }
-            new_perk_history = (*ctx.game_state.perk_selection_history, perk_entry)
+            new_perk_history = ctx.game_state.perk_selection_history + [perk_entry]
             if len(new_perk_history) > 100:
                 new_perk_history = new_perk_history[-100:]
             ctx.game_state = replace(ctx.game_state, perk_selection_history=new_perk_history)
