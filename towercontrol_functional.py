@@ -109,8 +109,8 @@ PERK_CHOICES = [
     ]
 
 UPGRADE_PRIORITY = [
-    ('UTILITY', 'Enemy Attack level Skip', 1e8, True),
-    ('UTILITY', 'Enemy Health level Skip', 1e8, True),
+    ('UTILITY', 'Enemy Attack level Skip', 1e7, True),
+    ('UTILITY', 'Enemy Health level Skip', 1e7, True),
     ('ATTACK', 'Damage', None, False),
     ('DEFENSE', 'Health', None, False),
 #    ('DEFENSE', 'Shockwave Size', None, True), 
