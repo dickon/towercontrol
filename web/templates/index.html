@@ -43,17 +43,6 @@
           </div>
         </div>
 
-        <!-- OCR results list -->
-        <div class="card bg-black border-secondary mt-3">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span>OCR Elements</span>
-            <span id="ocrCount" class="text-muted small"></span>
-          </div>
-          <div class="card-body p-0" style="max-height:360px;overflow-y:auto">
-            <ul id="ocrList" class="list-unstyled mb-0"></ul>
-          </div>
-        </div>
-
         <!-- Detected upgrades -->
         <div class="card bg-black border-secondary mt-3">
           <div class="card-header">Detected Upgrades</div>
@@ -70,6 +59,17 @@
               </thead>
               <tbody id="upgradeSeenTable"></tbody>
             </table>
+          </div>
+        </div>
+
+        <!-- OCR results list -->
+        <div class="card bg-black border-secondary mt-3">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span>OCR Elements</span>
+            <span id="ocrCount" class="text-muted small"></span>
+          </div>
+          <div class="card-body p-0" style="max-height:360px;overflow-y:auto">
+            <ul id="ocrList" class="list-unstyled mb-0"></ul>
           </div>
         </div>
 
@@ -93,14 +93,6 @@
           </div>
           <div id="logPane" style="height:440px;overflow-y:auto;background:#0a0a0a;padding:6px">
             <pre id="logContent" class="mb-0" style="font-size:0.72rem;line-height:1.35;color:#aaa;white-space:pre-wrap;word-break:break-all"></pre>
-          </div>
-        </div>
-
-        <!-- Strategy params -->
-        <div class="card bg-black border-secondary mt-3">
-          <div class="card-header">Strategy Parameters</div>
-          <div class="card-body" id="paramsContainer">
-            <em class="text-muted">Loading…</em>
           </div>
         </div>
 
@@ -213,6 +205,14 @@
             <table class="table table-sm table-dark mb-0">
               <tbody id="resourcesTable"></tbody>
             </table>
+          </div>
+        </div>
+
+        <!-- Strategy params -->
+        <div class="card bg-black border-secondary mt-3">
+          <div class="card-header">Strategy Parameters</div>
+          <div class="card-body" id="paramsContainer">
+            <em class="text-muted">Loading…</em>
           </div>
         </div>
 
