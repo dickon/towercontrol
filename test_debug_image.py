@@ -492,13 +492,8 @@ class TestLandMineCostUnknown:
         assert 'Land Mine Damage' in self.upgrades, \
             f"Land Mine Damage should be detected. Found: {list(self.upgrades.keys())}"
 
-    @pytest.mark.xfail(reason="Land Mine Damage Max button misread as OCR failure (cost=None, is_max=False)")
     def test_land_mine_damage_is_max(self):
-        """Verify Land Mine Damage button shows Max (is_max=True, cost=None).
-
-        FAILING: The Max button on Land Mine Damage is currently parsed as an
-        OCR failure (cost=None, is_max=False) instead of Max (is_max=True).
-        """
+        """Verify Land Mine Damage button shows Max (is_max=True, cost=None)."""
         assert 'Land Mine Damage' in self.upgrades, "Land Mine Damage should be detected"
 
         info = self.upgrades['Land Mine Damage']
@@ -507,13 +502,8 @@ class TestLandMineCostUnknown:
         assert info['cost'] is None, \
             f"Land Mine Damage should have cost=None (Max), got cost={info['cost']}"
 
-    @pytest.mark.xfail(reason="Land Mine Chance Max button also misread as OCR failure (same bug as Land Mine Damage)")
     def test_land_mine_chance_is_max(self):
-        """Verify Land Mine Chance is detected as Max.
-
-        FAILING: Same OCR failure as Land Mine Damage — is_max=False, cost=None
-        instead of is_max=True, cost=None.
-        """
+        """Verify Land Mine Chance is detected as Max."""
         assert 'Land Mine Chance' in self.upgrades, \
             f"Land Mine Chance should be detected. Found: {list(self.upgrades.keys())}"
 

@@ -112,12 +112,12 @@ UPGRADE_PRIORITY = [
     ('UTILITY', 'Enemy Health level Skip', 1e8, True),
     ('ATTACK', 'Damage', None, False),
     ('DEFENSE', 'Health', None, False),
-    ('DEFENSE', 'Shockwave Size', None, True), 
-    ('DEFENSE', 'Shockwave Frequency', None, True),
-    ('DEFENSE', 'Land Mine Chance', None, True),
-    ('DEFENSE', 'Land Mine Damage', None, True),
-    ('DEFENSE', 'Land Mine Radius', None, True),
-    ('DEFENSE', 'Death Defy', None, True),
+#    ('DEFENSE', 'Shockwave Size', None, True), 
+#    ('DEFENSE', 'Shockwave Frequency', None, True),
+#    ('DEFENSE', 'Land Mine Chance', None, True),
+#    ('DEFENSE', 'Land Mine Damage', None, True),
+#    ('DEFENSE', 'Land Mine Radius', None, True),
+#    ('DEFENSE', 'Death Defy', None, True),
     ('DEFENSE', 'Wall Health', 1e8, True),
     ('DEFENSE', 'Wall Rebuild', 1e8, True),
     ('DEFENSE', 'Health Regen', 1e8, False),
@@ -1605,6 +1605,14 @@ def _ocr_box_cost(img: Image.Image, box_x: int, box_y: int,
             config="--psm 7 --oem 3",
             timeout=5,
         ).strip()
+        # PSM 7 (single line) sometimes returns nothing for short words like
+        # "Max"; fall back to PSM 8 (single word) which handles them better.
+        if not text:
+            text = pytesseract.image_to_string(
+                thresh, lang=config.ocr_lang,
+                config="--psm 8 --oem 3",
+                timeout=5,
+            ).strip()
         return text if text else None
     except Exception:
         return None
@@ -1939,7 +1947,11 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             if not is_max and cost_value is None and label is not None:
                 ocr_text = _ocr_box_cost(img, box_x, box_y, box_w, box_h, config)
                 if ocr_text:
-                    if 'max' in ocr_text.lower():
+                    # Use _parse_upgrade_cost so that OCR misreads of "Max"
+                    # (e.g. "[tax |", "(ME", "oe") are caught by its second pass
+                    # (short non-digit/non-$ strings → Max), not just exact "max".
+                    targeted_is_max, _ = _parse_upgrade_cost([ocr_text])
+                    if targeted_is_max:
                         is_max = True
                         cost_value = None
                         log.debug(
@@ -2974,6 +2986,9 @@ def automation_loop_tick():
     
     # Track wave progress and calculate rate
     new_wave_history = ctx.game_state.wave_history
+    pri_list = _active_upgrade_priority()
+    base_message = f'***** Tier {ctx.game_state.tier} | Wave progress: {wave} | Upgrade state: {ctx.upgrade_state} ({pri_list[ctx.upgrade_state][1] if ctx.upgrade_state < len(pri_list) else "N/A"}) OCR time {ctx.ocr_time:.2f}s upgrade mode {ctx.upgrade_mode_seen}'
+
     if wave and wave != ctx.game_state.wave:
         try:
             wave_num = int(wave.replace(',', ''))
@@ -2991,8 +3006,6 @@ def automation_loop_tick():
                 time_diff_hours = (last_time - first_time) / 3600.0
                 
                 # set pri_list to the active upgrade priority list
-                pri_list = _active_upgrade_priority()
-                base_message = f'***** Tier {ctx.game_state.tier} | Wave progress: {wave} | Upgrade state: {ctx.upgrade_state} ({pri_list[ctx.upgrade_state][1] if ctx.upgrade_state < len(pri_list) else "N/A"}) OCR time {ctx.ocr_time:.2f}s upgrade mode {ctx.upgrade_mode_seen}'
                 if time_diff_hours > 0:
                     waves_diff = last_wave - first_wave
                     waves_per_hour = waves_diff / time_diff_hours
