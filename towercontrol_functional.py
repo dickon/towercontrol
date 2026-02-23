@@ -94,7 +94,7 @@ PERK_CHOICES = [
     r'Chrono Field Duration( \+[\d\.]+s)?',
     r'Unlock Chrono Field',
     r'(x[\d\.]+ )?Max Health',
-    r'Upgrade Chance for all'
+    r'Upgrade Chance for all',
     r'Unlock poison swamp',
     r'(x[\d\.]+ )?Cash Bonus',
     r'Spotlight Damage Bonus( x[\d\.]+)?',
@@ -1613,7 +1613,7 @@ def classify_inner_box_state(
         # Max state: olive/yellow-green border (H in [20,45])
         max_v = v_vals[sat & (h_vals >= 20) & (h_vals <= 45)]
         if len(max_v) >= 1000:
-            log.info(f"classify_inner_box_state: {label} max ({len(max_v)} olive px)")
+            log.debug(f"classify_inner_box_state: {label} max ({len(max_v)} olive px)")
             return 'max'
 
         # Affordable/unaffordable: blue border (H in [90,115])
@@ -1624,7 +1624,7 @@ def classify_inner_box_state(
 
         med_v = int(np.median(blue_v))
         result = 'affordable' if med_v > 95 else 'unaffordable'
-        log.info(
+        log.debug(
             f"label {label} classify_inner_box_state: med_v={med_v} "
             f"(from {len(blue_v)} blue px) → {result}"
         )
@@ -3169,14 +3169,22 @@ def automation_loop_tick():
                     "selected": best_choice,
                     "text": perk_text_join.get(best_row, ""),
                 }
-                new_perk_history = (*ctx.game_state.perk_selection_history, perk_entry)
-                if len(new_perk_history) > 100:
-                    new_perk_history = new_perk_history[-100:]
-                ctx.game_state = replace(ctx.game_state, perk_selection_history=new_perk_history)
             else:
                 log.info(f"No perk matched any known pattern - closing window and suppressing perk checks for 1200s. Rows: {perk_text_join}")
                 close_perks()
                 ctx.no_perk_until = time.time() + 1200.0
+                # Still record that we saw (but couldn't match) perks, so the widget is populated
+                rows_text = " | ".join(perk_text_join.values())
+                perk_entry = {
+                    "timestamp": time.time(),
+                    "wave": wave_num_str,
+                    "selected": "?",
+                    "text": rows_text,
+                }
+            new_perk_history = (*ctx.game_state.perk_selection_history, perk_entry)
+            if len(new_perk_history) > 100:
+                new_perk_history = new_perk_history[-100:]
+            ctx.game_state = replace(ctx.game_state, perk_selection_history=new_perk_history)
 
         if perks_mode and not choose:
             close_perks()
