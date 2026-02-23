@@ -158,7 +158,8 @@ def _build_state() -> dict:
 
     state["upgrade_purchase_history"] = [
         {"timestamp": p.get("timestamp", 0), "wave": p.get("wave"),
-         "upgrade_name": p.get("upgrade_name", "?"), "cost": p.get("cost")}
+         "upgrade_name": p.get("upgrade_name", "?"), "cost": p.get("cost"),
+         "current_value": p.get("current_value")}
         for p in gs.upgrade_purchase_history[-200:]
     ]
 
@@ -201,6 +202,19 @@ def _build_state() -> dict:
         "input_enabled": c.input_enabled,
         "loop_tick":     c.config.loop_tick,
     }
+
+    # Watchdog state
+    try:
+        now = _time.time()
+        state["watchdog"] = {
+            "enabled":          c.config.watchdog_enabled,
+            "game_launch_enabled": c.config.game_launch_enabled,
+            "last_bs_restart_ago": round(now - c.last_bs_restart, 0) if c.last_bs_restart else None,
+            "last_game_launch_ago": round(now - c.last_game_launch, 0) if c.last_game_launch else None,
+            "last_game_ui_seen_ago": round(now - c.last_game_ui_seen, 0) if c.last_game_ui_seen else None,
+        }
+    except Exception:
+        pass
 
     # Full context dump
     try:
@@ -430,6 +444,28 @@ async def api_restart():
     c.status               = "running"
     logging.getLogger(__name__).info("Context reset via web UI")
     return {"ok": True}
+
+
+@fapp.post("/api/watchdog")
+async def api_watchdog(request: Request):
+    """Enable or disable watchdog features.  Body: {watchdog?: bool, game_launch?: bool}"""
+    from dataclasses import replace as _replace
+    c = _ctx()
+    if c is None:
+        return {"ok": False, "reason": "no ctx"}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    cfg = c.config
+    if "watchdog" in body:
+        cfg = _replace(cfg, watchdog_enabled=bool(body["watchdog"]))
+    if "game_launch" in body:
+        cfg = _replace(cfg, game_launch_enabled=bool(body["game_launch"]))
+    c.config = cfg
+    return {"ok": True,
+            "watchdog_enabled": cfg.watchdog_enabled,
+            "game_launch_enabled": cfg.game_launch_enabled}
 
 
 @fapp.post("/api/click")

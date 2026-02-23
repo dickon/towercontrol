@@ -149,6 +149,7 @@
                   <th class="ps-2">Time</th>
                   <th>Wave</th>
                   <th>Upgrade</th>
+                  <th class="text-end">Value</th>
                   <th class="text-end pe-2">Cost</th>
                 </tr>
               </thead>
@@ -192,7 +193,14 @@
               <button class="btn btn-outline-warning btn-sm flex-grow-1"
                       onclick="confirmRestart()">&#8635; Restart Context</button>
             </div>
-            <div class="text-muted small">
+            <div class="d-flex gap-2 mb-2">
+              <button id="btnWatchdog" class="btn btn-outline-secondary btn-sm flex-grow-1"
+                      onclick="toggleWatchdog()">&#128065; Watchdog: ?</button>
+              <button id="btnGameLaunch" class="btn btn-outline-secondary btn-sm flex-grow-1"
+                      onclick="toggleGameLaunch()">&#127918; Auto-launch: ?</button>
+            </div>
+            <div id="watchdogStatus" class="text-muted small"></div>
+            <div class="text-muted small mt-1">
               Click image to inject a click. Hover to inspect coordinates.
             </div>
           </div>

@@ -155,6 +155,7 @@ function handleState(s) {
   }
 
   renderCtxTable(s.ctx_full || {});
+  updateWatchdogUI(s.watchdog || null);
 
   // Resources
   const tbody = document.getElementById("resourcesTable");
@@ -267,6 +268,47 @@ function confirmRestart() {
   });
 }
 
+// ── Watchdog ─────────────────────────────────────────────────────────────
+
+let _watchdogState = null;
+
+function updateWatchdogUI(w) {
+  if (!w) return;
+  _watchdogState = w;
+
+  const btnWd = document.getElementById("btnWatchdog");
+  const btnGl = document.getElementById("btnGameLaunch");
+  const statusEl = document.getElementById("watchdogStatus");
+  if (btnWd) {
+    btnWd.textContent = "\uD83D\uDC41 Watchdog: " + (w.enabled ? "ON" : "OFF");
+    btnWd.className = "btn btn-sm flex-grow-1 " + (w.enabled ? "btn-success" : "btn-outline-secondary");
+  }
+  if (btnGl) {
+    btnGl.textContent = "\uD83C\uDFAE Auto-launch: " + (w.game_launch_enabled ? "ON" : "OFF");
+    btnGl.className = "btn btn-sm flex-grow-1 " + (w.game_launch_enabled ? "btn-success" : "btn-outline-secondary");
+  }
+  if (statusEl) {
+    const parts = [];
+    if (w.last_bs_restart_ago != null)
+      parts.push("BS restart " + w.last_bs_restart_ago + "s ago");
+    if (w.last_game_launch_ago != null)
+      parts.push("game launch " + w.last_game_launch_ago + "s ago");
+    if (w.last_game_ui_seen_ago != null)
+      parts.push("game UI seen " + w.last_game_ui_seen_ago + "s ago");
+    statusEl.textContent = parts.join(" · ");
+  }
+}
+
+function toggleWatchdog() {
+  const newVal = _watchdogState ? !_watchdogState.enabled : true;
+  api("watchdog", { watchdog: newVal });
+}
+
+function toggleGameLaunch() {
+  const newVal = _watchdogState ? !_watchdogState.game_launch_enabled : true;
+  api("watchdog", { game_launch: newVal });
+}
+
 // ── Perk history ─────────────────────────────────────────────────────────
 
 function renderPerkHistory(history) {
@@ -287,6 +329,15 @@ function renderPerkHistory(history) {
 
 // ── Upgrade purchase history ──────────────────────────────────────────────
 
+function fmtVal(v) {
+  if (v == null) return "—";
+  if (v >= 1e12) return (v / 1e12).toPrecision(4) + "T";
+  if (v >= 1e9)  return (v / 1e9).toPrecision(4)  + "B";
+  if (v >= 1e6)  return (v / 1e6).toPrecision(4)  + "M";
+  if (v >= 1e3)  return (v / 1e3).toPrecision(4)  + "K";
+  return String(+v.toPrecision(4));
+}
+
 function renderUpgradePurchaseHistory(history) {
   const tbody = document.getElementById("upgradePurchaseTable");
   if (!tbody) return;
@@ -295,10 +346,12 @@ function renderUpgradePurchaseHistory(history) {
     const tr = document.createElement("tr");
     const t  = new Date(p.timestamp * 1000).toLocaleTimeString();
     const cost = p.cost != null ? p.cost.toLocaleString() : "—";
+    const val  = fmtVal(p.current_value);
     tr.innerHTML =
       `<td class="text-muted ps-2">${t}</td>` +
       `<td class="text-info">${esc(p.wave ?? "?")}</td>` +
       `<td>${esc(p.upgrade_name)}</td>` +
+      `<td class="text-end text-secondary">${esc(val)}</td>` +
       `<td class="text-end pe-2 text-warning">${esc(cost)}</td>`;
     tbody.appendChild(tr);
   }

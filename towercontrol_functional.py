@@ -19,6 +19,7 @@ import json
 import logging
 import logging.handlers
 import re
+import subprocess
 import time
 import pprint
 from dataclasses import dataclass, field, replace
@@ -193,6 +194,21 @@ class Config:
     upgrade_interval: float = 2.0            # seconds between upgrade purchase attempts
     upgrade_scroll_timeout: float = 120.0     # seconds scrolling down before switching to up
     high_tier_threshold: int = 12            # tier >= this uses UPGRADE_PRIORITY_HIGH_TIER
+
+    # Watchdog — BlueStacks process
+    watchdog_enabled: bool = True
+    bluestacks_exe: str = r"C:\Program Files\BlueStacks_nxt\HD-Player.exe"
+    bluestacks_process: str = "HD-Player.exe"
+    watchdog_cooldown: float = 120.0         # min seconds between BlueStacks restart attempts
+
+    # Watchdog — game launch via ADB
+    game_launch_enabled: bool = True
+    adb_exe: str = "adb"
+    adb_host: str = "localhost"
+    adb_port: int = 5555
+    game_package: str = "com.supersolid.thetower"
+    game_launch_timeout: float = 60.0        # seconds of no-game-UI before ADB launch
+    game_launch_cooldown: float = 90.0       # min seconds between game launch attempts
 
     @property
     def screenshots_dir(self) -> Path:
@@ -2551,7 +2567,7 @@ def _do_upgrade_scroll(direction: str, w: int, h: int, message) -> None:
         return
     scroll_x = int(0.595 * w)
     scroll_y = int(0.8325 * h)
-    execute_swipe(scroll_x, scroll_y, 400, direction, ctx.window_rect, ctx.config, True)
+    execute_swipe(scroll_x, scroll_y, 400, direction, ctx.window_rect, ctx.config, ctx.input_enabled)
 
 
 def _active_upgrade_priority() -> list:
@@ -2731,6 +2747,7 @@ def handle_upgrade_action(seen_page: Optional[str],
         "wave": ctx.game_state.wave,
         "upgrade_name": want_label,
         "cost": target_info['cost'],
+        "current_value": target_info.get('current_value'),
     }
     new_purchase_history = (*ctx.game_state.upgrade_purchase_history, purchase_entry)
     if len(new_purchase_history) > 500:
@@ -2769,7 +2786,11 @@ def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_fro
     """Execute click action. Side effect."""
     global ctx
     log = logging.getLogger(__name__)
-    
+
+    if ctx is not None and not ctx.input_enabled:
+        log.debug(f"Click suppressed (paused): {reason}")
+        return False
+
     # Capture debug screenshot with crosshairs BEFORE clicking
     try:
         debug_img = capture_window(rect)
@@ -2908,6 +2929,11 @@ class RuntimeContext:
     ocr_time: float = 0.0
     upgrade_mode_seen: str = None
     upgrade_seen: dict = field(default_factory=dict)  # label → {timestamp, current_value, cost, is_max, crop_b64, …}
+    # Watchdog state
+    last_bs_restart: float = 0.0      # timestamp of last BlueStacks launch attempt
+    last_game_launch: float = 0.0     # timestamp of last ADB game launch attempt
+    last_game_ui_seen: float = 0.0    # timestamp game UI (wave/upgrades) was last visible
+
     def update_window(self):
         """Update window rect if needed."""
         if time.time() - self.last_window_check > 2.0:
@@ -3018,6 +3044,7 @@ def automation_loop_tick():
     if wave_num_str:
         try:
             wave_num = int(wave_num_str.replace(',', ''))
+            ctx.last_game_ui_seen = time.time()  # wave visible → game is running
         except ValueError:
             pass
     
@@ -3036,10 +3063,12 @@ def automation_loop_tick():
     click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281)))
     click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.5951,   0.8168))
     click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429))
+    click_if_present('tap', lambda r: r.text == 'Tap' and r.is_near(0.380, 0.937))
     game_stats_mark = [r for r in frame.results if r.text == 'GAME' and r.is_near(  0.5171,   0.2491) or r.text == 'STATS' and r.is_near(  0.6667,   0.2491)]
     defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
     attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.329, 0.632, 0.1)]
     utility_marks = [r for r in frame.results if r.text.lower() == "utility" and r.is_near(0.333, 0.632, 0.1)]
+    info_marks = [r for r in frame.results if r.text.lower() == "info" and r.is_near(0.4771, 0.2067, 0.1)]
     if game_stats_mark:
         mode = 'killed by'
         do_click("Seen game stats, clicking to exit", 0.7601, 0.7496)
@@ -3052,7 +3081,8 @@ def automation_loop_tick():
         want_upgrades = prio[ctx.upgrade_state][0] if ctx.upgrade_state < len(prio) else None   
 
         if seen:
-            ctx.last_seen_upgrades = time.time() 
+            ctx.last_seen_upgrades = time.time()
+            ctx.last_game_ui_seen = time.time()  # upgrade tabs visible → game is running
         else:
             delay = time.time() - ctx.last_seen_upgrades
             if delay > 15.0:
@@ -3185,7 +3215,7 @@ def automation_loop_tick():
         log.info("No upgrade buttons visible for 30s - clicking low moddle to dismiss popup")
         do_click("Dismiss popup blocking upgrades", 0.58, 0.9)
         ctx.recover_stage = 1
-    elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 45.0 and ctx.recover_stage == 1:
+    elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 45.0 and ctx.recover_stage == 1 and info_marks:
         log.info("No upgrade buttons visible for 45s - clicking top right to dismiss wave")
         do_click('Dismiss wave info', 0.9129, 0.1411)
 
@@ -3234,33 +3264,34 @@ def automation_loop_tick():
     pri_list = _active_upgrade_priority()
     base_message = f'***** Tier {ctx.game_state.tier} | Wave progress: {wave} | Upgrade state: {ctx.upgrade_state} ({pri_list[ctx.upgrade_state][1] if ctx.upgrade_state < len(pri_list) else "N/A"}) OCR time {ctx.ocr_time:.2f}s upgrade mode {ctx.upgrade_mode_seen}'
 
+    rate_suffix = ""
     if wave and wave != ctx.game_state.wave:
         try:
             wave_num = int(wave.replace(',', ''))
             current_time = time.time()
             new_wave_history = (*ctx.game_state.wave_history, (wave_num, current_time))
-            
+
             # Keep only last 100 waves
             if len(new_wave_history) > 100:
                 new_wave_history = new_wave_history[-100:]
-            
+
             # Calculate waves per hour if we have enough history
             if len(new_wave_history) >= 2:
                 first_wave, first_time = new_wave_history[0]
                 last_wave, last_time = new_wave_history[-1]
                 time_diff_hours = (last_time - first_time) / 3600.0
-                
-                # set pri_list to the active upgrade priority list
+
                 if time_diff_hours > 0:
                     waves_diff = last_wave - first_wave
                     waves_per_hour = waves_diff / time_diff_hours
-                    log.info(f"{base_message} | Rate: {waves_per_hour:.1f} waves/hour (based on {len(new_wave_history)} samples over {time_diff_hours*60:.1f} min)")
+                    rate_suffix = f" | Rate: {waves_per_hour:.1f} waves/hour (based on {len(new_wave_history)} samples over {time_diff_hours*60:.1f} min)"
                 else:
-                    log.info(base_message)
+                    rate_suffix = " | (collecting data...)"
             else:
-                log.info(f"{base_message} | Wave progress: {wave} (collecting data...)")
+                rate_suffix = " | (collecting data...)"
         except (ValueError, TypeError):
             pass
+    log.info(f"{base_message}{rate_suffix}")
     
     ctx.game_state = replace(
         ctx.game_state,
@@ -3270,7 +3301,8 @@ def automation_loop_tick():
         wave_pos=wave_pos or ctx.game_state.wave_pos,
         wave_history=new_wave_history
     )
-    ctx.status = "running"
+    if ctx.input_enabled:
+        ctx.status = "running"
 
 def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
     if gem_pos:
@@ -3326,6 +3358,93 @@ def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
                 f.write("\n")
 
 
+def _is_bluestacks_running(process_name: str) -> bool:
+    """Return True if a process with the given executable name is currently running."""
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {process_name}", "/FO", "CSV"],
+            capture_output=True, text=True, timeout=5
+        )
+        return process_name.lower() in result.stdout.lower()
+    except Exception:
+        return True  # assume running on error to avoid spurious restarts
+
+
+def watchdog_bluestacks_tick():
+    """Check if BlueStacks is running; restart it if not (with cooldown)."""
+    global ctx
+    log = logging.getLogger(__name__)
+    if not ctx.config.watchdog_enabled:
+        return
+    if _is_bluestacks_running(ctx.config.bluestacks_process):
+        return
+    now = time.time()
+    if now - ctx.last_bs_restart < ctx.config.watchdog_cooldown:
+        log.warning("BlueStacks not found but cooldown active (%.0fs remaining)",
+                    ctx.config.watchdog_cooldown - (now - ctx.last_bs_restart))
+        return
+    log.warning("BlueStacks process not found — launching: %s", ctx.config.bluestacks_exe)
+    ctx.status = "restarting_bluestacks"
+    ctx.last_bs_restart = now
+    try:
+        subprocess.Popen(
+            [ctx.config.bluestacks_exe],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    except Exception as exc:
+        log.error("Failed to launch BlueStacks: %s", exc)
+        return
+    # Give BlueStacks time to start before the next tick checks for the window
+    log.info("BlueStacks launched — waiting 10 s for it to start")
+    time.sleep(10)
+
+
+def _launch_game_adb():
+    """Launch 'The Tower' in BlueStacks via ADB monkey."""
+    global ctx
+    log = logging.getLogger(__name__)
+    adb_target = f"{ctx.config.adb_host}:{ctx.config.adb_port}"
+    log.info("Launching game via ADB (%s, package=%s)", adb_target, ctx.config.game_package)
+    adb = ctx.config.adb_exe
+    try:
+        subprocess.run([adb, "connect", adb_target], capture_output=True, timeout=5)
+        result = subprocess.run(
+            [adb, "-s", adb_target, "shell", "monkey",
+             "-p", ctx.config.game_package,
+             "-c", "android.intent.category.LAUNCHER", "1"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            log.info("ADB game launch succeeded")
+        else:
+            log.warning("ADB game launch returned non-zero: %s", result.stderr.strip())
+    except FileNotFoundError:
+        log.error("adb not found (%r) — use --adb-exe to specify the full path", adb)
+    except Exception as exc:
+        log.error("ADB game launch failed: %s", exc)
+
+
+def watchdog_game_tick():
+    """If game UI has not been visible for game_launch_timeout seconds, launch via ADB."""
+    global ctx
+    log = logging.getLogger(__name__)
+    if not ctx.config.game_launch_enabled:
+        return
+    if not ctx.window_rect:
+        return  # BlueStacks window not present yet; BlueStacks watchdog handles this
+    now = time.time()
+    if now - ctx.last_game_ui_seen < ctx.config.game_launch_timeout:
+        return  # game UI seen recently
+    if now - ctx.last_game_launch < ctx.config.game_launch_cooldown:
+        log.debug("Game launch cooldown active (%.0fs remaining)",
+                  ctx.config.game_launch_cooldown - (now - ctx.last_game_launch))
+        return
+    log.warning("Game UI not seen for %.0fs — launching game via ADB",
+                now - ctx.last_game_ui_seen)
+    ctx.last_game_launch = now
+    _launch_game_adb()
+
+
 def automation_loop_run(ctx: RuntimeContext):
     """Main loop runner."""
     log = logging.getLogger(__name__)
@@ -3334,6 +3453,8 @@ def automation_loop_run(ctx: RuntimeContext):
     while ctx.running:
         t0 = time.time()
         try:
+            watchdog_bluestacks_tick()
+            watchdog_game_tick()
             automation_loop_tick()
         except Exception as exc:
             log.error(f"Loop tick error: {exc}", exc_info=True)
@@ -3427,6 +3548,19 @@ def parse_args() -> argparse.Namespace:
                        help="OCR backend (default: pytesseract)")
     parser.add_argument("--lang", default="eng",
                        help="OCR language (default: eng)")
+    parser.add_argument("--bluestacks-exe",
+                       default=r"C:\Program Files\BlueStacks_nxt\HD-Player.exe",
+                       help="Path to BlueStacks executable for watchdog restart")
+    parser.add_argument("--adb-exe", default="adb",
+                       help="Path to adb executable (default: 'adb' — must be on PATH)")
+    parser.add_argument("--no-watchdog", action="store_true",
+                       help="Disable BlueStacks process watchdog")
+    parser.add_argument("--adb-port", type=int, default=5555,
+                       help="ADB port for BlueStacks (default: 5555)")
+    parser.add_argument("--game-package", default="com.supersolid.thetower",
+                       help="Android package name for game launch (default: com.supersolid.thetower)")
+    parser.add_argument("--no-game-launch", action="store_true",
+                       help="Disable automatic game launch via ADB")
     return parser.parse_args()
 
 
@@ -3446,6 +3580,12 @@ def main():
         window_title=args.window_title,
         ocr_engine=args.ocr,
         ocr_lang=args.lang,
+        bluestacks_exe=args.bluestacks_exe,
+        watchdog_enabled=not args.no_watchdog,
+        adb_exe=args.adb_exe,
+        adb_port=args.adb_port,
+        game_package=args.game_package,
+        game_launch_enabled=not args.no_game_launch,
     )
 
     log.info(f"TowerControl starting (ocr={config.ocr_engine})")
@@ -3492,9 +3632,10 @@ def main():
         last_upgrade_action=time.time(),
         running=True,
         status="running",
-        input_enabled=False,
+        input_enabled=True,
     )
     ctx.last_seen_upgrades = time.time()
+    ctx.last_game_ui_seen = time.time()   # don't trigger game launch immediately on startup
 
     # Run automation loop on main thread
     try:
