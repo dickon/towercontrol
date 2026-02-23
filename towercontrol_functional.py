@@ -1519,6 +1519,30 @@ def _find_upgrade_boxes(img: Image.Image) -> List[Tuple[int, int, int, int]]:
                 continue
             boxes.append((x1, y1, bw, bh))
 
+    # Reject boxes that extend outside the visible upgrade-panel viewport.
+    # Boxes whose top or bottom falls outside [0.6562, 0.9464] (fractional image
+    # height) are partly obscured by the panel scroll boundary and produce
+    # unreliable OCR.
+    _PANEL_Y_MIN = 0.6562
+    _PANEL_Y_MAX = 0.9464
+    before = len(boxes)
+    for box in boxes:
+        x, y, w, h = box
+        log.debug(
+            f"_find_upgrade_boxes: candidate box at (x={x}, y={y}, w={w}, h={h}) "
+            f"→ y_frac=[{y/h_img:.3f}, {(y+h)/h_img:.3f}] top okay if >= {_PANEL_Y_MIN}, bottom okay if <= {_PANEL_Y_MAX}"
+        )
+    boxes = [
+        (x, y, w, h) for x, y, w, h in boxes
+        if y / h_img >= _PANEL_Y_MIN and (y + h/2) / h_img <= _PANEL_Y_MAX
+    ]
+    log.debug(f"_find_upgrade_boxes: {len(boxes)} of {before} boxes after filtering partly-obscured boxes")
+    if len(boxes) < before:
+        log.debug(
+            f"_find_upgrade_boxes: dropped {before - len(boxes)} partly-obscured "
+            f"box(es) outside y_frac=[{_PANEL_Y_MIN},{_PANEL_Y_MAX}]"
+        )
+
     return sorted(boxes, key=lambda b: (b[1], b[0]))
 
 
