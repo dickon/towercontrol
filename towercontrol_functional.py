@@ -3184,8 +3184,9 @@ def automation_loop_tick():
             new_perk_history = ctx.game_state.perk_selection_history + [perk_entry]
             if len(new_perk_history) > 100:
                 new_perk_history = new_perk_history[-100:]
+            
             ctx.game_state = replace(ctx.game_state, perk_selection_history=new_perk_history)
-
+            log.info(f'Perk history now {ctx.game_state.perk_selection_history}')
         if perks_mode and not choose:
             close_perks()
     
