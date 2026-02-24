@@ -207,11 +207,14 @@ def _build_state() -> dict:
     try:
         now = _time.time()
         state["watchdog"] = {
-            "enabled":          c.config.watchdog_enabled,
-            "game_launch_enabled": c.config.game_launch_enabled,
-            "last_bs_restart_ago": round(now - c.last_bs_restart, 0) if c.last_bs_restart else None,
-            "last_game_launch_ago": round(now - c.last_game_launch, 0) if c.last_game_launch else None,
+            "enabled":               c.config.watchdog_enabled,
+            "game_launch_enabled":   c.config.game_launch_enabled,
+            "last_bs_restart_ago":   round(now - c.last_bs_restart, 0) if c.last_bs_restart else None,
+            "last_game_launch_ago":  round(now - c.last_game_launch, 0) if c.last_game_launch else None,
             "last_game_ui_seen_ago": round(now - c.last_game_ui_seen, 0) if c.last_game_ui_seen else None,
+            "last_wave_advance_ago": round(now - c.last_wave_advance, 0) if c.last_wave_advance else None,
+            "wave_stall_timeout":    c.config.wave_stall_timeout,
+            "hard_restart_running":  c.hard_restart_running,
         }
     except Exception:
         pass
@@ -466,6 +469,22 @@ async def api_watchdog(request: Request):
     return {"ok": True,
             "watchdog_enabled": cfg.watchdog_enabled,
             "game_launch_enabled": cfg.game_launch_enabled}
+
+
+@fapp.post("/api/hard_restart")
+async def api_hard_restart():
+    """Kill BlueStacks, restart it, press Home after 60 s, then launch The Tower.
+
+    Identical to the wave-stall watchdog recovery sequence.
+    """
+    c = _ctx()
+    if c is None:
+        return {"ok": False, "reason": "no ctx"}
+    if c.hard_restart_running:
+        return {"ok": False, "reason": "hard restart already in progress"}
+    logging.getLogger(__name__).info("Hard restart triggered via web UI")
+    _mod.do_hard_restart()
+    return {"ok": True}
 
 
 @fapp.post("/api/click")

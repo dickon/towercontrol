@@ -20,6 +20,7 @@ import logging
 import logging.handlers
 import re
 import subprocess
+import threading
 import time
 import pprint
 from dataclasses import dataclass, field, replace
@@ -209,6 +210,11 @@ class Config:
     game_package: str = "com.supersolid.thetower"
     game_launch_timeout: float = 60.0        # seconds of no-game-UI before ADB launch
     game_launch_cooldown: float = 90.0       # min seconds between game launch attempts
+
+    # Watchdog — wave stall (hard restart)
+    wave_stall_timeout: float = 1200.0       # 20 min: hard-restart if wave hasn't advanced
+    wave_stall_cooldown: float = 300.0       # min seconds between hard-restart attempts
+    bs_post_start_delay: float = 60.0        # seconds after BS launch before pressing home
 
     @property
     def screenshots_dir(self) -> Path:
@@ -2933,6 +2939,8 @@ class RuntimeContext:
     last_bs_restart: float = 0.0      # timestamp of last BlueStacks launch attempt
     last_game_launch: float = 0.0     # timestamp of last ADB game launch attempt
     last_game_ui_seen: float = 0.0    # timestamp game UI (wave/upgrades) was last visible
+    last_wave_advance: float = 0.0    # timestamp when wave number last increased
+    hard_restart_running: bool = False  # True while post-start sequence is running
 
     def update_window(self):
         """Update window rect if needed."""
@@ -3298,6 +3306,17 @@ def automation_loop_tick():
                     rate_suffix = " | (collecting data...)"
             else:
                 rate_suffix = " | (collecting data...)"
+
+            # Track wave advance for stall watchdog (update when wave number increases)
+            prev_wave_str = ctx.game_state.wave
+            if prev_wave_str:
+                try:
+                    if wave_num > int(prev_wave_str.replace(',', '')):
+                        ctx.last_wave_advance = current_time
+                except ValueError:
+                    ctx.last_wave_advance = current_time
+            else:
+                ctx.last_wave_advance = current_time  # first wave seen since startup
         except (ValueError, TypeError):
             pass
     log.info(f"{base_message}{rate_suffix}")
@@ -3395,6 +3414,7 @@ def watchdog_bluestacks_tick():
     log.warning("BlueStacks process not found — launching: %s", ctx.config.bluestacks_exe)
     ctx.status = "restarting_bluestacks"
     ctx.last_bs_restart = now
+    ctx.hard_restart_running = True
     try:
         subprocess.Popen(
             [ctx.config.bluestacks_exe],
@@ -3402,10 +3422,11 @@ def watchdog_bluestacks_tick():
         )
     except Exception as exc:
         log.error("Failed to launch BlueStacks: %s", exc)
+        ctx.hard_restart_running = False
         return
-    # Give BlueStacks time to start before the next tick checks for the window
-    log.info("BlueStacks launched — waiting 10 s for it to start")
-    time.sleep(10)
+    # Kick off background thread to press Home + launch game after BlueStacks is ready
+    t = threading.Thread(target=_post_bluestacks_start_sequence, daemon=True, name="post-bs-start")
+    t.start()
 
 
 def _launch_game_adb():
@@ -3454,6 +3475,124 @@ def watchdog_game_tick():
     _launch_game_adb()
 
 
+def _kill_bluestacks() -> bool:
+    """Forcefully terminate BlueStacks. Returns True if taskkill succeeded."""
+    log = logging.getLogger(__name__)
+    try:
+        result = subprocess.run(
+            ["taskkill", "/F", "/IM", ctx.config.bluestacks_process],
+            capture_output=True, text=True, timeout=10,
+        )
+        log.info("taskkill: %s", (result.stdout or result.stderr).strip())
+        return result.returncode == 0
+    except Exception as exc:
+        log.error("Failed to kill BlueStacks: %s", exc)
+        return False
+
+
+def _adb_press_home():
+    """Send KEYCODE_HOME to the Android device via ADB."""
+    log = logging.getLogger(__name__)
+    adb = ctx.config.adb_exe
+    adb_target = f"{ctx.config.adb_host}:{ctx.config.adb_port}"
+    try:
+        subprocess.run([adb, "connect", adb_target], capture_output=True, timeout=5)
+        result = subprocess.run(
+            [adb, "-s", adb_target, "shell", "input", "keyevent", "KEYCODE_HOME"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            log.info("ADB HOME keyevent sent")
+        else:
+            log.warning("ADB HOME keyevent failed: %s", result.stderr.strip())
+    except FileNotFoundError:
+        log.error("adb not found (%r) — use --adb-exe to specify the full path", adb)
+    except Exception as exc:
+        log.error("ADB HOME keyevent error: %s", exc)
+
+
+def _post_bluestacks_start_sequence():
+    """Background thread: wait for BlueStacks to be ready, press Home, then launch The Tower."""
+    global ctx
+    log = logging.getLogger(__name__)
+    try:
+        delay = ctx.config.bs_post_start_delay
+        log.info("Post-start sequence: waiting %.0fs for BlueStacks to be ready", delay)
+        time.sleep(delay)
+        log.info("Post-start sequence: pressing HOME")
+        _adb_press_home()
+        time.sleep(5)
+        log.info("Post-start sequence: launching The Tower")
+        _launch_game_adb()
+        log.info("Post-start sequence: complete")
+    finally:
+        ctx.hard_restart_running = False
+
+
+def do_hard_restart():
+    """Kill BlueStacks, restart it, then run home + game-launch sequence in a background thread.
+
+    Safe to call from any thread or from the web API.
+    """
+    global ctx
+    log = logging.getLogger(__name__)
+    if ctx.hard_restart_running:
+        log.warning("Hard restart already in progress — ignoring duplicate request")
+        return
+    ctx.hard_restart_running = True
+    ctx.status = "hard_restart"
+    now = time.time()
+    ctx.last_bs_restart = now
+    # Reset stall clock so we don't immediately retrigger
+    ctx.last_wave_advance = now
+
+    log.warning("Hard restart: killing BlueStacks")
+    _kill_bluestacks()
+    time.sleep(3)
+
+    log.warning("Hard restart: launching BlueStacks — %s", ctx.config.bluestacks_exe)
+    try:
+        subprocess.Popen(
+            [ctx.config.bluestacks_exe],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    except Exception as exc:
+        log.error("Failed to launch BlueStacks: %s", exc)
+        ctx.hard_restart_running = False
+        return
+
+    t = threading.Thread(target=_post_bluestacks_start_sequence, daemon=True, name="post-bs-start")
+    t.start()
+
+
+def watchdog_wave_stall_tick():
+    """Trigger a hard restart if the wave number has not increased for wave_stall_timeout seconds."""
+    global ctx
+    log = logging.getLogger(__name__)
+    if not ctx.config.watchdog_enabled:
+        return
+    if ctx.hard_restart_running:
+        return
+    if ctx.last_wave_advance == 0.0:
+        return  # no wave seen yet since startup — nothing to stall on
+    now = time.time()
+    stall_seconds = now - ctx.last_wave_advance
+    if stall_seconds < ctx.config.wave_stall_timeout:
+        return
+    if now - ctx.last_bs_restart < ctx.config.wave_stall_cooldown:
+        log.warning(
+            "Wave stall detected (%.0fs) but hard-restart cooldown active (%.0fs remaining)",
+            stall_seconds,
+            ctx.config.wave_stall_cooldown - (now - ctx.last_bs_restart),
+        )
+        return
+    log.warning(
+        "No wave advance for %.0fs (threshold %.0fs) — triggering hard restart",
+        stall_seconds, ctx.config.wave_stall_timeout,
+    )
+    do_hard_restart()
+
+
 def automation_loop_run(ctx: RuntimeContext):
     """Main loop runner."""
     log = logging.getLogger(__name__)
@@ -3464,6 +3603,7 @@ def automation_loop_run(ctx: RuntimeContext):
         try:
             watchdog_bluestacks_tick()
             watchdog_game_tick()
+            watchdog_wave_stall_tick()
             automation_loop_tick()
         except Exception as exc:
             log.error(f"Loop tick error: {exc}", exc_info=True)
