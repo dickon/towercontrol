@@ -2268,6 +2268,11 @@ def load_resume_battle_template(config: Config) -> Optional[np.ndarray]:
     return load_template(config, "resume_battle.png", "RESUME BATTLE")
 
 
+def load_my_games_template(config: Config) -> Optional[np.ndarray]:
+    """Load My games button template image for detection."""
+    return load_template(config, "my_games.png", "My games")
+
+
 # Gems orbit a fixed centre point.  The tip of the gem always points toward that
 # centre, and all gems orbit at the same radius.
 _GEM_ORBIT_CENTER_FX: float = 0.5989   # fractional x of orbit centre
@@ -2921,6 +2926,7 @@ class RuntimeContext:
     battle_template: Optional[np.ndarray] = None
     newperk_template: Optional[np.ndarray] = None
     resume_battle_template: Optional[np.ndarray] = None
+    my_games_template: Optional[np.ndarray] = None
     game_state: GameState = field(default_factory=GameState)
     window_rect: Optional[WindowRect] = None
     latest_image: Optional[Image.Image] = None
@@ -3046,19 +3052,17 @@ def automation_loop_tick():
                      ctx.window_rect, ctx.config, reason="Go Back button (priority)")
         return  # Exit the tick function immediately
 
-    # PRIORITY: Check for "My games" button at the top and click it immediately
-    my_games_marks = [r for r in frame.results if 
-                      'my' in r.text.lower() and 'game' in r.text.lower()]
-    # Filter for buttons near position (0.36, 0.04)
-    my_games_marks = [r for r in my_games_marks if r.is_near(0.36, 0.04, 0.1)]
-    if my_games_marks:
-        log.info(f"PRIORITY: 'My games' button detected at ({my_games_marks[0].fx:.4f}, {my_games_marks[0].fy:.4f}) - clicking and exiting tick")
-        execute_click(my_games_marks[0].center[0], my_games_marks[0].center[1], 
-                     ctx.window_rect, ctx.config, reason="My games button (priority)")
-        return  # Exit the tick function immediately
+    # PRIORITY: Check for "My games" button at the top and click it immediately (template matching)
+    if ctx.my_games_template is not None:
+        my_games_pos = detect_template_in_region(img, ctx.my_games_template, "My games", 
+                                                  0.2, 0.0, 0.6, 0.15, threshold=0.75)
+        if my_games_pos:
+            log.info(f"PRIORITY: 'My games' button detected at ({my_games_pos[0]:.4f}, {my_games_pos[1]:.4f}) - clicking and exiting tick")
+            do_click("My games button (priority, template match)", my_games_pos[0], my_games_pos[1])
+            return  # Exit the tick function immediately
 
     # PRIORITY: Check for "The Tower" app icon/text and click it immediately
-    tower_marks = [r for r in frame.results if 'Tower' in r.text and r.fy < 0.20]
+    tower_marks = [r for r in frame.results if 'Tower' in r.text and r.fy < 0.4 and r.fx > 0.8]
     if tower_marks:
         log.info(f"PRIORITY: 'The Tower' icon/text detected at ({tower_marks[0].fx:.4f}, {tower_marks[0].fy:.4f}) - clicking and exiting tick")
         execute_click(tower_marks[0].center[0], tower_marks[0].center[1], 
@@ -3825,6 +3829,13 @@ def main():
     else:
         log.info("RESUME BATTLE template not found - resume battle detection disabled")
 
+    # Load My games button template
+    my_games_template = load_my_games_template(config)
+    if my_games_template is not None:
+        log.info(f"Loaded My games template: {my_games_template.shape}")
+    else:
+        log.info("My games template not found - my games detection disabled")
+
     # Create runtime context
     ctx = RuntimeContext(
         config=config,
@@ -3834,6 +3845,7 @@ def main():
         battle_template=battle_template,
         newperk_template=newperk_template,
         resume_battle_template=resume_battle_template,
+        my_games_template=my_games_template,
         last_upgrade_action=time.time(),
         running=True,
         status="running",
