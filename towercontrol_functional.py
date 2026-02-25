@@ -3524,7 +3524,7 @@ def watchdog_game_tick():
     log.warning("Game UI not seen for %.0fs — launching game via ADB",
                 now - ctx.last_game_ui_seen)
     ctx.last_game_launch = now
-    _launch_game_adb()
+    #_launch_game_adb()
 
 
 def _kill_bluestacks() -> bool:
