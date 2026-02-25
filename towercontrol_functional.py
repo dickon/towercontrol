@@ -2263,6 +2263,11 @@ def load_battle_template(config: Config) -> Optional[np.ndarray]:
     return load_template(config, "battle.png", "BATTLE")
 
 
+def load_resume_battle_template(config: Config) -> Optional[np.ndarray]:
+    """Load RESUME BATTLE button template image for detection."""
+    return load_template(config, "resume_battle.png", "RESUME BATTLE")
+
+
 # Gems orbit a fixed centre point.  The tip of the gem always points toward that
 # centre, and all gems orbit at the same radius.
 _GEM_ORBIT_CENTER_FX: float = 0.5989   # fractional x of orbit centre
@@ -2915,6 +2920,7 @@ class RuntimeContext:
     claim_template: Optional[np.ndarray] = None
     battle_template: Optional[np.ndarray] = None
     newperk_template: Optional[np.ndarray] = None
+    resume_battle_template: Optional[np.ndarray] = None
     game_state: GameState = field(default_factory=GameState)
     window_rect: Optional[WindowRect] = None
     latest_image: Optional[Image.Image] = None
@@ -3061,15 +3067,14 @@ def automation_loop_tick():
         time.sleep(10)
         return  # Exit the tick function immediately
 
-    # PRIORITY: Check for "RESUME BATTLE" button and click it immediately
-    resume_marks = [r for r in frame.results if 'resume' in r.text.lower()]
-    # Filter for buttons near position (0.6, 0.82)
-    resume_marks = [r for r in resume_marks if r.is_near(0.6, 0.82, 0.1)]
-    if resume_marks:
-        log.info(f"PRIORITY: 'RESUME BATTLE' button detected at ({resume_marks[0].fx:.4f}, {resume_marks[0].fy:.4f}) - clicking and exiting tick")
-        execute_click(resume_marks[0].center[0], resume_marks[0].center[1], 
-                     ctx.window_rect, ctx.config, reason="Resume Battle button (priority)")
-        return  # Exit the tick function immediately
+    # PRIORITY: Check for "RESUME BATTLE" button and click it immediately (template matching)
+    if ctx.resume_battle_template is not None:
+        resume_pos = detect_template_in_region(img, ctx.resume_battle_template, "RESUME BATTLE", 
+                                               0.4, 0.7, 0.8, 0.95, threshold=0.75)
+        if resume_pos:
+            log.info(f"PRIORITY: 'RESUME BATTLE' button detected at ({resume_pos[0]:.4f}, {resume_pos[1]:.4f}) - clicking and exiting tick")
+            do_click("Resume Battle button (priority, template match)", resume_pos[0], resume_pos[1])
+            return  # Exit the tick function immediately
 
     # Check for floating gem and click it with dead reckoning
     if ctx.gem_template is not None:
@@ -3813,6 +3818,13 @@ def main():
     else:
         log.info("newperk template not found - image-based perk detection disabled")
 
+    # Load RESUME BATTLE button template
+    resume_battle_template = load_resume_battle_template(config)
+    if resume_battle_template is not None:
+        log.info(f"Loaded RESUME BATTLE template: {resume_battle_template.shape}")
+    else:
+        log.info("RESUME BATTLE template not found - resume battle detection disabled")
+
     # Create runtime context
     ctx = RuntimeContext(
         config=config,
@@ -3821,6 +3833,7 @@ def main():
         claim_template=claim_template,
         battle_template=battle_template,
         newperk_template=newperk_template,
+        resume_battle_template=resume_battle_template,
         last_upgrade_action=time.time(),
         running=True,
         status="running",
