@@ -3028,6 +3028,49 @@ def automation_loop_tick():
     ctx.frame = frame
     update_tier_from_frame(frame)
 
+    # PRIORITY: Check for "Go Back" button at the top and click it immediately
+    go_back_marks = [r for r in frame.results if 
+                     ('go' in r.text.lower() and 'back' in r.text.lower()) or 
+                     r.text.lower() == 'go back']
+    # Filter for buttons near the top of the screen (y < 0.15)
+    go_back_marks = [r for r in go_back_marks if r.fy < 0.15]
+    if go_back_marks:
+        log.info(f"PRIORITY: 'Go Back' button detected at ({go_back_marks[0].fx:.4f}, {go_back_marks[0].fy:.4f}) - clicking and exiting tick")
+        execute_click(go_back_marks[0].center[0], go_back_marks[0].center[1], 
+                     ctx.window_rect, ctx.config, reason="Go Back button (priority)")
+        return  # Exit the tick function immediately
+
+    # PRIORITY: Check for "My games" button at the top and click it immediately
+    my_games_marks = [r for r in frame.results if 
+                      'my' in r.text.lower() and 'game' in r.text.lower()]
+    # Filter for buttons near position (0.36, 0.04)
+    my_games_marks = [r for r in my_games_marks if r.is_near(0.36, 0.04, 0.1)]
+    if my_games_marks:
+        log.info(f"PRIORITY: 'My games' button detected at ({my_games_marks[0].fx:.4f}, {my_games_marks[0].fy:.4f}) - clicking and exiting tick")
+        execute_click(my_games_marks[0].center[0], my_games_marks[0].center[1], 
+                     ctx.window_rect, ctx.config, reason="My games button (priority)")
+        return  # Exit the tick function immediately
+
+    # PRIORITY: Check for "The Tower" app icon/text and click it immediately
+    tower_marks = [r for r in frame.results if 'Tower' in r.text and r.fy < 0.20]
+    if tower_marks:
+        log.info(f"PRIORITY: 'The Tower' icon/text detected at ({tower_marks[0].fx:.4f}, {tower_marks[0].fy:.4f}) - clicking and exiting tick")
+        execute_click(tower_marks[0].center[0], tower_marks[0].center[1], 
+                     ctx.window_rect, ctx.config, reason="The Tower app icon (priority)")
+        log.info('waiting 10 seconds for game to start')
+        time.sleep(10)
+        return  # Exit the tick function immediately
+
+    # PRIORITY: Check for "RESUME BATTLE" button and click it immediately
+    resume_marks = [r for r in frame.results if 'resume' in r.text.lower()]
+    # Filter for buttons near position (0.6, 0.82)
+    resume_marks = [r for r in resume_marks if r.is_near(0.6, 0.82, 0.1)]
+    if resume_marks:
+        log.info(f"PRIORITY: 'RESUME BATTLE' button detected at ({resume_marks[0].fx:.4f}, {resume_marks[0].fy:.4f}) - clicking and exiting tick")
+        execute_click(resume_marks[0].center[0], resume_marks[0].center[1], 
+                     ctx.window_rect, ctx.config, reason="Resume Battle button (priority)")
+        return  # Exit the tick function immediately
+
     # Check for floating gem and click it with dead reckoning
     if ctx.gem_template is not None:
         gem_pos = detect_floating_gem(img, ctx.gem_template, ctx.config)
