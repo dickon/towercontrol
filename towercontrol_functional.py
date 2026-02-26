@@ -1056,6 +1056,9 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
         # Match patterns like "Wave 123", "W 123", "Wave: 123", "w:123", etc.
         match = re.search(r'(?:wave|w)[:\s]*([0-9,]+)', text, re.IGNORECASE)
         if match:
+            if not r.is_near(0.73, 0.55, 0.08):
+                log.debug(f"Wave ignored (wrong position {r.fx:.3f},{r.fy:.3f}): '{text}'")
+                continue
             wave_num = match.group(1).replace(',', '')
             if len(wave_num) < 2:
                 log.debug(f"Wave ignored (single digit, likely OCR error): '{wave_num}' from text '{text}'")
@@ -1087,6 +1090,9 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
                             best_candidate = candidate
 
             if best_num and best_candidate:
+                if not best_candidate.is_near(0.73, 0.55, 0.06):
+                    log.debug(f"Wave ignored (wrong position {best_candidate.fx:.3f},{best_candidate.fy:.3f}): '{best_num}'")
+                    continue
                 if len(best_num) < 2:
                     log.debug(f"Wave ignored (single digit, likely OCR error): '{best_num}'")
                     continue
@@ -1097,6 +1103,9 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
     for r in frame.results:
         text_lower = r.text.lower().strip()
         if text_lower.startswith(('wave', 'w')):
+            if not r.is_near(0.73, 0.55, 0.08):
+                log.debug(f"Wave ignored (wrong position {r.fx:.3f},{r.fy:.3f}): '{r.text}'")
+                continue
             # Extract any digits from the text
             digits = re.findall(r'[0-9]+', r.text)
             if digits:
@@ -3151,9 +3160,6 @@ def automation_loop_tick():
 
     # Extract wave number for comparison
     wave_num_str, _ = extract_wave_from_frame(frame)
-    # Fall back to last known wave when overlay obscures the wave counter
-    if not wave_num_str:
-        wave_num_str = ctx.game_state.wave
     wave_num = None
     if wave_num_str:
         try:
@@ -3457,8 +3463,9 @@ def automation_loop_tick():
     if ctx.input_enabled:
         ctx.status = "running"
 
-    # ── Rate history: sample cash/coin resources and compute per-minute rates ──
-    _update_rate_history(new_resources)
+    if wave_num:
+        # ── Rate history: sample cash/coin resources and compute per-minute rates ──
+        _update_rate_history(new_resources)
 
 
 # Matches common OCR misreads of the "/min" rate suffix that follows a HUD value.
