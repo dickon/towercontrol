@@ -3377,10 +3377,10 @@ def automation_loop_tick():
         if _HUD_VAL_RE.match(ocr.text.strip()):
             # Use separate x/y bounds so the two closely-spaced HUD rows
             # (cash at y≈0.048, coin at y≈0.083) don't cross-match.
-            if "cash" not in resources and abs(ocr.fx - 0.351) < 0.109 and abs(ocr.fy - 0.048) < 0.018:
+            if "cash" not in resources and 0.242 <= ocr.fx <= 0.490 and abs(ocr.fy - 0.048) < 0.018:
                 resources["cash"] = ocr.text
                 log.debug(f"Position-based cash: '{ocr.text}' at ({ocr.fx:.3f}, {ocr.fy:.3f})")
-            elif "gold" not in resources and abs(ocr.fx - 0.362) < 0.098 and abs(ocr.fy - 0.083) < 0.018:
+            elif "gold" not in resources and 0.264 <= ocr.fx <= 0.490 and abs(ocr.fy - 0.083) < 0.018:
                 resources["gold"] = ocr.text
                 log.debug(f"Position-based gold/coin: '{ocr.text}' at ({ocr.fx:.3f}, {ocr.fy:.3f})")
 
