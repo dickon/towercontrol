@@ -3343,8 +3343,10 @@ def automation_loop_tick():
     elements = []
     resources = {}
 
-    # Regex for bare numeric HUD values (e.g. "232M/min", "5.3B", "1.2K/s")
-    _HUD_VAL_RE = re.compile(r'^[0-9,.]+\s*[KMBTkmbt]?(?:/\w+)?$')
+    # Regex for bare numeric HUD values (e.g. "232M/min", "5.3B", "1.2K/s").
+    # The trailing suffix group uses \S* (any non-whitespace) instead of \w+ so
+    # that OCR artefacts such as '/mir?' or '/min.' are still matched.
+    _HUD_VAL_RE = re.compile(r'^[0-9,.]+\s*[KMBTkmbt]?(?:\s*[/\\|l]\s*\S*)?$', re.IGNORECASE)
 
     for ocr in frame.results:
         elem = classify_ocr_result(ocr)
@@ -3450,9 +3452,26 @@ def automation_loop_tick():
     _update_rate_history(new_resources)
 
 
+# Matches common OCR misreads of the "/min" rate suffix that follows a HUD value.
+# Tesseract frequently produces: /mir?, /rnin, /nnn, /mln, /m1n, /min., /mn, /mm
+_MIN_RATE_RE = re.compile(
+    r'[/\\|l]\s*(?:min|mir|rnin|ruin|mln|nnn|m[il1]n|mn|mm)\.?',
+    re.IGNORECASE,
+)
+
+
 def _parse_resource_value(text: str) -> Optional[float]:
-    """Extract a numeric value from a resource text string (may include suffix)."""
-    m = re.search(r'([0-9,.]+\s*[KMBTkmbt]?)(?:\s*/\w+)?$', text.strip())
+    """Extract a numeric value from a resource text string.
+
+    Handles clean values (``'5.3B'``), explicit rate display (``'242M/min'``),
+    and common OCR artefacts around the /min suffix (``'229M/mir?'``,
+    ``'>\xa9NIM/min.'``).
+    """
+    # Strip any leading non-numeric garbage (e.g. ">\xa9NIM" prefix)
+    cleaned = re.sub(r'^[^0-9]*', '', text.strip())
+    # Strip trailing /min-like suffix including OCR variants and stray punctuation
+    cleaned = re.sub(r'\s*[/\\|l]\s*\S*$', '', cleaned).strip()
+    m = re.match(r'([0-9,.]+\s*[KMBTkmbt]?)', cleaned)
     if not m:
         return None
     return parse_number_with_suffix(m.group(1))
@@ -3489,11 +3508,13 @@ def _update_rate_history(resources: dict) -> None:
             return None
 
         # Game is already showing a rate — use the value directly.
-        if '/min' in raw.lower():
+        # Use a fuzzy regex so OCR misreads like '/mir?', '/rnin', '/min.' are
+        # still recognised as rate-display mode instead of triggering a toggle.
+        if _MIN_RATE_RE.search(raw):
             value = _parse_resource_value(raw)
             if value is None or value < 0:
                 return None
-            log.debug(f"Direct /min rate: {key}={value:.0f}")
+            log.debug(f"Direct /min rate: {key}={value:.6g}")
             return value
 
         # Not in /min mode — click the HUD value to toggle the display, but
