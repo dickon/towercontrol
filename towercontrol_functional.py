@@ -2241,22 +2241,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
 
 def load_gem_template(config: Config) -> Optional[np.ndarray]:
     """Load gem template image for detection."""
-    gem_path = config.base_dir / "gem.png"
-    if not gem_path.exists():
-        logging.getLogger(__name__).warning(f"Gem template not found: {gem_path}")
-        return None
-    
-    try:
-        template = cv2.imread(str(gem_path), cv2.IMREAD_UNCHANGED)
-        if template is None:
-            return None
-        # Convert to grayscale for template matching
-        if len(template.shape) == 3:
-            template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-        return template
-    except Exception as e:
-        logging.getLogger(__name__).warning(f"Failed to load gem template: {e}")
-        return None
+    return load_template(config, "gem.png", "gem")
 
 
 def load_template(config: Config, filename: str, label: str) -> Optional[np.ndarray]:
@@ -2296,6 +2281,11 @@ def load_resume_battle_template(config: Config) -> Optional[np.ndarray]:
 def load_my_games_template(config: Config) -> Optional[np.ndarray]:
     """Load My games button template image for detection."""
     return load_template(config, "my_games.png", "My games")
+
+
+def load_slashmin_template(config: Config) -> Optional[np.ndarray]:
+    """Load /min HUD suffix template for rate-vs-absolute mode detection."""
+    return load_template(config, "slashmin.png", "/min")
 
 
 # Gems orbit a fixed centre point.  The tip of the gem always points toward that
@@ -2976,6 +2966,7 @@ class RuntimeContext:
     newperk_template: Optional[np.ndarray] = None
     resume_battle_template: Optional[np.ndarray] = None
     my_games_template: Optional[np.ndarray] = None
+    slashmin_template: Optional[np.ndarray] = None
     game_state: GameState = field(default_factory=GameState)
     window_rect: Optional[WindowRect] = None
     latest_image: Optional[Image.Image] = None
@@ -3465,7 +3456,7 @@ def automation_loop_tick():
 
     if wave_num:
         # ── Rate history: sample cash/coin resources and compute per-minute rates ──
-        _update_rate_history(new_resources)
+        _update_rate_history(new_resources, img)
 
 
 # Matches common OCR misreads of the "/min" rate suffix that follows a HUD value.
@@ -3493,16 +3484,48 @@ def _parse_resource_value(text: str) -> Optional[float]:
     return parse_number_with_suffix(m.group(1))
 
 
-def _update_rate_history(resources: dict) -> None:
+# Per-resource HUD regions where the '/min' suffix graphic appears.
+# These are (x0, y0, x1, y1) in normalised image coordinates.
+_HUD_SLASHMIN_REGIONS: dict = {
+    "cash": (0.242, 0.030, 0.560, 0.068),
+    "gold": (0.264, 0.065, 0.560, 0.103),
+}
+
+# Fractional (fx, fy) HUD positions to click to toggle to /min display mode
+_HUD_TOGGLE_POS: dict = {
+    "cash": (0.351, 0.048),
+    "gold": (0.362, 0.083),
+}
+
+
+def _hud_is_rate_mode(key: str, raw: str, img: Optional[Image.Image]) -> bool:
+    """Return True when the HUD value for *key* is currently in /min (rate) display mode.
+
+    Checks via template matching against ``slashmin.png`` first (more robust
+    than OCR text), then falls back to the fuzzy regex ``_MIN_RATE_RE``.
+    """
+    log = logging.getLogger(__name__)
+    if ctx.slashmin_template is not None and img is not None:
+        region = _HUD_SLASHMIN_REGIONS.get(key)
+        if region is not None:
+            x0, y0, x1, y1 = region
+            match = detect_template_in_region(
+                img, ctx.slashmin_template, f"{key} /min", x0, y0, x1, y1, threshold=0.70
+            )
+            if match is not None:
+                log.debug("Template confirms %s HUD is in /min mode at %s", key, match)
+                return True
+            # Template present but no match → definitively not in rate mode
+            log.debug("Template found no /min for %s — absolute-value mode", key)
+            return False
+    # No template available — fall back to OCR text heuristic
+    return bool(_MIN_RATE_RE.search(raw))
+
+
+def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> None:
     """Sample cash/coin resource values and append a per-minute rate entry to ctx.rate_history."""
     log = logging.getLogger(__name__)
     now = time.time()
-
-    # Fractional (fx, fy) HUD positions to click to toggle to /min display mode
-    _HUD_TOGGLE_POS = {
-        "cash": (0.351, 0.048),
-        "gold": (0.362, 0.083),
-    }
 
     # Only one toggle click per tick — a second click would flip the same HUD
     # back to absolute-value mode.
@@ -3511,20 +3534,18 @@ def _update_rate_history(resources: dict) -> None:
     def _sample(key: str, samples: list) -> Optional[float]:
         """Return a per-minute rate for the resource.
 
-        If the raw text already contains '/min' (game is in rate-display mode)
-        the value is used directly.  Otherwise the HUD is clicked once this
-        tick to switch it to /min mode and None is returned; subsequent
-        resources that also need toggling are skipped to avoid a double-click
-        that would revert back to absolute-value display.
+        If the HUD is in rate-display mode (detected via template matching or
+        OCR regex) the value is used directly.  Otherwise the HUD is clicked
+        once this tick to switch it to /min mode and None is returned;
+        subsequent resources that also need toggling are skipped to avoid a
+        double-click that would revert back to absolute-value display.
         """
         raw = resources.get(key)
         if raw is None:
             return None
 
-        # Game is already showing a rate — use the value directly.
-        # Use a fuzzy regex so OCR misreads like '/mir?', '/rnin', '/min.' are
-        # still recognised as rate-display mode instead of triggering a toggle.
-        if _MIN_RATE_RE.search(raw):
+        # Determine display mode — template matching preferred, regex fallback.
+        if _hud_is_rate_mode(key, raw, img):
             value = _parse_resource_value(raw)
             if value is None or value < 0:
                 return None
@@ -4026,6 +4047,13 @@ def main():
     else:
         log.info("My games template not found - my games detection disabled")
 
+    # Load /min HUD suffix template for rate-mode detection
+    slashmin_template = load_slashmin_template(config)
+    if slashmin_template is not None:
+        log.info(f"Loaded /min template: {slashmin_template.shape}")
+    else:
+        log.info("/min template not found (slashmin.png) - falling back to OCR regex for rate detection")
+
     # Create runtime context
     ctx = RuntimeContext(
         config=config,
@@ -4036,6 +4064,7 @@ def main():
         newperk_template=newperk_template,
         resume_battle_template=resume_battle_template,
         my_games_template=my_games_template,
+        slashmin_template=slashmin_template,
         last_upgrade_action=time.time(),
         running=True,
         status="running",
