@@ -466,19 +466,22 @@ class _CaptureLogBuffer(logging.Handler):
 _capture_log_buffer = _CaptureLogBuffer()
 
 
-def _rotate_capture_files(config: Config, prefix: str = "capture", keep: int = 100) -> None:
-    """Keep only the last N renamed capture files per group, deleting older ones."""
+def _rotate_capture_files(config: Config, prefix: str = "capture", keep: int = 100, max_age_hours: float = 24.0) -> None:
+    """Delete renamed capture files older than max_age_hours (default 24 h)."""
     log = logging.getLogger(__name__)
     try:
         debug_dir = config.debug_dir
+        cutoff = time.time() - max_age_hours * 3600
         for ext in ('.png', '.txt'):
             all_files = sorted(debug_dir.glob(f"{prefix}_*{ext}"))
             plain = [f for f in all_files if not f.stem.startswith(f"{prefix}_annotated_")]
             annotated = [f for f in all_files if f.stem.startswith(f"{prefix}_annotated_")]
             for group in (plain, annotated):
-                if len(group) > keep:
-                    for f in group[:-keep]:
-                        f.unlink()
+                to_delete = [f for f in group if f.stat().st_mtime < cutoff]
+                for f in to_delete:
+                    f.unlink()
+                if to_delete:
+                    log.debug(f"Rotated {len(to_delete)} old {prefix}{ext} files (>{max_age_hours}h)")
     except Exception as e:
         log.warning(f"Failed to rotate capture files: {e}")
 
@@ -514,8 +517,8 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
                 new_name = f"{old_path.stem}_{mtime_ts}{state_sfx}{old_path.suffix}"
                 old_path.rename(old_path.parent / new_name)
 
-        # Rotate: keep only last 100 renamed files per group
-        _rotate_capture_files(config, prefix=prefix, keep=100)
+        # Rotate: delete renamed files older than 24 hours
+        _rotate_capture_files(config, prefix=prefix)
 
         # Save original image
         img.save(img_path)
@@ -2793,20 +2796,17 @@ def to_absolute_coords(rel_x: int, rel_y: int, rect: WindowRect) -> Tuple[int, i
     return (rect.left + rel_x, rect.top + rel_y)
 
 
-def cleanup_old_click_debug_files(config: Config, keep_count: int = 20) -> None:
-    """Keep only the last N click_debug files, delete older ones."""
+def cleanup_old_click_debug_files(config: Config, keep_count: int = 20, max_age_hours: float = 24.0) -> None:
+    """Delete click_debug files older than max_age_hours (default 24 h)."""
     log = logging.getLogger(__name__)
     try:
-        # Find all click_debug files
-        pattern = config.debug_dir / "click_debug_*.png"
-        files = sorted(config.debug_dir.glob("click_debug_*.png"), key=lambda p: p.stat().st_mtime)
-        
-        # Delete older files if we have more than keep_count
-        if len(files) > keep_count:
-            to_delete = files[:-keep_count]
-            for f in to_delete:
-                f.unlink()
-            log.debug(f"Cleaned up {len(to_delete)} old click_debug files")
+        cutoff = time.time() - max_age_hours * 3600
+        files = list(config.debug_dir.glob("click_debug_*.png"))
+        to_delete = [f for f in files if f.stat().st_mtime < cutoff]
+        for f in to_delete:
+            f.unlink()
+        if to_delete:
+            log.debug(f"Cleaned up {len(to_delete)} old click_debug files (>{max_age_hours}h)")
     except Exception as e:
         log.warning(f"Failed to cleanup old click_debug files: {e}")
 
@@ -2851,8 +2851,8 @@ def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_fro
             debug_img.save(debug_path)
             log.debug(f"Debug screenshot saved: {debug_path}")
             
-            # Cleanup old files - keep only last 20
-            cleanup_old_click_debug_files(config, keep_count=20)
+            # Cleanup old files - delete files older than 24 hours
+            cleanup_old_click_debug_files(config)
     except Exception as e:
         log.warning(f"Could not create debug screenshot: {e}")
     
@@ -2996,6 +2996,7 @@ class RuntimeContext:
     rate_history: list = field(default_factory=list)  # [{t, cash_pm, coin_pm}] for timeline chart
     _cash_samples: list = field(default_factory=list)  # raw (timestamp, value) for cash rate
     _coin_samples: list = field(default_factory=list)  # raw (timestamp, value) for coin rate
+    _hud_toggle_pending: dict = field(default_factory=dict)  # key → consecutive ticks where /min not seen but toggle wanted
 
     def update_window(self):
         """Update window rect if needed."""
@@ -3525,14 +3526,31 @@ def _update_rate_history(resources: dict) -> None:
             if value is None or value < 0:
                 return None
             log.debug(f"Direct /min rate: {key}={value:.6g}")
+            # Successful /min read — reset any pending toggle counter.
+            ctx._hud_toggle_pending.pop(key, None)
             return value
 
-        # Not in /min mode — click the HUD value to toggle the display, but
-        # only if nothing else has been clicked this tick.
+        # Not in /min mode — require 3 consecutive ticks of "wanted to toggle"
+        # before actually clicking, to cope with fuzzy OCR occasionally
+        # misreading a /min suffix as an absolute value.
+        pending = ctx._hud_toggle_pending.get(key, 0) + 1
+        ctx._hud_toggle_pending[key] = pending
+        _TOGGLE_REQUIRED_TICKS = 3
+        if pending < _TOGGLE_REQUIRED_TICKS:
+            log.info(
+                f"HUD '{key}' not in /min mode ('{raw}') — waiting for "
+                f"{_TOGGLE_REQUIRED_TICKS - pending} more consecutive tick(s) before toggling "
+                f"(pending={pending})"
+            )
+            return None
+
+        # 3 consecutive ticks confirmed — click the HUD value to toggle the
+        # display, but only if nothing else has been clicked this tick.
+        ctx._hud_toggle_pending[key] = 0  # reset so next failure starts fresh
         if not toggled_this_tick:
             fx, fy = _HUD_TOGGLE_POS.get(key, (0.0, 0.0))
             if fx:
-                log.info(f"HUD '{key}' not in /min mode ('{raw}') — clicking ({fx}, {fy}) to toggle")
+                log.info(f"HUD '{key}' not in /min mode ('{raw}') after {_TOGGLE_REQUIRED_TICKS} ticks — clicking ({fx}, {fy}) to toggle")
                 do_click(f"Toggle {key} HUD to /min", fx, fy)
                 toggled_this_tick.append(key)
         else:
