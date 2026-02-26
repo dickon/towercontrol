@@ -2860,9 +2860,36 @@ def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_fro
         
     ax, ay = to_absolute_coords(x, y, rect)
     log.debug(f"click({x}, {y}) → abs({ax}, {ay})")
+
+    # Snapshot focus + cursor so we can restore them after clicking
+    prev_foreground = None
+    prev_mouse_pos = None
+    try:
+        if win32gui:
+            prev_foreground = win32gui.GetForegroundWindow()
+        prev_mouse_pos = pyautogui.position()
+    except Exception as e:
+        log.debug(f"Could not snapshot focus/cursor: {e}")
+
     pyautogui.click(ax, ay, interval=config.click_pause)
     log.info(f"Clicked at ({ax}, {ay}); sleep for {config.click_pause:.2f} seconds" + (f"  [{reason}]" if reason else ""))
     time.sleep(config.click_pause)
+
+    # Restore cursor position
+    if prev_mouse_pos is not None:
+        try:
+            pyautogui.moveTo(prev_mouse_pos.x, prev_mouse_pos.y)
+            log.debug(f"Restored mouse to ({prev_mouse_pos.x}, {prev_mouse_pos.y})")
+        except Exception as e:
+            log.debug(f"Could not restore mouse position: {e}")
+
+    # Restore foreground window (skip if it was BlueStacks itself)
+    if prev_foreground and win32gui and prev_foreground != rect.hwnd:
+        try:
+            win32gui.SetForegroundWindow(prev_foreground)
+            log.debug(f"Restored foreground window (hwnd={prev_foreground})")
+        except Exception as e:
+            log.debug(f"Could not restore foreground window: {e}")
 
     if ctx is not None:
         fx = round(x / rect.width,  4) if rect.width  else 0.0
