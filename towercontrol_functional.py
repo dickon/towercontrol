@@ -1003,6 +1003,7 @@ def classify_ocr_result(ocr: OCRResult) -> Optional[UIElement]:
 
     # Resources
     resource_patterns = [
+        (r"(?:cash)[:\s]*([0-9,.]+[kmbtKMBT]?)", "cash"),
         (r"(?:gold|coins?)[:\s]*([0-9,.]+[kmbtKMBT]?)", "gold"),
         (r"(?:gems?|diamonds?)[:\s]*([0-9,.]+)", "gems"),
         (r"(?:wave|w)[:\s]*([0-9,]+)", "wave"),
@@ -2956,6 +2957,9 @@ class RuntimeContext:
     last_game_ui_seen: float = 0.0    # timestamp game UI (wave/upgrades) was last visible
     last_wave_advance: float = 0.0    # timestamp when wave number last increased
     hard_restart_running: bool = False  # True while post-start sequence is running
+    rate_history: list = field(default_factory=list)  # [{t, cash_pm, coin_pm}] for timeline chart
+    _cash_samples: list = field(default_factory=list)  # raw (timestamp, value) for cash rate
+    _coin_samples: list = field(default_factory=list)  # raw (timestamp, value) for coin rate
 
     def update_window(self):
         """Update window rect if needed."""
@@ -3396,6 +3400,56 @@ def automation_loop_tick():
     )
     if ctx.input_enabled:
         ctx.status = "running"
+
+    # ── Rate history: sample cash/coin resources and compute per-minute rates ──
+    _update_rate_history(new_resources)
+
+
+def _parse_resource_value(text: str) -> Optional[float]:
+    """Extract a numeric value from a resource text string (may include suffix)."""
+    m = re.search(r'([0-9,.]+\s*[KMBTkmbt]?)(?:\s*/\w+)?$', text.strip())
+    if not m:
+        return None
+    return parse_number_with_suffix(m.group(1))
+
+
+def _update_rate_history(resources: dict) -> None:
+    """Sample cash/coin resource values and append a per-minute rate entry to ctx.rate_history."""
+    now = time.time()
+    _RATE_WINDOW_SECS = 300   # use last 5 minutes of samples for rate calculation
+    _MAX_HISTORY = 500        # keep at most this many rate_history entries
+
+    def _sample(key: str, samples: list) -> Optional[float]:
+        """Add a timestamped sample if the resource is readable; return per-minute rate."""
+        raw = resources.get(key)
+        if raw is None:
+            return None
+        value = _parse_resource_value(raw)
+        if value is None or value <= 0:
+            return None
+        samples.append((now, value))
+        # Trim to window
+        cutoff = now - _RATE_WINDOW_SECS
+        while samples and samples[0][0] < cutoff:
+            samples.pop(0)
+        if len(samples) < 2:
+            return None
+        t0, v0 = samples[0]
+        t1, v1 = samples[-1]
+        dt = t1 - t0
+        if dt <= 0 or v1 <= v0:
+            return None
+        return (v1 - v0) / dt * 60.0  # per minute
+
+    cash_pm = _sample("cash", ctx._cash_samples)
+    coin_pm = _sample("gold", ctx._coin_samples)  # "gold" resource covers gold/coins OCR
+
+    if cash_pm is None and coin_pm is None:
+        return
+
+    ctx.rate_history.append({"t": now, "cash_pm": cash_pm, "coin_pm": coin_pm})
+    if len(ctx.rate_history) > _MAX_HISTORY:
+        ctx.rate_history = ctx.rate_history[-_MAX_HISTORY:]
 
 def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
     if gem_pos:

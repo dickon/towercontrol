@@ -13,6 +13,7 @@ let _hoverFile         = null;     // filename currently previewed on timeline h
 let _hoverTimeMs       = null;     // chart time (ms) at current timeline hover position
 let _timelineHovering  = false;    // true while mouse is over the timeline canvas
 let _timelineActions   = [];       // [{t, fx, fy, reason}] from last timeline fetch
+let _clickInjectionEnabled = false; // toggled by chkClickInject; off by default
 
 // ── Bootstrap ───────────────────────────────────────────────────────────
 
@@ -129,9 +130,18 @@ function onCanvasMouseLeave() {
 
 function onCanvasClick(evt) {
   if (!imgNatW) return;
+  if (!_clickInjectionEnabled) return;  // toggle must be on
   const { fx, fy } = canvasFrac(evt);
   console.log("Injecting click at", fx.toFixed(4), fy.toFixed(4));
   api("click", { fx, fy });
+}
+
+function toggleClickInjection(chk) {
+  _clickInjectionEnabled = chk.checked;
+  const hint = document.getElementById("clickInjectHint");
+  if (hint) hint.textContent = _clickInjectionEnabled
+    ? "Click injection ON — click image to send a click."
+    : "Click injection OFF. Hover to inspect coordinates.";
 }
 
 // ── State update ────────────────────────────────────────────────────────
@@ -782,6 +792,38 @@ function renderTimeline(data) {
   // Store action history for crosshair overlay during hover
   _timelineActions = (data.action_history || []);
 
+  // Build hue map: unique reasons → evenly-spaced rainbow hues
+  const _uniqueReasons = [...new Set(_timelineActions.map(a => a.reason || "click"))];
+  _uniqueReasons.sort();
+  const _reasonHue = {};
+  _uniqueReasons.forEach((r, i) => {
+    _reasonHue[r] = Math.round((i / Math.max(_uniqueReasons.length, 1)) * 360);
+  });
+
+  // Inline Chart.js plugin: draw a vertical line for each click action
+  const _clickLinesPlugin = {
+    id: "clickLines",
+    afterDraw(chart) {
+      if (!_timelineActions.length) return;
+      const xScale = chart.scales.x;
+      const { ctx: c2, chartArea: ca } = chart;
+      c2.save();
+      c2.lineWidth = 1;
+      c2.globalAlpha = 0.65;
+      for (const a of _timelineActions) {
+        const xPx = xScale.getPixelForValue(a.t * 1000);
+        if (xPx < ca.left || xPx > ca.right) continue;
+        const hue = _reasonHue[a.reason || "click"] ?? 0;
+        c2.strokeStyle = `hsl(${hue},100%,55%)`;
+        c2.beginPath();
+        c2.moveTo(xPx, ca.top);
+        c2.lineTo(xPx, ca.bottom);
+        c2.stroke();
+      }
+      c2.restore();
+    },
+  };
+
   const cashPts = (data.rate_history || [])
     .filter(p => p.cash_pm != null)
     .map(p => ({ x: p.t * 1000, y: p.cash_pm }));
@@ -853,6 +895,7 @@ function renderTimeline(data) {
   const chartConfig = {
     type: "line",
     data: { datasets },
+    plugins: [_clickLinesPlugin],
     options: {
       animation: false,
       responsive: true,
@@ -922,6 +965,8 @@ function renderTimeline(data) {
     _timelineChart.data.datasets[3].data = coinPts;
     _timelineChart.options.scales.x.time.unit           = timeUnit;
     _timelineChart.options.scales.x.time.displayFormats = { minute: displayFormat, hour: displayFormat };
+    // Swap in the freshly-built plugin (carries updated _reasonHue closure)
+    _timelineChart.config.plugins = [_clickLinesPlugin];
     _timelineChart.update("none");
   } else {
     _timelineChart = new Chart(cvs, chartConfig);

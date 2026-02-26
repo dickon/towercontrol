@@ -245,10 +245,17 @@
                   <label class="form-check-label small" for="chkCloudGrab">Cloud Grab</label>
                 </div>
               </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="chkClickInject"
+                         onchange="toggleClickInjection(this)">
+                  <label class="form-check-label small" for="chkClickInject">&#128432; Click Injection</label>
+                </div>
+              </div>
             </div>
             <div id="watchdogStatus" class="text-muted small mb-2"></div>
-            <div class="text-muted small mt-1">
-              Click image to inject a click. Hover to inspect coordinates.
+            <div id="clickInjectHint" class="text-muted small mt-1">
+              Click injection OFF. Hover to inspect coordinates.
             </div>
           </div>
         </div>
