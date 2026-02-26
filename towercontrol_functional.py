@@ -3189,7 +3189,7 @@ def automation_loop_tick():
             ctx.last_game_ui_seen = time.time()  # upgrade tabs visible → game is running
         else:
             delay = time.time() - ctx.last_seen_upgrades
-            if delay > 15.0:
+            if delay > 15.0 and time.time() - ctx.no_perk_until > 60.0:  # been a while since we've seen upgrade buttons or perk overlay → likely we're in the wrong tab or just finished a battle
                 pos = (0.3865, 0.985) if want_upgrades == 'DEFENSE' else (0.3232, 0.9711) if want_upgrades == 'ATTACK' else (0.7000, 0.9719)
                 do_click(f"Seen no upgrades for {delay} so clicking upgrades tab for {want_upgrades}", pos[0], pos[1])
             
@@ -3325,12 +3325,15 @@ def automation_loop_tick():
                 'crop_b64': _crop_b64,
             }
     elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 30.0 and ctx.recover_stage == 0:
-        log.info("No upgrade buttons visible for 30s - clicking low moddle to dismiss popup")
-        do_click("Dismiss popup blocking upgrades", 0.58, 0.9)
-        ctx.recover_stage = 1
+        # is more than 1 minute since last perk was selected
+        if time.time() - ctx.no_perk_until > 60.0:
+            log.info("No upgrade buttons visible for 30s - clicking low moddle to dismiss popup")
+            do_click("Dismiss popup blocking upgrades", 0.58, 0.9)
+            ctx.recover_stage = 1
     elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 45.0 and ctx.recover_stage == 1 and info_marks:
-        log.info("No upgrade buttons visible for 45s - clicking top right to dismiss wave")
-        do_click('Dismiss wave info', 0.9129, 0.1411)
+        if time.time() - ctx.no_perk_until > 60.0:
+            log.info("No upgrade buttons visible for 45s - clicking top right to dismiss wave")
+            do_click('Dismiss wave info', 0.9129, 0.1411)
 
     # Game-restart detection: reset upgrade state when wave drops sharply
     if check_wave_restart(ctx.game_state):
@@ -3524,7 +3527,7 @@ def _update_rate_history(resources: dict) -> None:
                 do_click(f"Toggle {key} HUD to /min", fx, fy)
                 toggled_this_tick.append(key)
         else:
-            log.debug(f"HUD '{key}' not in /min mode but skipping toggle — already clicked this tick")
+            log.info(f"HUD '{key}' not in /min mode but skipping toggle — already clicked this tick")
         return None
 
     cash_pm = _sample("cash", ctx._cash_samples)

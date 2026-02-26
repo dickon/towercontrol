@@ -884,7 +884,7 @@ function renderTimeline(data) {
       borderDash: [5, 3],
       pointRadius: 1.5,
       tension: 0.2,
-      yAxisID: "yRate",
+      yAxisID: "yCoinRate",
     },
     {
       label: "Wave /h",
@@ -967,9 +967,20 @@ function renderTimeline(data) {
         },
         yRate: {
           position: "right",
-          title:    { display: true, text: "/min", color: "#8f8", font: { size: 10 } },
+          title:    { display: true, text: "Cash /min", color: "#8f8", font: { size: 10 } },
           ticks: {
             color: "#8f8",
+            font:  { size: 10 },
+            callback(v) { return _fmtRate(v); },
+          },
+          grid: { drawOnChartArea: false },
+        },
+        yCoinRate: {
+          position: "right",
+          offset: true,
+          title:    { display: true, text: "Coin /min", color: "#f9a", font: { size: 10 } },
+          ticks: {
+            color: "#f9a",
             font:  { size: 10 },
             callback(v) { return _fmtRate(v); },
           },
