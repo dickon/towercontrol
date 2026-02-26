@@ -39,23 +39,6 @@ import pyautogui
 
 PERK_ROWS = [ (0, 0.273), (1, 0.373), (2, 0.473), (3, 0.573), (4, 0.673) ]
 
-# ---------------------------------------------------------------------------
-# Rate display OCR positions (top-left resource panel)
-# The game HUD can show either an absolute balance or a /min rate for each
-# resource.  We need the rate view; clicking the number toggles the mode.
-# ---------------------------------------------------------------------------
-_RATE_CASH_FX  = 0.33    # fractional x centre of the cash /min label
-_RATE_CASH_FY  = 0.05    # fractional y centre of the cash /min label
-_RATE_COIN_FX  = 0.33    # fractional x centre of the coin /min label
-_RATE_COIN_FY  = 0.09    # fractional y centre of the coin /min label
-_RATE_GEM_FX   = 0.33    # fractional x centre of the gem /min label
-_RATE_GEM_FY   = 0.01295 # fractional y centre of the gem /min label
-_RATE_SEARCH_DX = 0.14   # ± x search window around each target
-_RATE_SEARCH_DY = 0.018  # ± y search window around each target
-_RATE_SAMPLE_INTERVAL = 20.0  # seconds between rate samples
-_RATE_TOGGLE_WAIT    = 2.5    # seconds to wait after clicking before re-reading
-_RATE_HISTORY_MAX    = 7200   # max entries (~40 h at 20 s interval)
-
 # Upgrade button positions (6 buttons in 3 rows × 2 columns)
 # Format: (index, y_fraction, x_range)
 # X ranges extended to capture prices displayed on the right side of buttons
@@ -1118,76 +1101,6 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
             log.debug(f"Wave not found. OCR results: {[r.text for r in frame.results]}")
 
     return None, None
-
-
-# ── Rate-value OCR  (cash/min, coin/min) ────────────────────────────────────
-
-def read_rate_values(frame: "OCRFrame") -> Optional[dict]:
-    """Scan OCR results for cash/min and coin/min labels.
-
-    Each resource value is displayed near a fixed (fx, fy) position in the
-    top-left HUD.  When the game is in *rate* mode the text looks like
-    ``1.23M /min`` or ``450K/min``; in *absolute* mode there is no ``/min``
-    suffix.
-
-    Returns
-    -------
-    dict with keys ``cash_pm`` and ``coin_pm`` (floats) if *both* values
-    were found in rate mode, otherwise None.
-    """
-    log = logging.getLogger(__name__)
-
-    targets = [
-        ("cash",  _RATE_CASH_FX,  _RATE_CASH_FY),
-        ("coin",  _RATE_COIN_FX,  _RATE_COIN_FY),
-    ]
-    # pattern matches an optional number + optional suffix + /min
-    # e.g. "1.23M/min", "450K /min", "12,345 /min", "/min" alone
-    rate_pattern = re.compile(
-        r'([0-9][0-9,.]*)\s*([KMBTkmbt])?\s*/\s*min',
-        re.IGNORECASE
-    )
-
-    found: dict = {}
-    for name, fx, fy in targets:
-        candidates = [
-            r for r in frame.results
-            if abs(r.fx - fx) < _RATE_SEARCH_DX
-            and abs(r.fy - fy) < _RATE_SEARCH_DY
-        ]
-        log.debug(
-            "rate_values [%s]: searching near (%.4f, %.4f) ±(%.4f, %.4f) → %d candidate(s): %s",
-            name, fx, fy, _RATE_SEARCH_DX, _RATE_SEARCH_DY,
-            len(candidates),
-            [(r.text, round(r.fx, 4), round(r.fy, 4)) for r in candidates],
-        )
-        for r in candidates:
-            m = rate_pattern.search(r.text)
-            if m:
-                raw_num   = m.group(1).replace(',', '')
-                suffix    = (m.group(2) or '').upper()
-                mult      = {'K': 1e3, 'M': 1e6, 'B': 1e9, 'T': 1e12}.get(suffix, 1.0)
-                value     = float(raw_num) * mult
-                found[name] = value
-                log.debug(
-                    "rate_values [%s]: matched '/min' in '%s' at (%.4f, %.4f) → %.4g /min",
-                    name, r.text, r.fx, r.fy, value,
-                )
-                break
-        else:
-            log.debug(
-                "rate_values [%s]: no '/min' match among candidates %s",
-                name,
-                [r.text for r in candidates],
-            )
-
-    if len(found) == 2:
-        log.info(
-            "rate_values: cash=%.4g /min  coin=%.4g /min",
-            found["cash"], found["coin"],
-        )
-        return {"cash_pm": found["cash"], "coin_pm": found["coin"]}
-    return None
 
 
 def do_click(message, click_x_frac, click_y_frac):
@@ -3043,11 +2956,6 @@ class RuntimeContext:
     last_game_ui_seen: float = 0.0    # timestamp game UI (wave/upgrades) was last visible
     last_wave_advance: float = 0.0    # timestamp when wave number last increased
     hard_restart_running: bool = False  # True while post-start sequence is running
-    # Rate (cash/min, coin/min) sampling
-    rate_history: list = field(default_factory=list)  # [{timestamp, wave, cash_pm, coin_pm}]
-    rate_toggle_pending: bool = False    # True right after clicking to switch to rate view
-    rate_toggle_clicked_at: float = 0.0  # timestamp of last toggle click
-    rate_last_sampled_at: float = 0.0    # timestamp of last successful sample
 
     def update_window(self):
         """Update window rect if needed."""
@@ -3066,80 +2974,6 @@ def mark_battle_start():
     ctx.upgrade_scroll_start = 0.0
     ctx.upgrade_scroll_direction = 'down'
     ctx.no_perk_until = 0.0
-
-
-def check_and_sample_rates():
-    """Read cash/min and coin/min from the HUD; toggle to rate mode if needed.
-
-    Designed to be called on every 'main' mode tick.  Internally rate-limits
-    itself to at most one sample per ``_RATE_SAMPLE_INTERVAL`` seconds so it
-    does not produce spammy entries.
-
-    Side effects
-    ------------
-    * May inject a click at (_RATE_CASH_FX, _RATE_CASH_FY) to toggle rate mode.
-    * Appends ``{timestamp, wave, cash_pm, coin_pm}`` to ``ctx.rate_history``
-      when both values are successfully read.
-    """
-    global ctx
-    log = logging.getLogger(__name__)
-
-    if ctx.frame is None:
-        return
-
-    now = time.time()
-
-    # ── Respect toggle stabilisation delay ──────────────────────────────────
-    if ctx.rate_toggle_pending:
-        elapsed = now - ctx.rate_toggle_clicked_at
-        if elapsed < _RATE_TOGGLE_WAIT:
-            log.debug(
-                "check_and_sample_rates: waiting %.1fs for toggle to stabilise (%.1fs elapsed)",
-                _RATE_TOGGLE_WAIT - elapsed, elapsed,
-            )
-            return
-        # Enough time has passed; clear the pending flag and try to read
-        ctx.rate_toggle_pending = False
-        log.debug("check_and_sample_rates: toggle stabilisation wait complete")
-
-    # ── Rate-limit sampling ──────────────────────────────────────────────────
-    if now - ctx.rate_last_sampled_at < _RATE_SAMPLE_INTERVAL:
-        return
-
-    # ── Attempt to read rate values ─────────────────────────────────────────
-    result = read_rate_values(ctx.frame)
-
-    if result is None:
-        # '/min' labels not visible → click the cash number to toggle rate mode
-        log.info(
-            "check_and_sample_rates: '/min' not found — clicking (%.4f, %.4f) to toggle rate display",
-            _RATE_CASH_FX, _RATE_CASH_FY,
-        )
-        do_click("Toggle rate display (cash number)", _RATE_CASH_FX, _RATE_CASH_FY)
-        ctx.rate_toggle_pending    = True
-        ctx.rate_toggle_clicked_at = now
-        return
-
-    # ── Record sample ────────────────────────────────────────────────────────
-    wave_str = ctx.game_state.wave
-    entry = {
-        "timestamp": now,
-        "wave":      int(wave_str.replace(',', '')) if wave_str else None,
-        "cash_pm":   result["cash_pm"],
-        "coin_pm":   result["coin_pm"],
-    }
-    ctx.rate_history.append(entry)
-    ctx.rate_last_sampled_at = now
-
-    # Cap history length
-    if len(ctx.rate_history) > _RATE_HISTORY_MAX:
-        ctx.rate_history = ctx.rate_history[-_RATE_HISTORY_MAX:]
-
-    log.info(
-        "check_and_sample_rates: recorded sample — wave=%s  cash=%.4g/min  coin=%.4g/min  "
-        "(history size=%d)",
-        entry["wave"], entry["cash_pm"], entry["coin_pm"], len(ctx.rate_history),
-    )
 
 def click_if_present(name, condition, callback=None):
     global ctx
@@ -3473,7 +3307,6 @@ def automation_loop_tick():
         mark_battle_start()
     # Timed upgrade purchasing (only when on main game screen with upgrades visible)
     if mode == 'main':
-        check_and_sample_rates()
         handle_upgrade_action(seen, upgrade_buttons, w, h)
     
     elements = []

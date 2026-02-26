@@ -20,10 +20,12 @@ Usage (from run.py):
 
 import asyncio
 import base64
+import datetime
 import io
 import json
 import logging
 import queue
+import re
 import threading
 import time as _time
 from pathlib import Path
@@ -548,6 +550,116 @@ async def api_params(request: Request):
     if "cloud_grab_enabled" in body:
         c.config = _mod.replace(c.config, cloud_grab_enabled=bool(body["cloud_grab_enabled"]))
     return {"ok": True}
+
+
+# ── Timeline ─────────────────────────────────────────────────────────────────
+
+_CAPTURE_TICK_RE = re.compile(
+    r"capture_"
+    r"(\d{8})_(\d{6})"          # date YYYYMMDD, time HHMMSS
+    r"(?:_\d+)?"                 # optional microseconds field
+    r"(?:_t(\d+))?"              # optional tier  _t6
+    r"(?:_w(\d+))?"              # optional wave  _w3077
+    r"(?:_(ATTACK|DEFENSE|UTILITY))?"  # optional tab
+    r"\.txt$"
+)
+
+_CAPTURE_PNG_RE = re.compile(
+    r"capture_"
+    r"(\d{8})_(\d{6})"          # date YYYYMMDD, time HHMMSS
+    r"(?:_\d+)?"                 # optional microseconds field
+    r"(?:_t(\d+))?"              # optional tier
+    r"(?:_w(\d+))?"              # optional wave
+    r"(?:_(ATTACK|DEFENSE|UTILITY))?"  # optional tab
+    r"\.png$"
+)
+
+
+def _build_png_index(debug_dir: Path) -> tuple[dict, dict]:
+    """Return (plain_index, annotated_index) mapping (date,time,tier,wave,tab) -> filename."""
+    plain: dict = {}
+    annotated: dict = {}
+    for f in debug_dir.glob("capture_*.png"):
+        if f.stem.startswith("capture_annotated_"):
+            # Strip "capture_annotated_" prefix; re-prepend "capture_" for the regex
+            stripped = "capture_" + f.name[len("capture_annotated_"):]
+            m = _CAPTURE_PNG_RE.match(stripped)
+            target = annotated
+        else:
+            m = _CAPTURE_PNG_RE.match(f.name)
+            target = plain
+        if m:
+            key = (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5))
+            target[key] = f.name
+    return plain, annotated
+
+
+@fapp.get("/api/timeline")
+async def api_timeline():
+    """Return wave history, rate history, and debug capture ticks for the timeline chart."""
+    c = _ctx()
+
+    # ── wave history (bot-recorded)
+    wave_history = []
+    if c is not None:
+        for wave_num, ts in (c.game_state.wave_history if c.game_state else []):
+            wave_history.append({"t": ts, "wave": wave_num})
+
+    # ── cash/coin rate history
+    rate_history = list(getattr(c, "rate_history", [])) if c is not None else []
+
+    # ── capture ticks: parse debug dir filenames
+    ticks = []
+    if _debug_dir is not None:
+        plain_idx, anno_idx = _build_png_index(_debug_dir)
+        for f in _debug_dir.glob("capture_*.txt"):
+            if f.stem.startswith("capture_annotated_"):
+                continue
+            m = _CAPTURE_TICK_RE.match(f.name)
+            if not m:
+                continue
+            try:
+                dt = datetime.datetime.strptime(
+                    m.group(1) + m.group(2), "%Y%m%d%H%M%S"
+                )
+                # Treat as local time; convert to UTC epoch
+                ts = dt.timestamp()
+            except ValueError:
+                continue
+            key = (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5))
+            ticks.append({
+                "t":         ts,
+                "wave":      int(m.group(4)) if m.group(4) else None,
+                "tier":      int(m.group(3)) if m.group(3) else None,
+                "tab":       m.group(5),
+                "file":      f.name,
+                "png":       plain_idx.get(key),
+                "png_anno":  anno_idx.get(key),
+            })
+        ticks.sort(key=lambda x: x["t"])
+
+    # ── action history: clicks with fractional coords
+    action_history = []
+    if c is not None and c.game_state:
+        for a in c.game_state.action_history:
+            fx = a.get("fx")
+            fy = a.get("fy")
+            t  = a.get("time")
+            if fx is None or fy is None or t is None:
+                continue
+            action_history.append({
+                "t":      t,
+                "fx":     fx,
+                "fy":     fy,
+                "reason": a.get("reason", ""),
+            })
+
+    return {
+        "wave_history":   wave_history,
+        "rate_history":   rate_history,
+        "capture_ticks":  ticks,
+        "action_history": action_history,
+    }
 
 
 # ---------------------------------------------------------------------------

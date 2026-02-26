@@ -7,6 +7,9 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
         rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
+  <!-- Chart.js + date-fns adapter (bundled, no extra dep needed) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 </head>
 <body class="bg-dark text-light">
 
@@ -20,7 +23,27 @@
   </nav>
 
   <div class="container-fluid mt-3">
+
+    <!-- Timeline ──────────────────────────────────────────────────────────── -->
     <div class="row g-3">
+      <div class="col-12">
+        <div class="card bg-black border-secondary">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span>&#128200; Timeline</span>
+            <div class="d-flex align-items-center gap-2">
+              <span id="timelineStatus" class="text-muted small"></span>
+              <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                      onclick="fetchTimeline()">&#8635; Refresh</button>
+            </div>
+          </div>
+          <div class="card-body p-2" style="height:260px;position:relative">
+            <canvas id="timelineChart"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3 mt-0">
 
       <!-- Left column: game view + OCR list -->
       <div class="col-lg-7">
@@ -252,7 +275,8 @@
 
       </div>
     </div>
-  </div>
+
+  </div><!-- /.container-fluid -->
 
   <script src="/static/app.js"></script>
 </body>

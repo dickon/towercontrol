@@ -7,6 +7,10 @@ let ws      = null;
 let canvas, ctx, overlay, octx;
 let imgNatW = 0, imgNatH = 0;   // natural size of the last received image
 let _clickCrosshair = null;     // {fx, fy} of pinned action crosshair, or null
+let _timelineChart  = null;     // Chart.js instance for the timeline widget
+let _liveImageSrc     = null;     // data-URL of the last live frame (for hover restore)
+let _hoverFile        = null;     // filename currently previewed on timeline hover
+let _timelineActions  = [];       // [{t, fx, fy, reason}] from last timeline fetch
 
 // ── Bootstrap ───────────────────────────────────────────────────────────
 
@@ -23,6 +27,8 @@ document.addEventListener("DOMContentLoaded", () => {
   connectWS();
   connectLog();
   loadParamSchema();
+  fetchTimeline();
+  setInterval(fetchTimeline, 15000);
 });
 
 // ── WebSocket ───────────────────────────────────────────────────────────
@@ -133,18 +139,23 @@ function handleState(s) {
 
   // Image
   if (s.image) {
-    const img = new Image();
-    img.onload = () => {
-      imgNatW       = img.naturalWidth;
-      imgNatH       = img.naturalHeight;
-      canvas.width  = imgNatW;
-      canvas.height = imgNatH;
-      overlay.width  = imgNatW;
-      overlay.height = imgNatH;
-      ctx.drawImage(img, 0, 0);
-      document.getElementById("noImage").style.display = "none";
-    };
-    img.src = "data:image/jpeg;base64," + s.image;
+    const src = "data:image/jpeg;base64," + s.image;
+    _liveImageSrc = src;          // keep a copy for timeline-hover restore
+    // Only update the canvas when not previewing a capture hover
+    if (!_hoverFile) {
+      const img = new Image();
+      img.onload = () => {
+        imgNatW       = img.naturalWidth;
+        imgNatH       = img.naturalHeight;
+        canvas.width  = imgNatW;
+        canvas.height = imgNatH;
+        overlay.width  = imgNatW;
+        overlay.height = imgNatH;
+        ctx.drawImage(img, 0, 0);
+        document.getElementById("noImage").style.display = "none";
+      };
+      img.src = src;
+    }
   }
 
   // Window info
@@ -653,6 +664,7 @@ async function loadParamSchema() {
 
 function buildParamUI(schema) {
   const container = document.getElementById("paramsContainer");
+  if (!container) return;
   container.innerHTML = "";
 
   for (const [key, def] of Object.entries(schema)) {
@@ -723,4 +735,306 @@ function esc(s) {
   const d = document.createElement("div");
   d.textContent = s;
   return d.innerHTML;
+}
+
+// ── Timeline chart ─────────────────────────────────────────────────────────────────
+
+async function fetchTimeline() {
+  const statusEl = document.getElementById("timelineStatus");
+  try {
+    const r = await fetch("/api/timeline");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    renderTimeline(d);
+    if (statusEl) statusEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    console.warn("Timeline fetch failed", e);
+    if (statusEl) statusEl.textContent = `Fetch failed: ${e.message}`;
+  }
+}
+
+function _fmtRate(n) {
+  if (n == null) return "—";
+  if (n >= 1e12) return (n / 1e12).toPrecision(4) + "T";
+  if (n >= 1e9)  return (n / 1e9 ).toPrecision(4) + "B";
+  if (n >= 1e6)  return (n / 1e6 ).toPrecision(4) + "M";
+  if (n >= 1e3)  return (n / 1e3 ).toPrecision(4) + "K";
+  return String(Math.round(n));
+}
+
+function renderTimeline(data) {
+  const cvs = document.getElementById("timelineChart");
+  if (!cvs) return;
+
+  // Build dataset arrays
+  const wavePts = (data.wave_history  || []).map(p => ({ x: p.t * 1000, y: p.wave }));
+
+  const tickPts = (data.capture_ticks || [])
+    .filter(p => p.wave != null)
+    .map(p => ({
+      x: p.t * 1000, y: p.wave,
+      _file: p.file, _tier: p.tier, _tab: p.tab,
+      _png: p.png, _png_anno: p.png_anno,
+    }));
+
+  // Store action history for crosshair overlay during hover
+  _timelineActions = (data.action_history || []);
+
+  const cashPts = (data.rate_history || [])
+    .filter(p => p.cash_pm != null)
+    .map(p => ({ x: p.t * 1000, y: p.cash_pm }));
+
+  const coinPts = (data.rate_history || [])
+    .filter(p => p.coin_pm != null)
+    .map(p => ({ x: p.t * 1000, y: p.coin_pm }));
+
+  const datasets = [
+    {
+      label: "Wave",
+      data: wavePts,
+      borderColor: "#6cf",
+      backgroundColor: "transparent",
+      borderWidth: 1.5,
+      pointRadius: 2,
+      tension: 0.15,
+      yAxisID: "yWave",
+    },
+    {
+      label: "Captures",
+      data: tickPts,
+      borderColor: "#fc3",
+      backgroundColor: "#fc3",
+      borderWidth: 0,
+      pointRadius: 6,
+      pointStyle: "triangle",
+      showLine: false,
+      yAxisID: "yWave",
+    },
+    {
+      label: "Cash /min",
+      data: cashPts,
+      borderColor: "#8f8",
+      backgroundColor: "transparent",
+      borderWidth: 1.5,
+      borderDash: [5, 3],
+      pointRadius: 1.5,
+      tension: 0.2,
+      yAxisID: "yRate",
+    },
+    {
+      label: "Coin /min",
+      data: coinPts,
+      borderColor: "#f9a",
+      backgroundColor: "transparent",
+      borderWidth: 1.5,
+      borderDash: [5, 3],
+      pointRadius: 1.5,
+      tension: 0.2,
+      yAxisID: "yRate",
+    },
+  ];
+
+  // Determine if session spans multiple calendar days
+  const allTs = [
+    ...wavePts.map(p => p.x),
+    ...tickPts.map(p => p.x),
+    ...cashPts.map(p => p.x),
+    ...coinPts.map(p => p.x),
+  ];
+  const multiDay = allTs.length >= 2 &&
+    (new Date(Math.max(...allTs)).toLocaleDateString() !==
+     new Date(Math.min(...allTs)).toLocaleDateString());
+
+  const timeUnit      = multiDay ? "hour"   : "minute";
+  const displayFormat = multiDay ? "MM/dd HH:mm" : "HH:mm";
+
+  const chartConfig = {
+    type: "line",
+    data: { datasets },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: {
+          labels: { color: "#aaa", boxWidth: 12, font: { size: 11 } },
+        },
+        tooltip: {
+          callbacks: {
+            title(items) {
+              if (!items.length) return "";
+              return new Date(items[0].parsed.x).toLocaleTimeString();
+            },
+            label(ci) {
+              const raw = ci.raw;
+              // Capture tick: show filename + tab
+              if (ci.datasetIndex === 1) {
+                const tier = raw._tier ? ` t${raw._tier}` : "";
+                const tab  = raw._tab  ? ` [${raw._tab}]` : "";
+                return `\u{1F4F8}${tier}${tab}  w${raw.y}  ${raw._file}`;
+              }
+              const v = raw.y;
+              if (v == null) return null;
+              return `${ci.dataset.label}: ${_fmtRate(v)}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: "time",
+          time: {
+            unit: timeUnit,
+            tooltipFormat: "HH:mm:ss dd/MM",
+            displayFormats: { minute: displayFormat, hour: displayFormat },
+          },
+          ticks: { color: "#666", maxTicksLimit: 12, font: { size: 10 } },
+          grid:  { color: "#1a1a1a" },
+        },
+        yWave: {
+          position: "left",
+          title:    { display: true, text: "Wave", color: "#6cf", font: { size: 10 } },
+          ticks:    { color: "#6cf", font: { size: 10 } },
+          grid:     { color: "#222" },
+        },
+        yRate: {
+          position: "right",
+          title:    { display: true, text: "/min", color: "#8f8", font: { size: 10 } },
+          ticks: {
+            color: "#8f8",
+            font:  { size: 10 },
+            callback(v) { return _fmtRate(v); },
+          },
+          grid: { drawOnChartArea: false },
+        },
+      },
+    },
+  };
+
+  if (_timelineChart) {
+    // Patch datasets in-place and redraw without animation
+    _timelineChart.data.datasets[0].data = wavePts;
+    _timelineChart.data.datasets[1].data = tickPts;
+    _timelineChart.data.datasets[2].data = cashPts;
+    _timelineChart.data.datasets[3].data = coinPts;
+    _timelineChart.options.scales.x.time.unit           = timeUnit;
+    _timelineChart.options.scales.x.time.displayFormats = { minute: displayFormat, hour: displayFormat };
+    _timelineChart.update("none");
+  } else {
+    _timelineChart = new Chart(cvs, chartConfig);
+    _attachTimelineHover(cvs);
+  }
+}
+
+const _TIMELINE_XHAIR_WINDOW_MS = 30_000;  // ±30 s around cursor
+
+function _attachTimelineHover(cvs) {
+  cvs.addEventListener("mousemove", (e) => {
+    if (!_timelineChart) return;
+    const ticks = _timelineChart.data.datasets[1].data;
+    if (!ticks.length) return;
+
+    // Convert cursor X pixel → chart time value
+    const rect   = cvs.getBoundingClientRect();
+    const xPixel = e.clientX - rect.left;
+    const xScale = _timelineChart.scales.x;
+    const tMs    = xScale.getValueForPixel(xPixel);
+
+    // Find the closest tick by time
+    let best = null, bestDist = Infinity;
+    for (const tick of ticks) {
+      const d = Math.abs(tick.x - tMs);
+      if (d < bestDist) { bestDist = d; best = tick; }
+    }
+    if (!best) return;
+
+    // Load new PNG only when tick changes
+    const file = best._png_anno || best._png;
+    if (file && file !== _hoverFile) {
+      _loadCapturePreview(file);
+    } else if (_hoverFile) {
+      // PNG unchanged — just refresh the crosshairs for the new time
+      _drawTimelineCrosshairs(tMs);
+    }
+
+    // Store current hover time for crosshairs drawn after image load
+    _hoverTimeMs = tMs;
+  });
+
+  cvs.addEventListener("mouseleave", () => {
+    _clearTimelineHover();
+  });
+}
+
+function _loadCapturePreview(filename) {
+  _hoverFile = filename;
+  const img = new Image();
+  img.onload = () => {
+    canvas.width  = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    overlay.width  = img.naturalWidth;
+    overlay.height = img.naturalHeight;
+    ctx.drawImage(img, 0, 0);
+    document.getElementById("noImage").style.display = "none";
+    _drawTimelineCrosshairs(_hoverTimeMs);
+  };
+  img.src = "/debug/" + filename;
+}
+
+function _drawTimelineCrosshairs(tMs) {
+  if (!octx || !overlay.width || !overlay.height) return;
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+
+  if (tMs != null) {
+    const tSec = tMs / 1000;
+    const win  = _TIMELINE_XHAIR_WINDOW_MS / 1000;
+    for (const a of _timelineActions) {
+      if (Math.abs(a.t - tSec) > win) continue;
+      const cx = a.fx * overlay.width;
+      const cy = a.fy * overlay.height;
+      const arm = Math.max(30, overlay.width * 0.03);
+      // Fade older actions
+      const age = Math.abs(a.t - tSec) / win;  // 0=nearest, 1=edge
+      const alpha = 1 - age * 0.7;
+      octx.save();
+      octx.globalAlpha = alpha;
+      octx.strokeStyle = "#ff0";
+      octx.lineWidth   = 2;
+      octx.beginPath(); octx.moveTo(cx - arm, cy); octx.lineTo(cx + arm, cy); octx.stroke();
+      octx.beginPath(); octx.moveTo(cx, cy - arm); octx.lineTo(cx, cy + arm); octx.stroke();
+      octx.beginPath(); octx.arc(cx, cy, 6, 0, Math.PI * 2); octx.stroke();
+      octx.restore();
+    }
+  }
+
+  // Label
+  if (_hoverFile) {
+    octx.save();
+    octx.font = "bold 13px monospace";
+    octx.fillStyle = "#fc3";
+    octx.globalAlpha = 0.9;
+    octx.fillText("\u23F8 " + _hoverFile, 8, overlay.height - 8);
+    octx.restore();
+  }
+}
+
+function _clearTimelineHover() {
+  if (!_hoverFile) return;
+  _hoverFile = null;
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  // Restore the live image if available
+  if (_liveImageSrc) {
+    const img = new Image();
+    img.onload = () => {
+      imgNatW       = img.naturalWidth;
+      imgNatH       = img.naturalHeight;
+      canvas.width  = imgNatW;
+      canvas.height = imgNatH;
+      overlay.width  = imgNatW;
+      overlay.height = imgNatH;
+      ctx.drawImage(img, 0, 0);
+    };
+    img.src = _liveImageSrc;
+  }
 }
