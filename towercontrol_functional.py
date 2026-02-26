@@ -2996,7 +2996,7 @@ class RuntimeContext:
     rate_history: list = field(default_factory=list)  # [{t, cash_pm, coin_pm}] for timeline chart
     _cash_samples: list = field(default_factory=list)  # raw (timestamp, value) for cash rate
     _coin_samples: list = field(default_factory=list)  # raw (timestamp, value) for coin rate
-    _hud_toggle_pending: int = 0  # consecutive ticks where /min not seen but toggle wanted
+    _hud_toggle_pending: dict = field(default_factory=dict)  # key → consecutive ticks where /min not seen but toggle wanted
 
     def update_window(self):
         """Update window rect if needed."""
