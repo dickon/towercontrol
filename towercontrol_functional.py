@@ -3404,9 +3404,9 @@ def automation_loop_tick():
             current_time = time.time()
             new_wave_history = (*ctx.game_state.wave_history, (wave_num, current_time))
 
-            # Keep only last 100 waves
-            if len(new_wave_history) > 100:
-                new_wave_history = new_wave_history[-100:]
+            # Keep last 2 days of wave history
+            _wave_cutoff = current_time - 2 * 86400
+            new_wave_history = tuple((w, t) for w, t in new_wave_history if t >= _wave_cutoff)
 
             # Calculate waves per hour if we have enough history
             if len(new_wave_history) >= 2:
@@ -3481,8 +3481,6 @@ def _update_rate_history(resources: dict) -> None:
     """Sample cash/coin resource values and append a per-minute rate entry to ctx.rate_history."""
     log = logging.getLogger(__name__)
     now = time.time()
-    _RATE_WINDOW_SECS = 300   # use last 5 minutes of samples for rate calculation
-    _MAX_HISTORY = 500        # keep at most this many rate_history entries
 
     # Fractional (fx, fy) HUD positions to click to toggle to /min display mode
     _HUD_TOGGLE_POS = {
@@ -3536,8 +3534,9 @@ def _update_rate_history(resources: dict) -> None:
         return
 
     ctx.rate_history.append({"t": now, "cash_pm": cash_pm, "coin_pm": coin_pm})
-    if len(ctx.rate_history) > _MAX_HISTORY:
-        ctx.rate_history = ctx.rate_history[-_MAX_HISTORY:]
+    # Keep last 2 days of rate history
+    _rate_cutoff = now - 2 * 86400
+    ctx.rate_history = [e for e in ctx.rate_history if e["t"] >= _rate_cutoff]
 
 def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
     if gem_pos:

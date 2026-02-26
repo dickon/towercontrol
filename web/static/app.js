@@ -839,6 +839,9 @@ function renderTimeline(data) {
     .filter(p => p.coin_pm != null)
     .map(p => ({ x: p.t * 1000, y: p.coin_pm }));
 
+  const waveRatePts = (data.wave_rate_history || [])
+    .map(p => ({ x: p.t * 1000, y: p.waves_ph }));
+
   const datasets = [
     {
       label: "Wave",
@@ -883,6 +886,17 @@ function renderTimeline(data) {
       tension: 0.2,
       yAxisID: "yRate",
     },
+    {
+      label: "Wave /h",
+      data: waveRatePts,
+      borderColor: "#c8f",
+      backgroundColor: "transparent",
+      borderWidth: 1.5,
+      borderDash: [3, 3],
+      pointRadius: 1.5,
+      tension: 0.3,
+      yAxisID: "yWaveRate",
+    },
   ];
 
   // Determine if session spans multiple calendar days
@@ -891,6 +905,7 @@ function renderTimeline(data) {
     ...tickPts.map(p => p.x),
     ...cashPts.map(p => p.x),
     ...coinPts.map(p => p.x),
+    ...waveRatePts.map(p => p.x),
   ];
   const multiDay = allTs.length >= 2 &&
     (new Date(Math.max(...allTs)).toLocaleDateString() !==
@@ -960,6 +975,13 @@ function renderTimeline(data) {
           },
           grid: { drawOnChartArea: false },
         },
+        yWaveRate: {
+          position: "right",
+          offset: true,
+          title:    { display: true, text: "w/h", color: "#c8f", font: { size: 10 } },
+          ticks:    { color: "#c8f", font: { size: 10 } },
+          grid:     { drawOnChartArea: false },
+        },
       },
     },
   };
@@ -970,6 +992,7 @@ function renderTimeline(data) {
     _timelineChart.data.datasets[1].data = tickPts;
     _timelineChart.data.datasets[2].data = cashPts;
     _timelineChart.data.datasets[3].data = coinPts;
+    _timelineChart.data.datasets[4].data = waveRatePts;
     _timelineChart.options.scales.x.time.unit           = timeUnit;
     _timelineChart.options.scales.x.time.displayFormats = { minute: displayFormat, hour: displayFormat };
     // Swap in the freshly-built plugin (carries updated _reasonHue closure)

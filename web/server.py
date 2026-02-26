@@ -605,7 +605,9 @@ def _build_png_index(debug_dir: Path) -> tuple[dict, dict]:
 @fapp.get("/api/timeline")
 async def api_timeline():
     """Return wave history, rate history, and debug capture ticks for the timeline chart."""
+    import time as _time
     c = _ctx()
+    _two_days_ago = _time.time() - 2 * 86400
 
     # ── wave history (bot-recorded)
     wave_history = []
@@ -613,10 +615,33 @@ async def api_timeline():
         for wave_num, ts in (c.game_state.wave_history if c.game_state else []):
             wave_history.append({"t": ts, "wave": wave_num})
 
+    # ── wave progression rate (waves/hour) — rolling 10-minute window
+    wave_rate_history: list = []
+    _RATE_WINDOW = 600  # seconds; look back up to 10 minutes to compute local rate
+    if len(wave_history) >= 2:
+        for i, pt in enumerate(wave_history):
+            t_now    = pt["t"]
+            w_now    = pt["wave"]
+            cutoff_t = t_now - _RATE_WINDOW
+            # Find the furthest-back point within the window
+            anchor = None
+            for j in range(i - 1, -1, -1):
+                if wave_history[j]["t"] >= cutoff_t:
+                    anchor = wave_history[j]
+                else:
+                    break
+            if anchor is None and i > 0:
+                anchor = wave_history[0]
+            if anchor is not None:
+                dt = t_now - anchor["t"]
+                dw = w_now - anchor["wave"]
+                if dt > 0 and dw >= 0:
+                    wave_rate_history.append({"t": t_now, "waves_ph": round(dw / dt * 3600, 2)})
+
     # ── cash/coin rate history
     rate_history = list(getattr(c, "rate_history", [])) if c is not None else []
 
-    # ── capture ticks: parse debug dir filenames
+    # ── capture ticks: parse debug dir filenames (last 2 days only)
     ticks = []
     if _debug_dir is not None:
         plain_idx, anno_idx = _build_png_index(_debug_dir)
@@ -633,6 +658,8 @@ async def api_timeline():
                 # Treat as local time; convert to UTC epoch
                 ts = dt.timestamp()
             except ValueError:
+                continue
+            if ts < _two_days_ago:
                 continue
             key = (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5))
             ticks.append({
@@ -663,10 +690,11 @@ async def api_timeline():
             })
 
     return {
-        "wave_history":   wave_history,
-        "rate_history":   rate_history,
-        "capture_ticks":  ticks,
-        "action_history": action_history,
+        "wave_history":      wave_history,
+        "wave_rate_history": wave_rate_history,
+        "rate_history":      rate_history,
+        "capture_ticks":     ticks,
+        "action_history":    action_history,
     }
 
 
