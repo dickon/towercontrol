@@ -57,3 +57,13 @@ body {
 dl dt                { color: #aaa; }
 dl dd                { color: #fff; }
 #actionLog .text-muted  { color: #aaa !important; }
+
+/* Timeline overview (Ableton-style range navigator) */
+#timelineOverview {
+  background: #080808;
+  border-radius: 2px;
+  border-top: 1px solid #2a2a2a;
+  /* Prevent text selection while dragging the window */
+  user-select: none;
+  -webkit-user-select: none;
+}

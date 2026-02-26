@@ -16,6 +16,17 @@ let _timelineActions   = [];       // [{t, fx, fy, reason}] from last timeline f
 let _timelineSeq       = null;     // last timeline_seq seen via WebSocket
 let _clickInjectionEnabled = false; // toggled by chkClickInject; off by default
 
+// ── Timeline overview (Ableton-style range navigator) ────────────────────────
+let _overviewDataMinT   = 0;      // ms – earliest point in full dataset
+let _overviewDataMaxT   = 0;      // ms – latest point in full dataset
+let _viewMinT           = 0;      // ms – left edge of zoom window (0 = uninitialised)
+let _viewMaxT           = 0;      // ms – right edge of zoom window
+let _overviewWavePts    = [];     // wave series for minimap drawing
+let _overviewActTs      = [];     // action timestamps (ms) for tick marks
+let _ovDrag             = null;   // active drag state
+let _overviewInitialized = false; // true after first data paint
+const _OV_EDGE_PX = 10;          // px from window edge that counts as resize handle
+
 // ── Bootstrap ───────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -907,6 +918,34 @@ function renderTimeline(data) {
     ...coinPts.map(p => p.x),
     ...waveRatePts.map(p => p.x),
   ];
+
+  // ── Store overview data ────────────────────────────────────────────────────
+  _overviewWavePts = wavePts;
+  _overviewActTs   = _timelineActions.map(a => a.t * 1000);
+  if (allTs.length > 0) {
+    const prevDataMaxT    = _overviewDataMaxT;
+    _overviewDataMinT     = Math.min(...allTs);
+    const newDataMaxT     = Math.max(...allTs);
+
+    if (!_overviewInitialized) {
+      // First paint: show full data extent
+      _overviewDataMaxT = newDataMaxT;
+      _viewMinT = _overviewDataMinT;
+      _viewMaxT = _overviewDataMaxT;
+      _overviewInitialized = true;
+    } else {
+      // Auto-follow: if the right edge of the window was at (or within 2 s of)
+      // the right edge of the data, slide the window forward with the new data.
+      const _AT_RIGHT_EDGE = prevDataMaxT > 0 && (_viewMaxT >= prevDataMaxT - 2000);
+      _overviewDataMaxT = newDataMaxT;
+      if (_AT_RIGHT_EDGE && newDataMaxT > prevDataMaxT) {
+        const winSpan = _viewMaxT - _viewMinT;
+        _viewMaxT = _overviewDataMaxT;
+        _viewMinT = _viewMaxT - winSpan;
+      }
+    }
+  }
+
   const multiDay = allTs.length >= 2 &&
     (new Date(Math.max(...allTs)).toLocaleDateString() !==
      new Date(Math.min(...allTs)).toLocaleDateString());
@@ -951,6 +990,8 @@ function renderTimeline(data) {
       scales: {
         x: {
           type: "time",
+          min: _viewMinT || undefined,
+          max: _viewMaxT || undefined,
           time: {
             unit: timeUnit,
             tooltipFormat: "HH:mm:ss dd/MM",
@@ -1006,13 +1047,19 @@ function renderTimeline(data) {
     _timelineChart.data.datasets[4].data = waveRatePts;
     _timelineChart.options.scales.x.time.unit           = timeUnit;
     _timelineChart.options.scales.x.time.displayFormats = { minute: displayFormat, hour: displayFormat };
+    _timelineChart.options.scales.x.min = _viewMinT || undefined;
+    _timelineChart.options.scales.x.max = _viewMaxT || undefined;
     // Swap in the freshly-built plugin (carries updated _reasonHue closure)
     _timelineChart.config.plugins = [_clickLinesPlugin];
     _timelineChart.update("none");
   } else {
     _timelineChart = new Chart(cvs, chartConfig);
     _attachTimelineHover(cvs);
+    const ovCvs = document.getElementById("timelineOverview");
+    if (ovCvs) _attachOverviewInteraction(ovCvs);
   }
+  // Repaint the overview strip
+  _renderOverview();
 }
 
 function _attachTimelineHover(cvs) {
@@ -1146,4 +1193,212 @@ function _clearTimelineHover() {
     };
     img.src = _liveImageSrc;
   }
+}
+
+// ── Overview strip helpers ─────────────────────────────────────────────────────
+
+/**
+ * Clamp and apply a new zoom window, then refresh both the main chart and
+ * the overview minimap.
+ */
+function _setViewRange(minT, maxT) {
+  const MIN_SPAN = 60_000; // 1 minute minimum window
+  // Enforce minimum span
+  if (maxT - minT < MIN_SPAN) {
+    const mid = (minT + maxT) / 2;
+    minT = mid - MIN_SPAN / 2;
+    maxT = mid + MIN_SPAN / 2;
+  }
+  // Clamp to data extent
+  if (_overviewDataMaxT > _overviewDataMinT) {
+    if (minT < _overviewDataMinT) { maxT += _overviewDataMinT - minT; minT = _overviewDataMinT; }
+    if (maxT > _overviewDataMaxT) { minT -= maxT - _overviewDataMaxT; maxT = _overviewDataMaxT; }
+    minT = Math.max(minT, _overviewDataMinT);
+    maxT = Math.min(maxT, _overviewDataMaxT);
+  }
+  _viewMinT = minT;
+  _viewMaxT = maxT;
+  if (_timelineChart) {
+    _timelineChart.options.scales.x.min = minT;
+    _timelineChart.options.scales.x.max = maxT;
+    _timelineChart.update("none");
+  }
+  _renderOverview();
+}
+
+/** Draw the full-extent minimap with a highlighted window rect. */
+function _renderOverview() {
+  const cvs = document.getElementById("timelineOverview");
+  if (!cvs) return;
+  const cssRect = cvs.getBoundingClientRect();
+  const W = cssRect.width, H = cssRect.height;
+  if (W <= 0 || H <= 0) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  // Only resize backing store when CSS size changes (resizing clears the canvas)
+  const needW = Math.round(W * dpr), needH = Math.round(H * dpr);
+  if (cvs.width !== needW || cvs.height !== needH) {
+    cvs.width  = needW;
+    cvs.height = needH;
+  }
+  const c = cvs.getContext("2d");
+  c.setTransform(dpr, 0, 0, dpr, 0, 0); // work in CSS pixels
+
+  const dMin = _overviewDataMinT, dMax = _overviewDataMaxT;
+  const span = dMax - dMin || 1;
+  const toPx = ms => ((ms - dMin) / span) * W;
+
+  // Background
+  c.fillStyle = "#080808";
+  c.fillRect(0, 0, W, H);
+
+  // Mini wave line
+  if (_overviewWavePts.length >= 2) {
+    const ys    = _overviewWavePts.map(p => p.y);
+    const wMin  = Math.min(...ys), wMax = Math.max(...ys);
+    const wSpan = wMax - wMin || 1;
+    c.beginPath();
+    c.strokeStyle = "rgba(102,204,255,0.55)";
+    c.lineWidth   = 1;
+    for (let i = 0; i < _overviewWavePts.length; i++) {
+      const p  = _overviewWavePts[i];
+      const px = toPx(p.x);
+      const py = H - 4 - ((p.y - wMin) / wSpan) * (H - 10);
+      i === 0 ? c.moveTo(px, py) : c.lineTo(px, py);
+    }
+    c.stroke();
+  }
+
+  // Action tick marks at the bottom edge
+  c.strokeStyle = "rgba(255,195,50,0.45)";
+  c.lineWidth   = 1;
+  for (const tMs of _overviewActTs) {
+    const px = toPx(tMs);
+    c.beginPath(); c.moveTo(px, H - 5); c.lineTo(px, H); c.stroke();
+  }
+
+  // Dim regions outside the current view window
+  const vL = Math.max(0, toPx(_viewMinT));
+  const vR = Math.min(W, toPx(_viewMaxT));
+  c.fillStyle = "rgba(0,0,0,0.52)";
+  c.fillRect(0, 0, vL, H);
+  c.fillRect(vR, 0, W - vR, H);
+
+  // Window border
+  c.strokeStyle = "rgba(255,255,255,0.80)";
+  c.lineWidth   = 1.5;
+  const winW    = Math.max(vR - vL - 1.5, 0);
+  c.strokeRect(vL + 0.75, 0.75, winW, H - 1.5);
+
+  // Resize handle ticks on left/right window edges
+  const hH = Math.round(H * 0.45), hY = Math.round((H - hH) / 2);
+  c.fillStyle = "rgba(255,255,255,0.65)";
+  if (vL + 5 < vR - 7) {               // only draw if window is wide enough
+    c.fillRect(vL + 3, hY, 2, hH);
+    c.fillRect(vR - 5, hY, 2, hH);
+  }
+
+  // Time labels at window edges
+  c.save();
+  c.font         = "9px monospace";
+  c.fillStyle    = "rgba(255,255,255,0.55)";
+  const fmtT     = ms => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const leftLbl  = fmtT(_viewMinT);
+  const rightLbl = fmtT(_viewMaxT);
+  const lw       = c.measureText(leftLbl).width;
+  const rw       = c.measureText(rightLbl).width;
+  // Left label: just to the right of the left edge (flip inside if too close to left border)
+  const lx = vL + 4 + lw < vR - rw - 8 ? vL + 4 : vL + 4;
+  c.textAlign  = "left";
+  c.fillText(leftLbl, Math.max(2, vL + 4), H - 3);
+  // Right label: just to the left of the right edge
+  c.textAlign  = "right";
+  c.fillText(rightLbl, Math.min(W - 2, vR - 4), H - 3);
+  c.restore();
+}
+
+/** Convert a clientX coordinate to a millisecond timestamp on the overview canvas. */
+function _ovToMs(clientX) {
+  const cvs  = document.getElementById("timelineOverview");
+  if (!cvs) return 0;
+  const rect = cvs.getBoundingClientRect();
+  const span = _overviewDataMaxT - _overviewDataMinT || 1;
+  return _overviewDataMinT + ((clientX - rect.left) / rect.width) * span;
+}
+
+/** Determine the drag mode given a clientX on the overview canvas. */
+function _ovGetMode(clientX) {
+  const cvs  = document.getElementById("timelineOverview");
+  if (!cvs) return "jump";
+  const rect = cvs.getBoundingClientRect();
+  const W    = rect.width;
+  const span = _overviewDataMaxT - _overviewDataMinT || 1;
+  const px   = clientX - rect.left;
+  const vL   = ((_viewMinT - _overviewDataMinT) / span) * W;
+  const vR   = ((_viewMaxT - _overviewDataMinT) / span) * W;
+  if (Math.abs(px - vL) <= _OV_EDGE_PX) return "resizeL";
+  if (Math.abs(px - vR) <= _OV_EDGE_PX) return "resizeR";
+  if (px >= vL && px <= vR)              return "pan";
+  return "jump";
+}
+
+/** Attach all mouse / wheel interaction to the overview canvas. */
+function _attachOverviewInteraction(cvs) {
+  cvs.addEventListener("mousemove", (e) => {
+    if (_ovDrag) {
+      const ms   = _ovToMs(e.clientX);
+      const dxMs = ms - _ovToMs(_ovDrag.startClientX);
+      if (_ovDrag.mode === "pan") {
+        const winSpan = _ovDrag.startVMax - _ovDrag.startVMin;
+        _setViewRange(_ovDrag.startVMin + dxMs, _ovDrag.startVMax + dxMs);
+      } else if (_ovDrag.mode === "resizeL") {
+        _setViewRange(ms, _viewMaxT);
+      } else if (_ovDrag.mode === "resizeR") {
+        _setViewRange(_viewMinT, ms);
+      } else {
+        // jump-drag: keep window width, slide centre to cursor
+        const halfSpan = (_viewMaxT - _viewMinT) / 2;
+        _setViewRange(ms - halfSpan, ms + halfSpan);
+      }
+    } else {
+      const mode = _ovGetMode(e.clientX);
+      cvs.style.cursor = (mode === "resizeL" || mode === "resizeR") ? "ew-resize"
+                        : mode === "pan"                            ? "grab"
+                        :                                            "crosshair";
+    }
+  });
+
+  cvs.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    const mode = _ovGetMode(e.clientX);
+    _ovDrag = { mode, startClientX: e.clientX, startVMin: _viewMinT, startVMax: _viewMaxT };
+    cvs.style.cursor = "grabbing";
+    if (mode === "jump") {
+      // Immediately centre window on click position
+      const ms = _ovToMs(e.clientX);
+      const halfSpan = (_viewMaxT - _viewMinT) / 2;
+      _setViewRange(ms - halfSpan, ms + halfSpan);
+    }
+  });
+
+  // Release anywhere in the page
+  window.addEventListener("mouseup", () => { if (_ovDrag) _ovDrag = null; });
+
+  // Scroll wheel: zoom window in/out around cursor position
+  cvs.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const factor   = e.deltaY > 0 ? 1.3 : (1 / 1.3);
+    const cursorMs = _ovToMs(e.clientX);
+    const lFrac    = (_viewMaxT - _viewMinT) > 0
+                     ? (cursorMs - _viewMinT) / (_viewMaxT - _viewMinT)
+                     : 0.5;
+    const newSpan  = (_viewMaxT - _viewMinT) * factor;
+    _setViewRange(cursorMs - lFrac * newSpan, cursorMs + (1 - lFrac) * newSpan);
+  }, { passive: false });
+
+  // Double-click: reset to full data extent
+  cvs.addEventListener("dblclick", () => {
+    if (_overviewDataMaxT > _overviewDataMinT)
+      _setViewRange(_overviewDataMinT, _overviewDataMaxT);
+  });
 }
