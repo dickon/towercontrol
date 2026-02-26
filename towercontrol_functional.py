@@ -2475,7 +2475,7 @@ def detect_template_in_region(
 
         result = cv2.matchTemplate(search_region, template, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
-        log.debug('%s template check: max_val=%.3f at location %s', label, max_val, max_loc)
+        log.info('%s template check: max_val=%.3f at location %s', label, max_val, max_loc)
         if max_val >= threshold:
             match_x = max_loc[0] + x_start + template.shape[1] // 2
             match_y = max_loc[1] + y_start + template.shape[0] // 2
@@ -2996,7 +2996,7 @@ class RuntimeContext:
     rate_history: list = field(default_factory=list)  # [{t, cash_pm, coin_pm}] for timeline chart
     _cash_samples: list = field(default_factory=list)  # raw (timestamp, value) for cash rate
     _coin_samples: list = field(default_factory=list)  # raw (timestamp, value) for coin rate
-    _hud_toggle_pending: dict = field(default_factory=dict)  # key → consecutive ticks where /min not seen but toggle wanted
+    _hud_toggle_pending: int = 0  # consecutive ticks where /min not seen but toggle wanted
 
     def update_window(self):
         """Update window rect if needed."""
@@ -3506,12 +3506,12 @@ def _detect_slashmin(img: Optional[Image.Image]) -> Optional[bool]:
     log = logging.getLogger(__name__)
     x0, y0, x1, y1 = _SLASHMIN_REGION
     match = detect_template_in_region(
-        img, ctx.slashmin_template, "/min HUD", x0, y0, x1, y1, threshold=0.70
+        img, ctx.slashmin_template, "/min HUD", x0, y0, x1, y1, threshold=0.35
     )
     if match is not None:
         log.info("/min template matched at %s — HUD is in rate mode", match)
         return True
-    log.debug("/min template not found — HUD is in absolute-value mode")
+    log.info("/min template not found — HUD is in absolute-value mode")
     return False
 
 
@@ -3527,14 +3527,12 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
     # back to absolute-value mode.
     toggled_this_tick: list = []  # mutable cell shared across _sample calls
 
-    def _sample(key: str, samples: list) -> Optional[float]:
-        """Return a per-minute rate for the resource.
+    def _sample(key: str) -> Optional[float]:
+        """Return a per-minute rate for the given resource key, or None.
 
-        If the HUD is in rate-display mode (detected via template matching or
-        OCR regex) the value is used directly.  Otherwise the HUD is clicked
-        once this tick to switch it to /min mode and None is returned;
-        subsequent resources that also need toggling are skipped to avoid a
-        double-click that would revert back to absolute-value display.
+        If the HUD is in rate-display mode the raw OCR text is parsed and
+        returned directly.  Otherwise the HUD label is clicked (once per tick)
+        to switch it to /min mode and None is returned so we try again next tick.
         """
         raw = resources.get(key)
         if raw is None:
@@ -3582,8 +3580,8 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
             log.info(f"HUD '{key}' not in /min mode but skipping toggle — already clicked this tick")
         return None
 
-    cash_pm = _sample("cash", ctx._cash_samples)
-    coin_pm = _sample("gold", ctx._coin_samples)  # "gold" resource covers gold/coins OCR
+    cash_pm = _sample("cash")
+    coin_pm = _sample("gold")  # "gold" resource covers gold/coins OCR
 
     if cash_pm is None and coin_pm is None:
         return
