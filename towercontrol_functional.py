@@ -212,7 +212,7 @@ class Config:
     game_launch_cooldown: float = 90.0       # min seconds between game launch attempts
 
     # Watchdog — wave stall (hard restart)
-    wave_stall_timeout: float = 1200.0       # 20 min: hard-restart if wave hasn't advanced
+    wave_stall_timeout: float = 600.0        # 10 min: hard-restart if wave hasn't advanced
     wave_stall_cooldown: float = 300.0       # min seconds between hard-restart attempts
     bs_post_start_delay: float = 60.0        # seconds after BS launch before pressing home
 
@@ -3638,9 +3638,9 @@ def watchdog_wave_stall_tick():
         return
     if ctx.hard_restart_running:
         return
-    if ctx.last_wave_advance == 0.0:
-        return  # no wave seen yet since startup — nothing to stall on
     now = time.time()
+    if ctx.last_wave_advance == 0.0:
+        ctx.last_wave_advance = now
     stall_seconds = now - ctx.last_wave_advance
     if stall_seconds < ctx.config.wave_stall_timeout:
         return
