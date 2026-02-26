@@ -3465,13 +3465,24 @@ def _update_rate_history(resources: dict) -> None:
     _RATE_WINDOW_SECS = 300   # use last 5 minutes of samples for rate calculation
     _MAX_HISTORY = 500        # keep at most this many rate_history entries
 
+    # Fractional (fx, fy) HUD positions to click to toggle to /min display mode
+    _HUD_TOGGLE_POS = {
+        "cash": (0.351, 0.048),
+        "gold": (0.362, 0.083),
+    }
+
+    # Only one toggle click per tick — a second click would flip the same HUD
+    # back to absolute-value mode.
+    toggled_this_tick: list = []  # mutable cell shared across _sample calls
+
     def _sample(key: str, samples: list) -> Optional[float]:
         """Return a per-minute rate for the resource.
 
         If the raw text already contains '/min' (game is in rate-display mode)
-        the value is used directly without derivative computation.  Otherwise
-        absolute samples are accumulated and the gross-income derivative is
-        returned.
+        the value is used directly.  Otherwise the HUD is clicked once this
+        tick to switch it to /min mode and None is returned; subsequent
+        resources that also need toggling are skipped to avoid a double-click
+        that would revert back to absolute-value display.
         """
         raw = resources.get(key)
         if raw is None:
@@ -3485,26 +3496,17 @@ def _update_rate_history(resources: dict) -> None:
             log.debug(f"Direct /min rate: {key}={value:.0f}")
             return value
 
-        # Absolute-value display — derive rate from sample history.
-        value = _parse_resource_value(raw)
-        if value is None or value < 0:
-            return None
-        samples.append((now, value))
-        # Trim to window
-        cutoff = now - _RATE_WINDOW_SECS
-        while samples and samples[0][0] < cutoff:
-            samples.pop(0)
-        if len(samples) < 2:
-            return None
-        # Sum only positive increments (gross income rate; spending dips are ignored)
-        total_gain = sum(
-            max(0.0, samples[i][1] - samples[i - 1][1])
-            for i in range(1, len(samples))
-        )
-        window_dt = samples[-1][0] - samples[0][0]
-        if window_dt <= 0:
-            return None
-        return total_gain / window_dt * 60.0  # per minute
+        # Not in /min mode — click the HUD value to toggle the display, but
+        # only if nothing else has been clicked this tick.
+        if not toggled_this_tick:
+            fx, fy = _HUD_TOGGLE_POS.get(key, (0.0, 0.0))
+            if fx:
+                log.info(f"HUD '{key}' not in /min mode ('{raw}') — clicking ({fx}, {fy}) to toggle")
+                do_click(f"Toggle {key} HUD to /min", fx, fy)
+                toggled_this_tick.append(key)
+        else:
+            log.debug(f"HUD '{key}' not in /min mode but skipping toggle — already clicked this tick")
+        return None
 
     cash_pm = _sample("cash", ctx._cash_samples)
     coin_pm = _sample("gold", ctx._coin_samples)  # "gold" resource covers gold/coins OCR
