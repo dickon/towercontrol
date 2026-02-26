@@ -3315,7 +3315,10 @@ def automation_loop_tick():
     
     elements = []
     resources = {}
-    
+
+    # Regex for bare numeric HUD values (e.g. "232M/min", "5.3B", "1.2K/s")
+    _HUD_VAL_RE = re.compile(r'^[0-9,.]+\s*[KMBTkmbt]?(?:/\w+)?$')
+
     for ocr in frame.results:
         elem = classify_ocr_result(ocr)
         if elem:
@@ -3324,6 +3327,21 @@ def automation_loop_tick():
                 resources[elem.name] = elem.text
             elif elem.element_type == "button":
                 log.debug(f"Button classified: '{elem.text}' at {elem.center}")
+
+        # Position-based cash / coin detection.
+        # In the game HUD the cash value sits at ~(0.35, 0.048) and the
+        # coin/gold value at ~(0.36, 0.083).  These are bare numbers (e.g.
+        # "5.3B" or "232M/min") that classify_ocr_result never classifies
+        # as a resource because it looks for "cash 5.3B" in a single string.
+        if _HUD_VAL_RE.match(ocr.text.strip()):
+            # Use separate x/y bounds so the two closely-spaced HUD rows
+            # (cash at y≈0.048, coin at y≈0.083) don't cross-match.
+            if "cash" not in resources and abs(ocr.fx - 0.351) < 0.09 and abs(ocr.fy - 0.048) < 0.018:
+                resources["cash"] = ocr.text
+                log.debug(f"Position-based cash: '{ocr.text}' at ({ocr.fx:.3f}, {ocr.fy:.3f})")
+            elif "gold" not in resources and abs(ocr.fx - 0.362) < 0.09 and abs(ocr.fy - 0.083) < 0.018:
+                resources["gold"] = ocr.text
+                log.debug(f"Position-based gold/coin: '{ocr.text}' at ({ocr.fx:.3f}, {ocr.fy:.3f})")
 
     screen_state = ScreenState(
         elements=tuple(elements),
@@ -3415,15 +3433,32 @@ def _parse_resource_value(text: str) -> Optional[float]:
 
 def _update_rate_history(resources: dict) -> None:
     """Sample cash/coin resource values and append a per-minute rate entry to ctx.rate_history."""
+    log = logging.getLogger(__name__)
     now = time.time()
     _RATE_WINDOW_SECS = 300   # use last 5 minutes of samples for rate calculation
     _MAX_HISTORY = 500        # keep at most this many rate_history entries
 
     def _sample(key: str, samples: list) -> Optional[float]:
-        """Add a timestamped sample if the resource is readable; return per-minute rate."""
+        """Return a per-minute rate for the resource.
+
+        If the raw text already contains '/min' (game is in rate-display mode)
+        the value is used directly without derivative computation.  Otherwise
+        absolute samples are accumulated and the gross-income derivative is
+        returned.
+        """
         raw = resources.get(key)
         if raw is None:
             return None
+
+        # Game is already showing a rate — use the value directly.
+        if '/min' in raw.lower():
+            value = _parse_resource_value(raw)
+            if value is None or value < 0:
+                return None
+            log.debug(f"Direct /min rate: {key}={value:.0f}")
+            return value
+
+        # Absolute-value display — derive rate from sample history.
         value = _parse_resource_value(raw)
         if value is None or value < 0:
             return None
