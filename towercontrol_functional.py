@@ -1054,6 +1054,9 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
         match = re.search(r'(?:wave|w)[:\s]*([0-9,]+)', text, re.IGNORECASE)
         if match:
             wave_num = match.group(1).replace(',', '')
+            if len(wave_num) < 2:
+                log.debug(f"Wave ignored (single digit, likely OCR error): '{wave_num}' from text '{text}'")
+                continue
             log.debug(f"Wave detected (strategy 1): '{wave_num}' from text '{text}' at ({r.fx:.3f}, {r.fy:.3f})")
             return wave_num, (r.fx, r.fy)
 
@@ -1081,6 +1084,9 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
                             best_candidate = candidate
 
             if best_num and best_candidate:
+                if len(best_num) < 2:
+                    log.debug(f"Wave ignored (single digit, likely OCR error): '{best_num}'")
+                    continue
                 log.debug(f"Wave detected (strategy 2): '{best_num}' at ({best_candidate.fx:.3f}, {best_candidate.fy:.3f})")
                 return best_num, (best_candidate.fx, best_candidate.fy)
 
@@ -1092,6 +1098,9 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
             digits = re.findall(r'[0-9]+', r.text)
             if digits:
                 wave_num = digits[0]
+                if len(wave_num) < 2:
+                    log.debug(f"Wave ignored (single digit, likely OCR error): '{wave_num}' from text '{r.text}'")
+                    continue
                 log.debug(f"Wave detected (strategy 3): '{wave_num}' from text '{r.text}' at ({r.fx:.3f}, {r.fy:.3f})")
                 return wave_num, (r.fx, r.fy)
 
@@ -3368,10 +3377,10 @@ def automation_loop_tick():
         if _HUD_VAL_RE.match(ocr.text.strip()):
             # Use separate x/y bounds so the two closely-spaced HUD rows
             # (cash at y≈0.048, coin at y≈0.083) don't cross-match.
-            if "cash" not in resources and abs(ocr.fx - 0.351) < 0.09 and abs(ocr.fy - 0.048) < 0.018:
+            if "cash" not in resources and abs(ocr.fx - 0.351) < 0.109 and abs(ocr.fy - 0.048) < 0.018:
                 resources["cash"] = ocr.text
                 log.debug(f"Position-based cash: '{ocr.text}' at ({ocr.fx:.3f}, {ocr.fy:.3f})")
-            elif "gold" not in resources and abs(ocr.fx - 0.362) < 0.09 and abs(ocr.fy - 0.083) < 0.018:
+            elif "gold" not in resources and abs(ocr.fx - 0.362) < 0.098 and abs(ocr.fy - 0.083) < 0.018:
                 resources["gold"] = ocr.text
                 log.debug(f"Position-based gold/coin: '{ocr.text}' at ({ocr.fx:.3f}, {ocr.fy:.3f})")
 
