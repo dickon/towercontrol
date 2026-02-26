@@ -3688,33 +3688,23 @@ def watchdog_bluestacks_tick():
     t.start()
 
 
-def _launch_game_adb():
-    """Launch 'The Tower' in BlueStacks via ADB monkey."""
+def launch_game():
+    """Launch the game by starting BlueStacks; OCR will handle navigation from there."""
     global ctx
     log = logging.getLogger(__name__)
-    adb_target = f"{ctx.config.adb_host}:{ctx.config.adb_port}"
-    log.info("Launching game via ADB (%s, package=%s)", adb_target, ctx.config.game_package)
-    adb = ctx.config.adb_exe
+    log.info("Launching game: starting BlueStacks (%s)", ctx.config.bluestacks_exe)
     try:
-        subprocess.run([adb, "connect", adb_target], capture_output=True, timeout=5)
-        result = subprocess.run(
-            [adb, "-s", adb_target, "shell", "monkey",
-             "-p", ctx.config.game_package,
-             "-c", "android.intent.category.LAUNCHER", "1"],
-            capture_output=True, text=True, timeout=15,
+        subprocess.Popen(
+            [ctx.config.bluestacks_exe],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         )
-        if result.returncode == 0:
-            log.info("ADB game launch succeeded")
-        else:
-            log.warning("ADB game launch returned non-zero: %s", result.stderr.strip())
-    except FileNotFoundError:
-        log.error("adb not found (%r) — use --adb-exe to specify the full path", adb)
+        log.info("BlueStacks launched — OCR will handle game navigation")
     except Exception as exc:
-        log.error("ADB game launch failed: %s", exc)
+        log.error("Failed to launch BlueStacks: %s", exc)
 
 
 def watchdog_game_tick():
-    """If game UI has not been visible for game_launch_timeout seconds, launch via ADB."""
+    """If game UI has not been visible for game_launch_timeout seconds, relaunch BlueStacks."""
     global ctx
     log = logging.getLogger(__name__)
     if not ctx.config.game_launch_enabled:
@@ -3728,10 +3718,14 @@ def watchdog_game_tick():
         log.debug("Game launch cooldown active (%.0fs remaining)",
                   ctx.config.game_launch_cooldown - (now - ctx.last_game_launch))
         return
-    log.warning("Game UI not seen for %.0fs — launching game via ADB",
+    log.warning("Game UI not seen for %.0fs — relaunching BlueStacks",
                 now - ctx.last_game_ui_seen)
     ctx.last_game_launch = now
-    #_launch_game_adb()
+
+    _kill_bluestacks()
+    launch_game()
+
+
 
 
 def _kill_bluestacks() -> bool:
@@ -3780,10 +3774,7 @@ def _post_bluestacks_start_sequence():
         time.sleep(delay)
         log.info("Post-start sequence: pressing HOME")
         _adb_press_home()
-        time.sleep(5)
-        log.info("Post-start sequence: launching The Tower")
-        _launch_game_adb()
-        log.info("Post-start sequence: complete")
+        log.info("Post-start sequence: complete — OCR will handle game navigation")
     finally:
         ctx.hard_restart_running = False
 
