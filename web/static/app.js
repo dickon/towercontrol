@@ -934,7 +934,7 @@ function renderTimeline(data) {
             tooltipFormat: "HH:mm:ss dd/MM",
             displayFormats: { minute: displayFormat, hour: displayFormat },
           },
-          ticks: { color: "#666", maxTicksLimit: 12, font: { size: 10 } },
+          ticks: { color: "#999", maxTicksLimit: 12, font: { size: 10 } },
           grid:  { color: "#1a1a1a" },
         },
         yWave: {

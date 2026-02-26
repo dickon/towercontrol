@@ -3425,7 +3425,7 @@ def _update_rate_history(resources: dict) -> None:
         if raw is None:
             return None
         value = _parse_resource_value(raw)
-        if value is None or value <= 0:
+        if value is None or value < 0:
             return None
         samples.append((now, value))
         # Trim to window
@@ -3434,12 +3434,15 @@ def _update_rate_history(resources: dict) -> None:
             samples.pop(0)
         if len(samples) < 2:
             return None
-        t0, v0 = samples[0]
-        t1, v1 = samples[-1]
-        dt = t1 - t0
-        if dt <= 0 or v1 <= v0:
+        # Sum only positive increments (gross income rate; spending dips are ignored)
+        total_gain = sum(
+            max(0.0, samples[i][1] - samples[i - 1][1])
+            for i in range(1, len(samples))
+        )
+        window_dt = samples[-1][0] - samples[0][0]
+        if window_dt <= 0:
             return None
-        return (v1 - v0) / dt * 60.0  # per minute
+        return total_gain / window_dt * 60.0  # per minute
 
     cash_pm = _sample("cash", ctx._cash_samples)
     coin_pm = _sample("gold", ctx._coin_samples)  # "gold" resource covers gold/coins OCR
