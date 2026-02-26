@@ -217,7 +217,7 @@ class Config:
     click_pause: float = 1.0
     swipe_pause: float = 1.0
     input_delay: float = 0.15
-    loop_tick: float = 20.0
+    loop_tick: float = 10.0
     web_host: str = "0.0.0.0"
     web_port: int = 7700
     tab_y: int = 920
@@ -3786,6 +3786,7 @@ def watchdog_game_tick():
     log.warning("Game UI not seen for %.0fs — relaunching BlueStacks",
                 now - ctx.last_game_ui_seen)
     ctx.last_game_launch = now
+    ctx.last_game_ui_seen = now
 
     _kill_bluestacks()
     launch_game()
