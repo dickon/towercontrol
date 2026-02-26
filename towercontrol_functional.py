@@ -37,6 +37,42 @@ from PIL import Image, ImageDraw
 import mss
 import pyautogui
 
+# ── Ad-strip layout constants ─────────────────────────────────────────────────
+# BlueStacks can display a left-side advertising strip that widens the window
+# beyond the pure game-content area.  All fractional X coordinates in this
+# file are calibrated against the *full* (strip-present) layout.
+#
+#   Strip present : window width ≈ 1523 px
+#   Strip absent  : window width ≈ 1203 px   (game content only)
+#   Common height : 2112 px
+#
+# These fractions are derived from those pixel counts and scale correctly
+# if BlueStacks is running at a different zoom / DPI level.
+_LAYOUT_FULL_W  = 1523   # window width when ad strip is visible
+_LAYOUT_GAME_W  = 1203   # window width when ad strip is absent
+_LAYOUT_H       = 2112   # reference height (same in both layouts)
+
+# Fraction of the full-width image taken up by the left ad strip
+STRIP_FRAC   = (_LAYOUT_FULL_W - _LAYOUT_GAME_W) / _LAYOUT_FULL_W   # ≈ 0.2101
+# Fraction of the full-width image occupied by game content (right of strip)
+CONTENT_FRAC = _LAYOUT_GAME_W / _LAYOUT_FULL_W                       # ≈ 0.7899
+# Aspect-ratio midpoint used to decide which layout we have captured
+_STRIP_ASPECT_CUT = (
+    (_LAYOUT_GAME_W / _LAYOUT_H) + (_LAYOUT_FULL_W / _LAYOUT_H)
+) / 2  # ≈ 0.645
+
+
+def has_ad_strip(img_width: int, img_height: int) -> bool:
+    """Return True when the captured image includes the left advertising strip.
+
+    Compares the image aspect ratio against the midpoint between the two known
+    BlueStacks layouts (strip-present ≈ 0.721, strip-absent ≈ 0.570).
+    """
+    if img_height == 0:
+        return True  # can't tell; assume full layout
+    return (img_width / img_height) > _STRIP_ASPECT_CUT
+
+
 PERK_ROWS = [ (0, 0.273), (1, 0.373), (2, 0.473), (3, 0.573), (4, 0.673) ]
 
 # Upgrade button positions (6 buttons in 3 rows × 2 columns)
@@ -208,7 +244,7 @@ class Config:
     adb_host: str = "localhost"
     adb_port: int = 5555
     game_package: str = "com.supersolid.thetower"
-    game_launch_timeout: float = 60.0        # seconds of no-game-UI before ADB launch
+    game_launch_timeout: float = 600.0        # seconds of no-game-UI before ADB launch
     game_launch_cooldown: float = 90.0       # min seconds between game launch attempts
 
     # Watchdog — wave stall (hard restart)
@@ -961,6 +997,28 @@ def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
             except Exception:
                 pass
 
+    # ── Strip-normalisation ───────────────────────────────────────────────────
+    # All hard-coded fx thresholds in this file assume the full-width layout
+    # (strip present, width ≈ 1523 px).  When the strip is absent the captured
+    # image is narrower (≈ 1203 px) so every OCRResult's x coordinate is
+    # shifted left by the missing strip width.  We correct this by adding the
+    # equivalent strip offset to each bbox x-value and reporting a wider
+    # image_size — making all downstream comparisons transparent to the
+    # presence or absence of the strip.
+    if not has_ad_strip(w, h):
+        full_w = int(round(w / CONTENT_FRAC))   # infer what full width would be
+        strip_px = full_w - w                    # pixels missing from the left
+        scaled_results = [
+            OCRResult(
+                text=r.text,
+                bbox=(r.bbox[0] + strip_px, r.bbox[1], r.bbox[2], r.bbox[3]),
+                confidence=r.confidence,
+                image_size=(full_w, h),
+            )
+            for r in scaled_results
+        ]
+        w = full_w  # keep image_size consistent in the returned OCRFrame
+
     # Save preprocessed debug image (first variant)
     try:
         debug_path = config.debug_dir / "preprocessed.png"
@@ -1130,6 +1188,12 @@ def do_click(message, click_x_frac, click_y_frac):
     log = logging.getLogger(__name__)
     w = ctx.window_rect.width
     h = ctx.window_rect.height
+    # All stored click fractions are expressed in the full-width (strip-present)
+    # coordinate frame.  When the window is narrow (strip absent) we translate
+    # the x fraction into the game-content-only frame before converting to pixels.
+    if not has_ad_strip(w, h):
+        click_x_frac = (click_x_frac - STRIP_FRAC) / CONTENT_FRAC
+        click_x_frac = max(0.0, min(1.0, click_x_frac))
     click_x = int(click_x_frac * w)
     click_y = int(click_y_frac * h)
     if ctx.window_rect and ctx.config:
@@ -3099,12 +3163,13 @@ def automation_loop_tick():
     # PRIORITY: Check for "My games" button at the top and click it immediately (template matching)
     if ctx.my_games_template is not None:
         my_games_pos = detect_template_in_region(img, ctx.my_games_template, "My games", 
-                                                  0.2, 0.0, 0.6, 0.15, threshold=0.75)
+                                                  0.2, 0.0, 0.6, 0.15, threshold=0.65)
         if my_games_pos:
             log.info(f"PRIORITY: 'My games' button detected at ({my_games_pos[0]:.4f}, {my_games_pos[1]:.4f}) - clicking and exiting tick")
             do_click("My games button (priority, template match)", my_games_pos[0], my_games_pos[1])
             return  # Exit the tick function immediately
-
+    else:
+        log.info('no my games template loaded, skipping that check')
     # PRIORITY: Check for "The Tower" app icon/text and click it immediately
     tower_marks = [r for r in frame.results if 'Tower' in r.text and r.fy < 0.4 and r.fx > 0.8]
     if tower_marks:
@@ -3196,7 +3261,7 @@ def automation_loop_tick():
             ctx.last_game_ui_seen = time.time()  # upgrade tabs visible → game is running
         else:
             delay = time.time() - ctx.last_seen_upgrades
-            if delay > 15.0 and time.time() - ctx.no_perk_until > 60.0:  # been a while since we've seen upgrade buttons or perk overlay → likely we're in the wrong tab or just finished a battle
+            if wave_num and delay > 15.0 and time.time() - ctx.no_perk_until > 60.0:  # been a while since we've seen upgrade buttons or perk overlay → likely we're in the wrong tab or just finished a battle
                 pos = (0.3865, 0.985) if want_upgrades == 'DEFENSE' else (0.3232, 0.9711) if want_upgrades == 'ATTACK' else (0.7000, 0.9719)
                 do_click(f"Seen no upgrades for {delay} so clicking upgrades tab for {want_upgrades}", pos[0], pos[1])
             
@@ -3333,11 +3398,11 @@ def automation_loop_tick():
             }
     elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 30.0 and ctx.recover_stage == 0:
         # is more than 1 minute since last perk was selected
-        if time.time() - ctx.no_perk_until > 60.0:
+        if time.time() - ctx.no_perk_until > 60.0 and wave_num:
             log.info("No upgrade buttons visible for 30s - clicking low moddle to dismiss popup")
             do_click("Dismiss popup blocking upgrades", 0.58, 0.9)
             ctx.recover_stage = 1
-    elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 45.0 and ctx.recover_stage == 1 and info_marks:
+    elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 45.0 and ctx.recover_stage == 1 and info_marks and wave_num:
         if time.time() - ctx.no_perk_until > 60.0:
             log.info("No upgrade buttons visible for 45s - clicking top right to dismiss wave")
             do_click('Dismiss wave info', 0.9129, 0.1411)
