@@ -3484,48 +3484,44 @@ def _parse_resource_value(text: str) -> Optional[float]:
     return parse_number_with_suffix(m.group(1))
 
 
-# Per-resource HUD regions where the '/min' suffix graphic appears.
-# These are (x0, y0, x1, y1) in normalised image coordinates.
-_HUD_SLASHMIN_REGIONS: dict = {
-    "cash": (0.242, 0.030, 0.560, 0.068),
-    "gold": (0.264, 0.065, 0.560, 0.103),
-}
-
 # Fractional (fx, fy) HUD positions to click to toggle to /min display mode
 _HUD_TOGGLE_POS: dict = {
     "cash": (0.351, 0.048),
     "gold": (0.362, 0.083),
 }
 
+# Single search region covering both HUD rows, centred at (0.4, 0.07).
+_SLASHMIN_REGION: tuple = (0.24, 0.02, 0.56, 0.12)
 
-def _hud_is_rate_mode(key: str, raw: str, img: Optional[Image.Image]) -> bool:
-    """Return True when the HUD value for *key* is currently in /min (rate) display mode.
 
-    Checks via template matching against ``slashmin.png`` first (more robust
-    than OCR text), then falls back to the fuzzy regex ``_MIN_RATE_RE``.
+def _detect_slashmin(img: Optional[Image.Image]) -> Optional[bool]:
+    """Return True/False when slashmin.png template is available, else None (unknown).
+
+    A single match covers both the cash and gold HUD rows because the '/min'
+    graphic is centred at approximately (0.4, 0.07) and both rows fall within
+    the same search region.  Run once per tick and share the result.
     """
+    if ctx.slashmin_template is None or img is None:
+        return None
     log = logging.getLogger(__name__)
-    if ctx.slashmin_template is not None and img is not None:
-        region = _HUD_SLASHMIN_REGIONS.get(key)
-        if region is not None:
-            x0, y0, x1, y1 = region
-            match = detect_template_in_region(
-                img, ctx.slashmin_template, f"{key} /min", x0, y0, x1, y1, threshold=0.70
-            )
-            if match is not None:
-                log.debug("Template confirms %s HUD is in /min mode at %s", key, match)
-                return True
-            # Template present but no match → definitively not in rate mode
-            log.debug("Template found no /min for %s — absolute-value mode", key)
-            return False
-    # No template available — fall back to OCR text heuristic
-    return bool(_MIN_RATE_RE.search(raw))
+    x0, y0, x1, y1 = _SLASHMIN_REGION
+    match = detect_template_in_region(
+        img, ctx.slashmin_template, "/min HUD", x0, y0, x1, y1, threshold=0.70
+    )
+    if match is not None:
+        log.info("/min template matched at %s — HUD is in rate mode", match)
+        return True
+    log.debug("/min template not found — HUD is in absolute-value mode")
+    return False
 
 
 def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> None:
     """Sample cash/coin resource values and append a per-minute rate entry to ctx.rate_history."""
     log = logging.getLogger(__name__)
     now = time.time()
+
+    # Detect /min display mode once for the whole tick (covers both HUD rows).
+    slashmin_present: Optional[bool] = _detect_slashmin(img)
 
     # Only one toggle click per tick — a second click would flip the same HUD
     # back to absolute-value mode.
@@ -3544,8 +3540,10 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
         if raw is None:
             return None
 
-        # Determine display mode — template matching preferred, regex fallback.
-        if _hud_is_rate_mode(key, raw, img):
+        # Determine display mode.  Template result (True/False) takes priority;
+        # fall back to OCR regex only when no template is loaded (None).
+        in_rate_mode = slashmin_present if slashmin_present is not None else bool(_MIN_RATE_RE.search(raw))
+        if in_rate_mode:
             value = _parse_resource_value(raw)
             if value is None or value < 0:
                 return None
