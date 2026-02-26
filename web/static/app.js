@@ -13,6 +13,7 @@ let _hoverFile         = null;     // filename currently previewed on timeline h
 let _hoverTimeMs       = null;     // chart time (ms) at current timeline hover position
 let _timelineHovering  = false;    // true while mouse is over the timeline canvas
 let _timelineActions   = [];       // [{t, fx, fy, reason}] from last timeline fetch
+let _timelineSeq       = null;     // last timeline_seq seen via WebSocket
 let _clickInjectionEnabled = false; // toggled by chkClickInject; off by default
 
 // ── Bootstrap ───────────────────────────────────────────────────────────
@@ -31,7 +32,7 @@ document.addEventListener("DOMContentLoaded", () => {
   connectLog();
   loadParamSchema();
   fetchTimeline();
-  setInterval(fetchTimeline, 15000);
+  setInterval(fetchTimeline, 30000); // fallback poll; real-time updates come via WebSocket
 });
 
 // ── WebSocket ───────────────────────────────────────────────────────────
@@ -232,6 +233,12 @@ function handleState(s) {
   renderPerkHistory(s.perk_selection_history || []);
   renderUpgradePurchaseHistory(s.upgrade_purchase_history || []);
   renderUpgradeAdvanceHistory(s.upgrade_advance_history || []);
+
+  // Refresh timeline whenever the server reports new data (new wave, action, or capture file)
+  if (s.timeline_seq != null && s.timeline_seq !== _timelineSeq) {
+    _timelineSeq = s.timeline_seq;
+    fetchTimeline();
+  }
 }
 
 // ── Context table ────────────────────────────────────────────────────────

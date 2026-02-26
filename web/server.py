@@ -255,6 +255,14 @@ def _build_state() -> dict:
     except Exception as exc:
         logging.getLogger(__name__).warning("ctx_full build error: %s", exc)
 
+    # Lightweight sequence value: increments whenever timeline data changes.
+    # The frontend watches this via WebSocket and refreshes the chart automatically.
+    try:
+        _tl_dir_mt = int((_debug_dir.stat().st_mtime if _debug_dir and _debug_dir.exists() else 0) * 2)
+        state["timeline_seq"] = len(gs.wave_history) + len(gs.action_history) + _tl_dir_mt
+    except Exception:
+        pass
+
     return state
 
 
