@@ -8,9 +8,11 @@ let canvas, ctx, overlay, octx;
 let imgNatW = 0, imgNatH = 0;   // natural size of the last received image
 let _clickCrosshair = null;     // {fx, fy} of pinned action crosshair, or null
 let _timelineChart  = null;     // Chart.js instance for the timeline widget
-let _liveImageSrc     = null;     // data-URL of the last live frame (for hover restore)
-let _hoverFile        = null;     // filename currently previewed on timeline hover
-let _timelineActions  = [];       // [{t, fx, fy, reason}] from last timeline fetch
+let _liveImageSrc      = null;     // data-URL of the last live frame (for hover restore)
+let _hoverFile         = null;     // filename currently previewed on timeline hover
+let _hoverTimeMs       = null;     // chart time (ms) at current timeline hover position
+let _timelineHovering  = false;    // true while mouse is over the timeline canvas
+let _timelineActions   = [];       // [{t, fx, fy, reason}] from last timeline fetch
 
 // ── Bootstrap ───────────────────────────────────────────────────────────
 
@@ -927,13 +929,10 @@ function renderTimeline(data) {
   }
 }
 
-const _TIMELINE_XHAIR_WINDOW_MS = 30_000;  // ±30 s around cursor
-
 function _attachTimelineHover(cvs) {
   cvs.addEventListener("mousemove", (e) => {
     if (!_timelineChart) return;
     const ticks = _timelineChart.data.datasets[1].data;
-    if (!ticks.length) return;
 
     // Convert cursor X pixel → chart time value
     const rect   = cvs.getBoundingClientRect();
@@ -941,25 +940,25 @@ function _attachTimelineHover(cvs) {
     const xScale = _timelineChart.scales.x;
     const tMs    = xScale.getValueForPixel(xPixel);
 
+    // Always update the hover time and refresh crosshairs
+    _timelineHovering = true;
+    _hoverTimeMs = tMs;
+
     // Find the closest tick by time
     let best = null, bestDist = Infinity;
     for (const tick of ticks) {
       const d = Math.abs(tick.x - tMs);
       if (d < bestDist) { bestDist = d; best = tick; }
     }
-    if (!best) return;
 
-    // Load new PNG only when tick changes
-    const file = best._png_anno || best._png;
+    // Load new PNG only when the nearest tick changes
+    const file = best ? (best._png_anno || best._png) : null;
     if (file && file !== _hoverFile) {
-      _loadCapturePreview(file);
-    } else if (_hoverFile) {
-      // PNG unchanged — just refresh the crosshairs for the new time
+      _loadCapturePreview(file);   // draws image then calls _drawTimelineCrosshairs
+    } else {
+      // Tick unchanged (or no PNG) — just refresh crosshairs in place
       _drawTimelineCrosshairs(tMs);
     }
-
-    // Store current hover time for crosshairs drawn after image load
-    _hoverTimeMs = tMs;
   });
 
   cvs.addEventListener("mouseleave", () => {
@@ -986,42 +985,66 @@ function _drawTimelineCrosshairs(tMs) {
   if (!octx || !overlay.width || !overlay.height) return;
   octx.clearRect(0, 0, overlay.width, overlay.height);
 
-  if (tMs != null) {
+  if (tMs != null && _timelineActions.length > 0) {
     const tSec = tMs / 1000;
-    const win  = _TIMELINE_XHAIR_WINDOW_MS / 1000;
+
+    // Find the single nearest action by time
+    let nearest = null, nearestDist = Infinity;
     for (const a of _timelineActions) {
-      if (Math.abs(a.t - tSec) > win) continue;
-      const cx = a.fx * overlay.width;
-      const cy = a.fy * overlay.height;
+      const d = Math.abs(a.t - tSec);
+      if (d < nearestDist) { nearestDist = d; nearest = a; }
+    }
+
+    if (nearest) {
+      const cx  = nearest.fx * overlay.width;
+      const cy  = nearest.fy * overlay.height;
       const arm = Math.max(30, overlay.width * 0.03);
-      // Fade older actions
-      const age = Math.abs(a.t - tSec) / win;  // 0=nearest, 1=edge
-      const alpha = 1 - age * 0.7;
       octx.save();
-      octx.globalAlpha = alpha;
       octx.strokeStyle = "#ff0";
-      octx.lineWidth   = 2;
+      octx.lineWidth   = 2.5;
       octx.beginPath(); octx.moveTo(cx - arm, cy); octx.lineTo(cx + arm, cy); octx.stroke();
       octx.beginPath(); octx.moveTo(cx, cy - arm); octx.lineTo(cx, cy + arm); octx.stroke();
-      octx.beginPath(); octx.arc(cx, cy, 6, 0, Math.PI * 2); octx.stroke();
+      octx.beginPath(); octx.arc(cx, cy, 7, 0, Math.PI * 2); octx.stroke();
+      octx.restore();
+
+      // Tooltip: reason + time delta
+      const dt   = Math.round(nearest.t - tSec);
+      const sign = dt >= 0 ? "+" : "";
+      const tip  = `${nearest.reason || "click"}  (${sign}${dt}s)`;
+      octx.save();
+      octx.font      = "12px monospace";
+      octx.fillStyle = "rgba(0,0,0,0.6)";
+      const tw = octx.measureText(tip).width;
+      const tx = Math.min(cx + 10, overlay.width - tw - 6);
+      const ty = Math.max(cy - 10, 16);
+      octx.fillRect(tx - 2, ty - 13, tw + 4, 16);
+      octx.fillStyle = "#ff0";
+      octx.fillText(tip, tx, ty);
       octx.restore();
     }
   }
 
-  // Label
+  // Bottom filename label
   if (_hoverFile) {
     octx.save();
-    octx.font = "bold 13px monospace";
-    octx.fillStyle = "#fc3";
+    octx.font        = "bold 13px monospace";
     octx.globalAlpha = 0.9;
-    octx.fillText("\u23F8 " + _hoverFile, 8, overlay.height - 8);
+    const label = "\u23F8 " + _hoverFile +
+                  (_timelineActions.length === 0 ? "  [no action data]" : "");
+    octx.fillStyle = "rgba(0,0,0,0.55)";
+    const tw = octx.measureText(label).width;
+    octx.fillRect(4, overlay.height - 22, tw + 8, 18);
+    octx.fillStyle = "#fc3";
+    octx.fillText(label, 8, overlay.height - 8);
     octx.restore();
   }
 }
 
 function _clearTimelineHover() {
-  if (!_hoverFile) return;
-  _hoverFile = null;
+  if (!_timelineHovering) return;
+  _timelineHovering = false;
+  _hoverFile   = null;
+  _hoverTimeMs = null;
   octx.clearRect(0, 0, overlay.width, overlay.height);
   // Restore the live image if available
   if (_liveImageSrc) {
