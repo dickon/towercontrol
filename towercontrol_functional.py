@@ -3353,6 +3353,10 @@ def automation_loop_tick():
     if mode == 'main':
         handle_upgrade_action(seen, upgrade_buttons, w, h)
     
+    # Extract wave first — resource numbers are only meaningful when the HUD
+    # is visible (i.e. when the wave number is detectable).
+    wave, wave_pos = extract_wave_from_frame(frame)
+
     elements = []
     resources = {}
 
@@ -3365,7 +3369,9 @@ def automation_loop_tick():
         elem = classify_ocr_result(ocr)
         if elem:
             elements.append(elem)
-            if elem.element_type == "resource":
+            if wave and elem.element_type == "resource":
+                # Only collect resource values when the wave number is visible —
+                # otherwise we are not on the main HUD and any numbers are noise.
                 resources[elem.name] = elem.text
             elif elem.element_type == "button":
                 log.debug(f"Button classified: '{elem.text}' at {elem.center}")
@@ -3375,7 +3381,8 @@ def automation_loop_tick():
         # coin/gold value at ~(0.36, 0.083).  These are bare numbers (e.g.
         # "5.3B" or "232M/min") that classify_ocr_result never classifies
         # as a resource because it looks for "cash 5.3B" in a single string.
-        if _HUD_VAL_RE.match(ocr.text.strip()):
+        # Skip entirely when the wave number was not found.
+        if wave and _HUD_VAL_RE.match(ocr.text.strip()):
             # Use separate x/y bounds so the two closely-spaced HUD rows
             # (cash at y≈0.048, coin at y≈0.083) don't cross-match.
             if "cash" not in resources and 0.242 <= ocr.fx <= 0.490 and abs(ocr.fy - 0.048) < 0.018:
@@ -3391,18 +3398,7 @@ def automation_loop_tick():
         raw_texts=tuple(r.text for r in frame.results),
         timestamp=time.time()
     )
-    
-    # Update game state (inlined from update_game_state)
-    wave, wave_pos = extract_wave_from_frame(frame)
-    
-    # Also check if wave was classified as a resource
-    if not wave and "wave" in screen_state.resources:
-        wave_text = screen_state.resources["wave"]
-        # Extract just the number from resource text like "Wave 123" or "123"
-        digits = re.findall(r'[0-9,]+', wave_text)
-        if digits:
-            wave = digits[0].replace(',', '')
-    
+
     new_resources = {**ctx.game_state.resources, **screen_state.resources}
     
     # Track wave progress and calculate rate
@@ -3525,7 +3521,7 @@ def _update_rate_history(resources: dict) -> None:
             value = _parse_resource_value(raw)
             if value is None or value < 0:
                 return None
-            log.debug(f"Direct /min rate: {key}={value:.6g}")
+            log.info(f"Direct /min rate: {key}={value:.6g}")
             # Successful /min read — reset any pending toggle counter.
             ctx._hud_toggle_pending.pop(key, None)
             return value
@@ -3546,13 +3542,16 @@ def _update_rate_history(resources: dict) -> None:
 
         # 3 consecutive ticks confirmed — click the HUD value to toggle the
         # display, but only if nothing else has been clicked this tick.
-        ctx._hud_toggle_pending[key] = 0  # reset so next failure starts fresh
         if not toggled_this_tick:
             fx, fy = _HUD_TOGGLE_POS.get(key, (0.0, 0.0))
             if fx:
-                log.info(f"HUD '{key}' not in /min mode ('{raw}') after {_TOGGLE_REQUIRED_TICKS} ticks — clicking ({fx}, {fy}) to toggle")
-                do_click(f"Toggle {key} HUD to /min", fx, fy)
-                toggled_this_tick.append(key)
+                if key == 'cash':
+                    ctx._hud_toggle_pending[key] = 0  # reset so next failure starts fresh
+                    log.info(f"HUD '{key}' not in /min mode ('{raw}') after {_TOGGLE_REQUIRED_TICKS} ticks — clicking ({fx}, {fy}) to toggle")
+                    do_click(f"Toggle {key} HUD to /min", fx, fy)
+                    toggled_this_tick.append(key)
+                else:
+                    log.info(f"Not toggling on {key} to prevent multi-toggles")
         else:
             log.info(f"HUD '{key}' not in /min mode but skipping toggle — already clicked this tick")
         return None
