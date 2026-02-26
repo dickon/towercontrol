@@ -216,6 +216,9 @@ class Config:
     wave_stall_cooldown: float = 300.0       # min seconds between hard-restart attempts
     bs_post_start_delay: float = 60.0        # seconds after BS launch before pressing home
 
+    # Cloud grab warning auto-click
+    cloud_grab_enabled: bool = True          # auto-click Yes on cloud grab warning
+
     @property
     def screenshots_dir(self) -> Path:
         d = self.base_dir / "screenshots"
@@ -3078,6 +3081,16 @@ def automation_loop_tick():
         if resume_pos:
             log.info(f"PRIORITY: 'RESUME BATTLE' button detected at ({resume_pos[0]:.4f}, {resume_pos[1]:.4f}) - clicking and exiting tick")
             do_click("Resume Battle button (priority, template match)", resume_pos[0], resume_pos[1])
+            return  # Exit the tick function immediately
+
+    # PRIORITY: Check for cloud grab warning dialog ("Warning" + "Yes" button)
+    if ctx.config.cloud_grab_enabled:
+        warning_marks = [r for r in frame.results if r.text.lower() == "warning" and r.is_near(0.513, 0.261, 0.05)]
+        yes_marks = [r for r in frame.results if r.text.lower() == "yes" and r.is_near(0.501, 0.541, 0.05)]
+        if warning_marks and yes_marks:
+            log.info(f"PRIORITY: Cloud grab warning detected - clicking Yes at ({yes_marks[0].fx:.4f}, {yes_marks[0].fy:.4f})")
+            execute_click(yes_marks[0].center[0], yes_marks[0].center[1], 
+                         ctx.window_rect, ctx.config, reason="Cloud grab warning Yes button")
             return  # Exit the tick function immediately
 
     # Check for floating gem and click it with dead reckoning

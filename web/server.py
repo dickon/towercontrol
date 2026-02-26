@@ -200,7 +200,7 @@ def _build_state() -> dict:
 
     state["strategy_params"] = {
         "input_enabled": c.input_enabled,
-        "loop_tick":     c.config.loop_tick,
+        "cloud_grab_enabled": c.config.cloud_grab_enabled,
     }
 
     # Watchdog state
@@ -510,11 +510,11 @@ async def api_click(request: Request):
 @fapp.get("/api/params/schema")
 async def api_params_schema():
     return {
-        "loop_tick": {
-            "label": "Loop interval (s)", "type": "number", "min": 1, "max": 60,
-        },
         "input_enabled": {
             "label": "Input enabled", "type": "bool",
+        },
+        "cloud_grab_enabled": {
+            "label": "Cloud Grab", "type": "bool",
         },
     }
 
@@ -543,13 +543,10 @@ async def api_params(request: Request):
     c     = _ctx()
     if c is None:
         return {"ok": False}
-    if "loop_tick" in body:
-        try:
-            c.config = _mod.replace(c.config, loop_tick=float(body["loop_tick"]))
-        except Exception:
-            pass
     if "input_enabled" in body:
         c.input_enabled = bool(body["input_enabled"])
+    if "cloud_grab_enabled" in body:
+        c.config = _mod.replace(c.config, cloud_grab_enabled=bool(body["cloud_grab_enabled"]))
     return {"ok": True}
 
 

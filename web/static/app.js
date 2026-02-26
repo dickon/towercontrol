@@ -276,16 +276,14 @@ function updateWatchdogUI(w) {
   if (!w) return;
   _watchdogState = w;
 
-  const btnWd = document.getElementById("btnWatchdog");
-  const btnGl = document.getElementById("btnGameLaunch");
+  const chkWd = document.getElementById("chkWatchdog");
+  const chkGl = document.getElementById("chkGameLaunch");
   const statusEl = document.getElementById("watchdogStatus");
-  if (btnWd) {
-    btnWd.textContent = "\uD83D\uDC41 Watchdog: " + (w.enabled ? "ON" : "OFF");
-    btnWd.className = "btn btn-sm flex-grow-1 " + (w.enabled ? "btn-success" : "btn-outline-secondary");
+  if (chkWd) {
+    chkWd.checked = !!w.enabled;
   }
-  if (btnGl) {
-    btnGl.textContent = "\uD83C\uDFAE Auto-launch: " + (w.game_launch_enabled ? "ON" : "OFF");
-    btnGl.className = "btn btn-sm flex-grow-1 " + (w.game_launch_enabled ? "btn-success" : "btn-outline-secondary");
+  if (chkGl) {
+    chkGl.checked = !!w.game_launch_enabled;
   }
   if (statusEl) {
     const parts = [];
