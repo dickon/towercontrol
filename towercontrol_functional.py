@@ -3142,6 +3142,38 @@ def automation_loop_tick():
     """Single tick of automation loop."""
     global ctx
     log = logging.getLogger(__name__)
+
+    # --- Ensure window is correct size if height is 2098 ---
+    if ctx and ctx.window_rect and ctx.window_rect.height != 2112:
+        try:
+            import win32gui, win32con
+            log.info(f"Adjusting window size from {ctx.window_rect.width}x{ctx.window_rect.height} to preserve aspect ratio")
+            rect = ctx.window_rect
+            # Preserve current aspect ratio, set height to 2112
+            aspect_ratio = rect.width / rect.height if rect.height else 1.0
+            new_height = 2112
+            new_width = int(round(aspect_ratio * new_height))
+            # Resize window
+            win32gui.SetWindowPos(
+                rect.hwnd,
+                win32con.HWND_TOP,
+                rect.left, rect.top,
+                new_width, new_height,
+                win32con.SWP_NOZORDER | win32con.SWP_SHOWWINDOW
+            )
+            # Move window to (0,0) to ensure fully visible
+            win32gui.SetWindowPos(
+                rect.hwnd,
+                win32con.HWND_TOP,
+                0, 0,
+                0, 0,
+                win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_SHOWWINDOW
+            )
+            log.info(f"Resized window to {new_width}x{new_height} and moved to (0,0) to ensure visibility.")
+            # Update context with new size and position
+            ctx.window_rect = type(rect)(0, 0, new_width, new_height, hwnd=rect.hwnd)
+        except Exception as e:
+            log.warning(f"Could not resize/move window: {e}")
     result = do_ocr()
     if result is None:
         return
