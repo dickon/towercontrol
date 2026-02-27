@@ -218,6 +218,7 @@ class Config:
     swipe_pause: float = 1.0
     input_delay: float = 0.15
     loop_tick: float = 20.0
+    work_pace: float = 0.5
     web_host: str = "0.0.0.0"
     web_port: int = 7700
     tab_y: int = 920
@@ -3093,6 +3094,9 @@ def click_if_present(name, condition, callback=None):
         execute_click(marks[0].center[0], marks[0].center[1], ctx.window_rect, ctx.config, reason=name)
         if callback:
             callback()
+            return True
+    else:
+        return False
 
 def do_ocr():
     """Capture the window and run OCR. Returns (img, img_capture_time, frame) or None on failure."""
@@ -3230,7 +3234,7 @@ def automation_loop_tick():
 
     result = do_ocr()
     if result is None:
-        return
+        return False
     img, img_capture_time, frame = result
     w, h = frame.image_size
     ctx.latest_image = img
@@ -3246,7 +3250,7 @@ def automation_loop_tick():
         reason="Go Back button (priority)",
         wait_time=2,
     ):
-        return  # Exit the tick function immediately
+        return False # Exit the tick function immediately
 
     # PRIORITY: Check for "The Tower" app icon/text and click it immediately
     if _priority_click(
@@ -3256,7 +3260,7 @@ def automation_loop_tick():
         reason="The Tower app icon (priority)",
         wait_time=10,
     ):
-        return  # Exit the tick function immediately
+        return False  # Exit the tick function immediately
 
 
     if check_template_and_click(
@@ -3267,7 +3271,7 @@ def automation_loop_tick():
         0.4,
         "My games button (priority, template match)"
     ):
-        return  # Exit the tick function immediately
+        return False  # Exit the tick function immediately
 
     if check_template_and_click(
         img,
@@ -3277,11 +3281,11 @@ def automation_loop_tick():
         0.75,
         "Resume Battle button (priority, template match)"
     ):
-        return  # Exit the tick function immediately
+        return False  # Exit the tick function immediately
 
     # PRIORITY: Check for cloud grab warning dialog ("Warning" + "Yes" button)
     if check_cloud_grab_warning(frame):
-        return  # Exit the tick function immediately
+        return False  # Exit the tick function immediately
 
     # Check for floating gem and click it with dead reckoning
     if ctx.gem_template is not None:
@@ -3294,11 +3298,18 @@ def automation_loop_tick():
     # Check for BATTLE button via template matching
     process_battle_button(img)
 
-    click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281)))
-    click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.5951,   0.8168))
-    click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429))
-    click_if_present('tap', lambda r: r.text == 'Tap' and r.is_near(0.380, 0.937))
+    if click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281))):
+        return False
+    
+    if click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.5951,   0.8168)):
+        return False
 
+    if click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429)):
+        return False
+    
+    if click_if_present('slashmin', lambda r: r.text == 'Slashmin' and r.is_near(0.380, 0.937)):
+        return False
+    
     # Extract wave number for comparison
     wave_num_str, _ = extract_wave_from_frame(frame)
     wave_num = None
@@ -3392,64 +3403,69 @@ def automation_loop_tick():
     # Use refactored perk detection
     if mode == 'perks' and perk_just_clicked and not clean:
         log.info("Just clicked perk icon this tick - overlay not yet cleanly visible, deferring perk detection to next tick")
-    else:
-        log.debug('perk text: %s', perk_text)
-        if mode == 'perks' and not perk_text:
-            log.info("Perks mode active but no selectable perks detected - closing window and suppressing perk checks for 1200s")
+        return False
+
+    log.debug('perk text: %s', perk_text)
+    if mode == 'perks' and not perk_text:
+        log.info("Perks mode active but no selectable perks detected - closing window and suppressing perk checks for 1200s")
+        close_perks()
+        ctx.no_perk_until = time.time() + 1200.0
+    elif perk_text and mode == 'perks':
+        log.debug(f"Perk text by row: {perk_text_join}")
+
+        if len(perk_text_join) not in [3,4] or not clean:
+            log.warning(f"Unexpected number of meaningful perk rows detected: {len(perk_text_join)}. Expected 3 or 4. Detected rows: {list(perk_text_join.keys())} {perk_text_join}")
+        # create/append to perks.log with a jsonl format containing wave, timestamp in epoch seconds, timestamp as iso string, perk_text_join, perk_text_priority
+        with open(ctx.config.debug_dir / "perks.jsonl", "a") as log_file:
+            log_entry = {
+                "timestamp": time.time(),
+                "timestamp_iso": datetime.datetime.now().isoformat(),
+                "wave": wave_num_str,
+                "perk_text_join": perk_text_join,
+                "perk_text_priority": perk_text_priority,
+            }
+            log_file.write(json.dumps(log_entry) + "\n")
+        # pick the row with the highest priority (lowest index)
+        # Always use the best available wave number for perk history
+        perk_wave = wave_num_str if wave_num_str else ctx.game_state.wave or "?"
+        perk_clicked = False
+        if perk_text_priority:
+            best_row, best_choice, best_idx = perk_text_priority[0]
+            log.info(f"Best perk choice: '{best_choice}' in row {best_row} with text '{perk_text_join[best_row]}'")
+            # click the perk in that row
+            message = f"Clicking perk at row {best_row} (choice: '{best_choice}')"
+            do_click(message, 0.671, PERK_ROWS[best_row][1])
+            # Record perk selection in game state history
+            perk_entry = {
+                "timestamp": time.time(),
+                "wave": perk_wave,
+                "selected": best_choice,
+                "text": perk_text_join.get(best_row, ""),
+            }
+            perk_clicked = True
+        else:
+            log.info(f"No perk matched any known pattern - closing window and suppressing perk checks for 1200s. Rows: {perk_text_join}")
             close_perks()
             ctx.no_perk_until = time.time() + 1200.0
-        elif perk_text and mode == 'perks':
-            log.debug(f"Perk text by row: {perk_text_join}")
+            # Still record that we saw (but couldn't match) perks, so the widget is populated
+            rows_text = " | ".join(perk_text_join.values())
+            perk_entry = {
+                "timestamp": time.time(),
+                "wave": perk_wave,
+                "selected": "?",
+                "text": rows_text,
+            }
+        new_perk_history = ctx.game_state.perk_selection_history + [perk_entry]
+        if len(new_perk_history) > 100:
+            new_perk_history = new_perk_history[-100:]
+        
+        ctx.game_state = replace(ctx.game_state, perk_selection_history=new_perk_history)
+        log.info(f'Perk history now {ctx.game_state.perk_selection_history}')
+        if perk_clicked:
+            return False # exit tick immediately and we get rerun fast
+    if perks_mode and not choose:
+        close_perks()
 
-            if len(perk_text_join) not in [3,4] or not clean:
-                log.warning(f"Unexpected number of meaningful perk rows detected: {len(perk_text_join)}. Expected 3 or 4. Detected rows: {list(perk_text_join.keys())} {perk_text_join}")
-            # create/append to perks.log with a jsonl format containing wave, timestamp in epoch seconds, timestamp as iso string, perk_text_join, perk_text_priority
-            with open(ctx.config.debug_dir / "perks.jsonl", "a") as log_file:
-                log_entry = {
-                    "timestamp": time.time(),
-                    "timestamp_iso": datetime.datetime.now().isoformat(),
-                    "wave": wave_num_str,
-                    "perk_text_join": perk_text_join,
-                    "perk_text_priority": perk_text_priority,
-                }
-                log_file.write(json.dumps(log_entry) + "\n")
-            # pick the row with the highest priority (lowest index)
-            # Always use the best available wave number for perk history
-            perk_wave = wave_num_str if wave_num_str else ctx.game_state.wave or "?"
-            if perk_text_priority:
-                best_row, best_choice, best_idx = perk_text_priority[0]
-                log.info(f"Best perk choice: '{best_choice}' in row {best_row} with text '{perk_text_join[best_row]}'")
-                # click the perk in that row
-                message = f"Clicking perk at row {best_row} (choice: '{best_choice}')"
-                do_click(message, 0.671, PERK_ROWS[best_row][1])
-                # Record perk selection in game state history
-                perk_entry = {
-                    "timestamp": time.time(),
-                    "wave": perk_wave,
-                    "selected": best_choice,
-                    "text": perk_text_join.get(best_row, ""),
-                }
-            else:
-                log.info(f"No perk matched any known pattern - closing window and suppressing perk checks for 1200s. Rows: {perk_text_join}")
-                close_perks()
-                ctx.no_perk_until = time.time() + 1200.0
-                # Still record that we saw (but couldn't match) perks, so the widget is populated
-                rows_text = " | ".join(perk_text_join.values())
-                perk_entry = {
-                    "timestamp": time.time(),
-                    "wave": perk_wave,
-                    "selected": "?",
-                    "text": rows_text,
-                }
-            new_perk_history = ctx.game_state.perk_selection_history + [perk_entry]
-            if len(new_perk_history) > 100:
-                new_perk_history = new_perk_history[-100:]
-            
-            ctx.game_state = replace(ctx.game_state, perk_selection_history=new_perk_history)
-            log.info(f'Perk history now {ctx.game_state.perk_selection_history}')
-        if perks_mode and not choose:
-            close_perks()
-    
     # Detect and log upgrade buttons
     upgrade_buttons = detect_upgrade_buttons(frame, img, ctx.config)
     if upgrade_buttons:
@@ -3607,6 +3623,7 @@ def automation_loop_tick():
         # ── Rate history: sample cash/coin resources and compute per-minute rates ──
         _update_rate_history(new_resources, img)
 
+    return True
 
 # Matches common OCR misreads of the "/min" rate suffix that follows a HUD value.
 # Tesseract frequently produces: /mir?, /rnin, /nnn, /mln, /m1n, /min., /mn, /mm
@@ -4004,7 +4021,7 @@ def automation_loop_run(ctx: RuntimeContext):
             watchdog_bluestacks_tick()
             watchdog_game_tick()
             watchdog_wave_stall_tick()
-            automation_loop_tick()
+            idle = automation_loop_tick()
         except Exception as exc:
             log.error(f"Loop tick error: {exc}", exc_info=True)
             ctx.game_state = replace(ctx.game_state,
@@ -4013,8 +4030,9 @@ def automation_loop_run(ctx: RuntimeContext):
             time.sleep(2)
 
         elapsed = time.time() - t0
-        sleep_time = max(0, ctx.config.loop_tick - elapsed)
-        log.debug('sleeping for %.2f seconds', sleep_time)
+        sleep_time = max(0.5, (ctx.config.loop_tick if idle else ctx.config.work_pace) - elapsed)
+        log.info('----------------')
+        log.info(f'sleeping for {sleep_time:.2f} seconds since idle={idle} elapsed={elapsed:.2f}s')
         time.sleep(sleep_time)
 
     log.info("Automation loop stopped")
@@ -4138,6 +4156,7 @@ def main():
         game_package=args.game_package,
         game_launch_enabled=not args.no_game_launch,
         loop_tick=args.loop_tick,
+        work_pace=0.5,
     )
 
     log.info(f"TowerControl starting (ocr={config.ocr_engine})")
