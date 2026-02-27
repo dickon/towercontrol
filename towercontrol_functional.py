@@ -3137,13 +3137,10 @@ def do_ocr():
         return
     return img, img_capture_time, frame
 
-
-def automation_loop_tick():
-    """Single tick of automation loop."""
+def ensure_window_correct_size():
+    """Ensure window is correct size if height is not 2112."""
     global ctx
     log = logging.getLogger(__name__)
-
-    # --- Ensure window is correct size if height is 2098 ---
     if ctx and ctx.window_rect and ctx.window_rect.height != 2112:
         try:
             import win32gui, win32con
@@ -3174,6 +3171,14 @@ def automation_loop_tick():
             ctx.window_rect = type(rect)(0, 0, new_width, new_height, hwnd=rect.hwnd)
         except Exception as e:
             log.warning(f"Could not resize/move window: {e}")
+
+def automation_loop_tick():
+    """Single tick of automation loop."""
+    global ctx
+    log = logging.getLogger(__name__)
+
+    ensure_window_correct_size()
+
     result = do_ocr()
     if result is None:
         return
