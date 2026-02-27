@@ -3366,35 +3366,7 @@ def automation_loop_tick():
                 do_click("Clicking new perk icon (template match)", newperk_pos[0], newperk_pos[1])
                 mode = 'perks'
                 perk_just_clicked = True  # overlay not visible yet; detect_perks will run next tick
-    for r in frame.results:
-        cx, cy = r.center
-        
-        lowertext = r.text.lower()
 
-        # Check for perk threshold near position
-        if r.is_near(0.6341, 0.0436, 0.05):
-            # Try to parse as number
-            text_clean = r.text.replace(',', '').strip()
-            if re.match(r'^\d+$', text_clean):
-                try:
-                    threshold_num = int(text_clean)
-                    # Check if it's similar to wave number (within reasonable range)
-                    if wave_num and abs(threshold_num - wave_num) < 10000:
-                        log.debug(f"Perk threshold detected: {r.text} at ({r.fx:.4f}, {r.fy:.4f}) [wave: {wave_num_str}]")
-                except ValueError:
-                    pass
-        
-        # Check for coins at position
-        if r.is_near(0.3132, 0.0819, 0.02):
-            # Parse number with suffix (K, M, B, T)
-            match = re.match(r'^([0-9.]+)\s*([KMBT])?$', r.text.strip(), re.IGNORECASE)
-            if match:
-                value = float(match.group(1))
-                suffix = match.group(2).upper() if match.group(2) else ''
-                
-                multipliers = {'K': 1_000, 'M': 1_000_000, 'B': 1_000_000_000, 'T': 1_000_000_000_000}
-                multiplier = multipliers.get(suffix, 1)
-                coins = value * multiplier
     perk_result = detect_perks(frame)
     perk_text = perk_result['perk_text']
     perk_text_join = perk_result['perk_text_join']
