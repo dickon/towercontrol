@@ -1204,7 +1204,7 @@ def do_click(message, click_x_frac, click_y_frac):
     config = ctx.config
     if rect and config:
         if ctx is not None and not ctx.input_enabled:
-            log.debug(f"Click suppressed (paused): {message}")
+            log.info(f"Click suppressed (paused): {message}")
             return False
 
         # Capture debug screenshot with crosshairs BEFORE clicking
@@ -2477,7 +2477,7 @@ def detect_floating_gem(
         best_val = 0.0
         best_match_cx: Optional[int] = None
         best_match_cy: Optional[int] = None
-        threshold = 0.70
+        threshold = 0.58
 
         center_pt = (tw // 2, th // 2)
         for rot_deg in range(0, 360, 10):
@@ -2491,7 +2491,7 @@ def detect_floating_gem(
                 best_val = max_val
                 best_match_cx = sx1 + max_loc[0] + tw // 2
                 best_match_cy = sy1 + max_loc[1] + th // 2
-
+        log.info(f'Floating gem detection: best_val={best_val:.3f} at ({best_match_cx}, {best_match_cy})')
         if best_val >= threshold and best_match_cx is not None:
             dx = best_match_cx - cx
             dy = best_match_cy - cy
@@ -3709,6 +3709,8 @@ def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
             f.write("\n")
         click_frac_x  = click_x / img_w
         click_frac_y = click_y / img_h
+        log.info(f"Clicking floating gem at fractional position ({click_frac_x:.3f}, {click_frac_y:.3f}) angle {angle_from_north:.1f}° advanced to {advanced_angle:.1f}°")
+        # TODO take into account ad strip
         do_click("floating gem", click_frac_x, click_frac_y)
         
         # Post-click verification: re-capture and re-detect
