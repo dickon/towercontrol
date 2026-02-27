@@ -3334,22 +3334,23 @@ def automation_loop_tick():
     perk_text = {}
 
     game_stats_mark = [r for r in frame.results if r.text == 'GAME' and r.is_near(  0.5171,   0.2491) or r.text == 'STATS' and r.is_near(  0.6667,   0.2491)]
-    defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
-    attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.329, 0.632, 0.1)]
-    utility_marks = [r for r in frame.results if r.text.lower() == "utility" and r.is_near(0.333, 0.632, 0.1)]
     info_marks = [r for r in frame.results if r.text.lower() == "info" and r.is_near(0.4771, 0.2067, 0.1)]
     if game_stats_mark:
         mode = 'killed by'
         do_click("Seen game stats, clicking to exit", 0.7601, 0.7496)
-    seen = None  # which upgrade sub-tab is currently visible; set inside if mode == 'main'
+    upgrade_mode = None  # which upgrade sub-tab is currently visible; set inside if mode == 'main'
     if mode == 'main':
-        seen = 'DEFENSE' if defense_marks else 'ATTACK' if attack_marks else 'UTILITY' if utility_marks else None
-        ctx.upgrade_mode_seen = seen
+        defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
+        attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.329, 0.632, 0.1)]
+        utility_marks = [r for r in frame.results if r.text.lower() == "utility" and r.is_near(0.333, 0.632, 0.1)]
+
+        upgrade_mode = 'DEFENSE' if defense_marks else 'ATTACK' if attack_marks else 'UTILITY' if utility_marks else None
+        ctx.upgrade_mode_seen = upgrade_mode
         prio = _active_upgrade_priority()
-        log.info(f'Seen upgrade mode selector: {seen} at {ctx.upgrade_state} {prio[ctx.upgrade_state] if ctx.upgrade_state < len(prio) else None}')
+        log.info(f'Seen upgrade mode selector: {upgrade_mode} at {ctx.upgrade_state} {prio[ctx.upgrade_state] if ctx.upgrade_state < len(prio) else None}')
         want_upgrades = prio[ctx.upgrade_state][0] if ctx.upgrade_state < len(prio) else None   
 
-        if seen:
+        if upgrade_mode:
             ctx.last_seen_upgrades = time.time()
             ctx.last_game_ui_seen = time.time()  # upgrade tabs visible → game is running
         else:
@@ -3485,7 +3486,7 @@ def automation_loop_tick():
         mark_battle_start()
     # Timed upgrade purchasing (only when on main game screen with upgrades visible)
     if mode == 'main':
-        handle_upgrade_action(seen, upgrade_buttons, w, h)
+        handle_upgrade_action(upgrade_mode, upgrade_buttons, w, h)
     
     # Extract wave first — resource numbers are only meaningful when the HUD
     # is visible (i.e. when the wave number is detectable).
