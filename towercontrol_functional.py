@@ -3709,7 +3709,7 @@ def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
             f.write("\n")
         click_frac_x  = click_x / img_w
         click_frac_y = click_y / img_h
-        do_click("floating gem", click_frac_x, click_fracy)
+        do_click("floating gem", click_frac_x, click_frac_y)
         
         # Post-click verification: re-capture and re-detect
         time.sleep(0.3)
