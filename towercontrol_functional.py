@@ -3367,6 +3367,8 @@ def automation_loop_tick():
                 }
                 log_file.write(json.dumps(log_entry) + "\n")
             # pick the row with the highest priority (lowest index)
+            # Always use the best available wave number for perk history
+            perk_wave = wave_num_str if wave_num_str else ctx.game_state.wave or "?"
             if perk_text_priority:
                 best_row, best_choice, best_idx = perk_text_priority[0]
                 log.info(f"Best perk choice: '{best_choice}' in row {best_row} with text '{perk_text_join[best_row]}'")
@@ -3376,7 +3378,7 @@ def automation_loop_tick():
                 # Record perk selection in game state history
                 perk_entry = {
                     "timestamp": time.time(),
-                    "wave": wave_num_str,
+                    "wave": perk_wave,
                     "selected": best_choice,
                     "text": perk_text_join.get(best_row, ""),
                 }
@@ -3388,7 +3390,7 @@ def automation_loop_tick():
                 rows_text = " | ".join(perk_text_join.values())
                 perk_entry = {
                     "timestamp": time.time(),
-                    "wave": wave_num_str,
+                    "wave": perk_wave,
                     "selected": "?",
                     "text": rows_text,
                 }
