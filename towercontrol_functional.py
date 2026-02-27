@@ -217,7 +217,7 @@ class Config:
     click_pause: float = 1.0
     swipe_pause: float = 1.0
     input_delay: float = 0.15
-    loop_tick: float = 10.0
+    loop_tick: float = 20.0
     web_host: str = "0.0.0.0"
     web_port: int = 7700
     tab_y: int = 920
@@ -459,6 +459,8 @@ def find_window(title_pattern: str) -> Optional[WindowRect]:
 def capture_window(rect: WindowRect) -> Optional[Image.Image]:
     """Capture screenshot of window region."""
     try:
+        log = logging.getLogger(__name__)
+
         monitor = {
             "left": rect.left,
             "top": rect.top,
@@ -468,6 +470,7 @@ def capture_window(rect: WindowRect) -> Optional[Image.Image]:
         with mss.mss() as sct:
             raw = sct.grab(monitor)
             img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+        log.info("Captured image size: %dx%d", img.width, img.height)
         return img
     except Exception:
         return None
@@ -4026,6 +4029,8 @@ def parse_args() -> argparse.Namespace:
                        help="Android package name for game launch (default: com.supersolid.thetower)")
     parser.add_argument("--no-game-launch", action="store_true",
                        help="Disable automatic game launch via ADB")
+    parser.add_argument("--loop-tick", type=float, default=20.0,
+                       help="Seconds between automation loop ticks (default: 20.0)")
     return parser.parse_args()
 
 
@@ -4051,6 +4056,7 @@ def main():
         adb_port=args.adb_port,
         game_package=args.game_package,
         game_launch_enabled=not args.no_game_launch,
+        loop_tick=args.loop_tick,
     )
 
     log.info(f"TowerControl starting (ocr={config.ocr_engine})")

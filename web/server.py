@@ -203,6 +203,7 @@ def _build_state() -> dict:
     state["strategy_params"] = {
         "input_enabled": c.input_enabled,
         "cloud_grab_enabled": c.config.cloud_grab_enabled,
+        "loop_tick": c.config.loop_tick,
     }
 
     # Watchdog state
@@ -526,6 +527,9 @@ async def api_params_schema():
         "cloud_grab_enabled": {
             "label": "Cloud Grab", "type": "bool",
         },
+        "loop_tick": {
+            "label": "Loop tick (s)", "type": "float", "min": 1.0, "max": 120.0, "step": 0.5,
+        },
     }
 
 
@@ -557,6 +561,11 @@ async def api_params(request: Request):
         c.input_enabled = bool(body["input_enabled"])
     if "cloud_grab_enabled" in body:
         c.config = _mod.replace(c.config, cloud_grab_enabled=bool(body["cloud_grab_enabled"]))
+    if "loop_tick" in body:
+        val = float(body["loop_tick"])
+        if 1.0 <= val <= 120.0:
+            c.config = _mod.replace(c.config, loop_tick=val)
+            logging.getLogger(__name__).info("loop_tick set to %.1f via web UI", val)
     return {"ok": True}
 
 

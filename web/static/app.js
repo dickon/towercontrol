@@ -25,7 +25,7 @@ let _overviewWavePts    = [];     // wave series for minimap drawing
 let _overviewActTs      = [];     // action timestamps (ms) for tick marks
 let _ovDrag             = null;   // active drag state
 let _overviewInitialized = false; // true after first data paint
-const _OV_EDGE_PX = 10;          // px from window edge that counts as resize handle
+const _OV_EDGE_PX = 20;          // px from window edge that counts as resize handle (wider for touch)
 
 // ── Bootstrap ───────────────────────────────────────────────────────────
 
@@ -729,8 +729,9 @@ function buildParamUI(schema) {
       input.type      = "number";
       input.className = "form-control form-control-sm";
       input.style.width = "90px";
-      if (def.min !== undefined) input.min = def.min;
-      if (def.max !== undefined) input.max = def.max;
+      if (def.min  !== undefined) input.min  = def.min;
+      if (def.max  !== undefined) input.max  = def.max;
+      if (def.step !== undefined) input.step = def.step;
       input.dataset.paramKey = key;
       input.addEventListener("change", () => api("params", { [key]: Number(input.value) }));
     }
@@ -1063,40 +1064,38 @@ function renderTimeline(data) {
 }
 
 function _attachTimelineHover(cvs) {
-  cvs.addEventListener("mousemove", (e) => {
+  // Shared scrub logic used by both mouse and touch
+  function _scrubAt(clientX) {
     if (!_timelineChart) return;
-    const ticks = _timelineChart.data.datasets[1].data;
-
-    // Convert cursor X pixel → chart time value
+    const ticks  = _timelineChart.data.datasets[1].data;
     const rect   = cvs.getBoundingClientRect();
-    const xPixel = e.clientX - rect.left;
+    const xPixel = clientX - rect.left;
     const xScale = _timelineChart.scales.x;
     const tMs    = xScale.getValueForPixel(xPixel);
-
-    // Always update the hover time and refresh crosshairs
     _timelineHovering = true;
     _hoverTimeMs = tMs;
-
-    // Find the closest tick by time
     let best = null, bestDist = Infinity;
     for (const tick of ticks) {
       const d = Math.abs(tick.x - tMs);
       if (d < bestDist) { bestDist = d; best = tick; }
     }
-
-    // Load new PNG only when the nearest tick changes
     const file = best ? (best._png_anno || best._png) : null;
     if (file && file !== _hoverFile) {
-      _loadCapturePreview(file);   // draws image then calls _drawTimelineCrosshairs
+      _loadCapturePreview(file);
     } else {
-      // Tick unchanged (or no PNG) — just refresh crosshairs in place
       _drawTimelineCrosshairs(tMs);
     }
-  });
+  }
 
-  cvs.addEventListener("mouseleave", () => {
-    _clearTimelineHover();
-  });
+  cvs.addEventListener("mousemove", (e) => _scrubAt(e.clientX));
+  cvs.addEventListener("mouseleave", () => _clearTimelineHover());
+
+  // Touch scrubbing (iPad / mobile)
+  cvs.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+    _scrubAt(e.touches[0].clientX);
+  }, { passive: false });
+  cvs.addEventListener("touchend", () => _clearTimelineHover());
 }
 
 function _loadCapturePreview(filename) {
@@ -1342,24 +1341,30 @@ function _ovGetMode(clientX) {
   return "jump";
 }
 
-/** Attach all mouse / wheel interaction to the overview canvas. */
+/** Attach all mouse / wheel / touch interaction to the overview canvas. */
 function _attachOverviewInteraction(cvs) {
+  // ── Shared drag logic ─────────────────────────────────────────────────────
+  function _applyDrag(clientX) {
+    if (!_ovDrag) return;
+    const ms   = _ovToMs(clientX);
+    const dxMs = ms - _ovToMs(_ovDrag.startClientX);
+    if (_ovDrag.mode === "pan") {
+      _setViewRange(_ovDrag.startVMin + dxMs, _ovDrag.startVMax + dxMs);
+    } else if (_ovDrag.mode === "resizeL") {
+      _setViewRange(ms, _viewMaxT);
+    } else if (_ovDrag.mode === "resizeR") {
+      _setViewRange(_viewMinT, ms);
+    } else {
+      // jump-drag: keep window width, slide centre to cursor
+      const halfSpan = (_viewMaxT - _viewMinT) / 2;
+      _setViewRange(ms - halfSpan, ms + halfSpan);
+    }
+  }
+
+  // ── Mouse ─────────────────────────────────────────────────────────────────
   cvs.addEventListener("mousemove", (e) => {
     if (_ovDrag) {
-      const ms   = _ovToMs(e.clientX);
-      const dxMs = ms - _ovToMs(_ovDrag.startClientX);
-      if (_ovDrag.mode === "pan") {
-        const winSpan = _ovDrag.startVMax - _ovDrag.startVMin;
-        _setViewRange(_ovDrag.startVMin + dxMs, _ovDrag.startVMax + dxMs);
-      } else if (_ovDrag.mode === "resizeL") {
-        _setViewRange(ms, _viewMaxT);
-      } else if (_ovDrag.mode === "resizeR") {
-        _setViewRange(_viewMinT, ms);
-      } else {
-        // jump-drag: keep window width, slide centre to cursor
-        const halfSpan = (_viewMaxT - _viewMinT) / 2;
-        _setViewRange(ms - halfSpan, ms + halfSpan);
-      }
+      _applyDrag(e.clientX);
     } else {
       const mode = _ovGetMode(e.clientX);
       cvs.style.cursor = (mode === "resizeL" || mode === "resizeR") ? "ew-resize"
@@ -1374,7 +1379,6 @@ function _attachOverviewInteraction(cvs) {
     _ovDrag = { mode, startClientX: e.clientX, startVMin: _viewMinT, startVMax: _viewMaxT };
     cvs.style.cursor = "grabbing";
     if (mode === "jump") {
-      // Immediately centre window on click position
       const ms = _ovToMs(e.clientX);
       const halfSpan = (_viewMaxT - _viewMinT) / 2;
       _setViewRange(ms - halfSpan, ms + halfSpan);
@@ -1401,4 +1405,64 @@ function _attachOverviewInteraction(cvs) {
     if (_overviewDataMaxT > _overviewDataMinT)
       _setViewRange(_overviewDataMinT, _overviewDataMaxT);
   });
+
+  // ── Touch (iPad / mobile) ─────────────────────────────────────────────────
+  let _lastTapTime    = 0;
+  let _pinchStartSnap = null; // { dist, vMin, vMax, midMs }
+
+  function _pinchDist(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+  }
+
+  cvs.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    if (e.touches.length === 2) {
+      // Begin pinch-to-zoom
+      _ovDrag = null;
+      _pinchStartSnap = {
+        dist  : _pinchDist(e.touches),
+        vMin  : _viewMinT,
+        vMax  : _viewMaxT,
+        midMs : _ovToMs((e.touches[0].clientX + e.touches[1].clientX) / 2),
+      };
+      return;
+    }
+    _pinchStartSnap = null;
+    const cx   = e.touches[0].clientX;
+    const mode = _ovGetMode(cx);
+    _ovDrag = { mode, startClientX: cx, startVMin: _viewMinT, startVMax: _viewMaxT };
+    if (mode === "jump") {
+      const ms = _ovToMs(cx);
+      const halfSpan = (_viewMaxT - _viewMinT) / 2;
+      _setViewRange(ms - halfSpan, ms + halfSpan);
+    }
+    // Double-tap → reset
+    const now = Date.now();
+    if (now - _lastTapTime < 350) {
+      if (_overviewDataMaxT > _overviewDataMinT)
+        _setViewRange(_overviewDataMinT, _overviewDataMaxT);
+    }
+    _lastTapTime = now;
+  }, { passive: false });
+
+  cvs.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+    if (e.touches.length === 2 && _pinchStartSnap) {
+      // Pinch zoom around the original midpoint
+      const newDist  = _pinchDist(e.touches);
+      const factor   = _pinchStartSnap.dist / newDist; // <1 = zoom in, >1 = zoom out
+      const midMs    = _pinchStartSnap.midMs;
+      const origSpan = _pinchStartSnap.vMax - _pinchStartSnap.vMin;
+      const lFrac    = origSpan > 0 ? (midMs - _pinchStartSnap.vMin) / origSpan : 0.5;
+      const newSpan  = origSpan * factor;
+      _setViewRange(midMs - lFrac * newSpan, midMs + (1 - lFrac) * newSpan);
+      return;
+    }
+    _applyDrag(e.touches[0].clientX);
+  }, { passive: false });
+
+  cvs.addEventListener("touchend",   () => { _ovDrag = null; _pinchStartSnap = null; });
+  cvs.addEventListener("touchcancel",() => { _ovDrag = null; _pinchStartSnap = null; });
 }
