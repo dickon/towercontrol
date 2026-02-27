@@ -2487,7 +2487,7 @@ def process_claim_button(img: Optional[Image.Image], claim_template: Optional[np
             last_claim_time = get_last_action_time(ctx.game_state, ActionType.CLICK)
             if time.time() - last_claim_time > 2.0:
                 log.info(f"CLAIM button detected via template at {claim_pos} - clicking!")
-                execute_click(claim_pos[0], claim_pos[1], ctx.window_rect, config, reason="Clicking CLAIM button (template match)")
+                do_click('Clicking claim button', claim_pos[0]/img.width, claim_pos[1]/img.height)
 
     except Exception as e:
         log.debug(f"CLAIM button detection failed: {e}")
@@ -2996,29 +2996,6 @@ def execute_swipe(x: int, y: int, distance: int, direction: str,
     return True
 
 
-def execute_action(action: Action, rect: Optional[WindowRect],
-                  config: Config) -> None:
-    """Execute an action. Side effect dispatcher."""
-    log = logging.getLogger(__name__)
-    log.info(f"Action: {action.action_type.name} – {action.reason}")
-
-    if action.action_type == ActionType.CLICK and rect:
-        log.info('clicking at (%d, %d) relative to window', action.x, action.y)
-        execute_click(action.x, action.y, rect, config, reason=action.reason)
-
-    elif action.action_type == ActionType.SWIPE_UP and rect:
-        execute_swipe(action.x, action.y, action.amount or 300,
-                     "up", rect, config)
-
-    elif action.action_type == ActionType.SWIPE_DOWN and rect:
-        execute_swipe(action.x, action.y, action.amount or 300,
-                     "down", rect, config)
-
-    elif action.action_type == ActionType.WAIT:
-        log.trace('sleeping for %.2f seconds', action.duration)
-        time.sleep(action.duration)
-
-
 # ============================================================================
 # STATEFUL RUNTIME CONTEXT
 # ============================================================================
@@ -3091,7 +3068,7 @@ def click_if_present(name, condition, callback=None):
     log.debug(f'Marks found for condition "{name}"   : {marks}')
     if marks:
         log.info(f"Condition met for '{marks[0].text}' at ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking!")
-        execute_click(marks[0].center[0], marks[0].center[1], ctx.window_rect, ctx.config, reason=name)
+        do_click(name, marks[0].fx, marks[0].fy)
         if callback:
             callback()
             return True
@@ -3185,7 +3162,7 @@ def _priority_click(frame, filter_fn, log_message, reason, wait_time):
     marks = [r for r in frame.results if filter_fn(r)]
     if marks:
         log.info(f"{log_message} ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking and exiting tick at ({marks[0].center[0]}, {marks[0].center[1]})")
-        execute_click(marks[0].center[0], marks[0].center[1], ctx.window_rect, ctx.config, reason=reason)
+        do_click(reason, marks[0].fx, marks[0].fy)
         log.info(f'waiting {wait_time} seconds for progress')
         time.sleep(wait_time)
         return True
@@ -3759,8 +3736,11 @@ def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
                     "dt": dt
                 }, f)
             f.write("\n")
-        execute_click(click_x, click_y, ctx.window_rect, ctx.config, reason="floating gem")
-            # Post-click verification: re-capture and re-detect
+        click_frac_x  = click_x / img_w
+        click_frac_y = click_y / img_h
+        do_click("floating gem", click_frac_x, click_fracy)
+        
+        # Post-click verification: re-capture and re-detect
         time.sleep(0.3)
         post_img = capture_window(ctx.window_rect)
         if post_img is not None:
