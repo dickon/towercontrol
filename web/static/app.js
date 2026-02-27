@@ -793,6 +793,20 @@ function _fmtRate(n) {
   return String(Math.round(n));
 }
 
+// Utility: Remove outliers using IQR method
+function filterOutliersIQR(points, valueKey = 'y') {
+  if (!points.length) return points;
+  const values = points.map(p => p[valueKey]).filter(v => typeof v === 'number');
+  if (values.length < 4) return points; // Not enough data for IQR
+  const sorted = [...values].sort((a, b) => a - b);
+  const q1 = sorted[Math.floor(sorted.length * 0.25)];
+  const q3 = sorted[Math.floor(sorted.length * 0.75)];
+  const iqr = q3 - q1;
+  const min = q1 - 1.5 * iqr;
+  const max = q3 + 1.5 * iqr;
+  return points.filter(p => p[valueKey] >= min && p[valueKey] <= max);
+}
+
 function renderTimeline(data) {
   const cvs = document.getElementById("timelineChart");
   if (!cvs) return;
@@ -843,16 +857,20 @@ function renderTimeline(data) {
     },
   };
 
-  const cashPts = (data.rate_history || [])
+
+  let cashPts = (data.rate_history || [])
     .filter(p => p.cash_pm != null)
     .map(p => ({ x: p.t * 1000, y: p.cash_pm }));
+  cashPts = filterOutliersIQR(cashPts, 'y');
 
-  const coinPts = (data.rate_history || [])
+  let coinPts = (data.rate_history || [])
     .filter(p => p.coin_pm != null)
     .map(p => ({ x: p.t * 1000, y: p.coin_pm }));
+  coinPts = filterOutliersIQR(coinPts, 'y');
 
-  const waveRatePts = (data.wave_rate_history || [])
+  let waveRatePts = (data.wave_rate_history || [])
     .map(p => ({ x: p.t * 1000, y: p.waves_ph }));
+  waveRatePts = filterOutliersIQR(waveRatePts, 'y');
 
   const datasets = [
     {
