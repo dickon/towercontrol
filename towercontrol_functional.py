@@ -3203,6 +3203,23 @@ def check_template_and_click(img, template, label, region, threshold, click_reas
         log.info(f'no {label.lower()} template loaded, skipping that check')
     return False
 
+def check_cloud_grab_warning(frame) -> bool:
+    """
+    Check for cloud grab warning dialog ("Warning" + "Yes" button) and click Yes if detected.
+    Returns True if action was taken and tick should exit.
+    """
+    global ctx
+    log = logging.getLogger(__name__)
+    if not ctx.config.cloud_grab_enabled:
+        return False
+    warning_marks = [r for r in frame.results if r.text.lower() == "warning" and r.is_near(0.513, 0.261, 0.15)]
+    yes_marks = [r for r in frame.results if r.text.lower() == "yes" and r.is_near(0.501, 0.541, 0.05)]
+    log.info(f'Cloud grab warning check: found {len(warning_marks)} warning marks and {len(yes_marks)} yes marks')
+    if warning_marks and yes_marks:
+        log.info(f"PRIORITY: Cloud grab warning detected - clicking Yes at ({yes_marks[0].fx:.4f}, {yes_marks[0].fy:.4f})")
+        do_click("Cloud grab warning Yes button", 0.74, 0.71)
+        return True
+    return False
 
 def automation_loop_tick():
     """Single tick of automation loop."""
@@ -3263,14 +3280,8 @@ def automation_loop_tick():
         return  # Exit the tick function immediately
 
     # PRIORITY: Check for cloud grab warning dialog ("Warning" + "Yes" button)
-    if ctx.config.cloud_grab_enabled:
-        warning_marks = [r for r in frame.results if r.text.lower() == "warning" and r.is_near(0.513, 0.261, 0.05)]
-        yes_marks = [r for r in frame.results if r.text.lower() == "yes" and r.is_near(0.501, 0.541, 0.05)]
-        if warning_marks and yes_marks:
-            log.info(f"PRIORITY: Cloud grab warning detected - clicking Yes at ({yes_marks[0].fx:.4f}, {yes_marks[0].fy:.4f})")
-            execute_click(yes_marks[0].center[0], yes_marks[0].center[1], 
-                         ctx.window_rect, ctx.config, reason="Cloud grab warning Yes button")
-            return  # Exit the tick function immediately
+    if check_cloud_grab_warning(frame):
+        return  # Exit the tick function immediately
 
     # Check for floating gem and click it with dead reckoning
     if ctx.gem_template is not None:
