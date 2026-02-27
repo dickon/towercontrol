@@ -1200,8 +1200,78 @@ def do_click(message, click_x_frac, click_y_frac):
         click_x_frac = max(0.0, min(1.0, click_x_frac))
     click_x = int(click_x_frac * w)
     click_y = int(click_y_frac * h)
-    if ctx.window_rect and ctx.config:
-        execute_click(click_x, click_y, ctx.window_rect, ctx.config, reason=message)
+    rect = ctx.window_rect
+    config = ctx.config
+    if rect and config:
+        if ctx is not None and not ctx.input_enabled:
+            log.debug(f"Click suppressed (paused): {message}")
+            return False
+
+        # Capture debug screenshot with crosshairs BEFORE clicking
+        try:
+            debug_img = capture_window(rect)
+            if debug_img:
+                draw = ImageDraw.Draw(debug_img)
+                crosshair_size = 40
+                crosshair_color = (0, 255, 0)  # Green
+                crosshair_width = 3
+                draw.line([(click_x - crosshair_size, click_y), (click_x + crosshair_size, click_y)], fill=crosshair_color, width=crosshair_width)
+                draw.line([(click_x, click_y - crosshair_size), (click_x, click_y + crosshair_size)], fill=crosshair_color, width=crosshair_width)
+                draw.ellipse([(click_x-5, click_y-5), (click_x+5, click_y+5)], outline=crosshair_color, width=crosshair_width)
+                draw.text((click_x + crosshair_size + 10, click_y), f"Click: ({click_x},{click_y})\nAbs: ({rect.left + click_x},{rect.top + click_y})", fill=crosshair_color)
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                reason_slug = ("_" + re.sub(r"[^\w]+", "_", message).strip("_")) if message else ""
+                debug_path = config.debug_dir / f"click_debug_{timestamp}{reason_slug}.png"
+                debug_img.save(debug_path)
+                log.debug(f"Debug screenshot saved: {debug_path}")
+                cleanup_old_click_debug_files(config)
+        except Exception as e:
+            log.warning(f"Could not create debug screenshot: {e}")
+
+        # Bring window to foreground before clicking (disabled)
+        # assert not bring_to_front, "Bringing to front is currently disabled to avoid issues. Set bring_to_front=True to enable (use with caution)."
+
+        ax, ay = to_absolute_coords(click_x, click_y, rect)
+        log.debug(f"click({click_x}, {click_y}) → abs({ax}, {ay})")
+
+        prev_foreground = None
+        prev_mouse_pos = None
+        try:
+            if win32gui:
+                prev_foreground = win32gui.GetForegroundWindow()
+            prev_mouse_pos = pyautogui.position()
+        except Exception as e:
+            log.debug(f"Could not snapshot focus/cursor: {e}")
+
+        pyautogui.click(ax, ay, interval=config.click_pause)
+        log.info(f"Clicked at ({ax}, {ay}); sleep for {config.click_pause:.2f} seconds" + (f"  [{message}]" if message else ""))
+        time.sleep(config.click_pause)
+
+        if prev_mouse_pos is not None:
+            try:
+                pyautogui.moveTo(prev_mouse_pos.x, prev_mouse_pos.y)
+                log.debug(f"Restored mouse to ({prev_mouse_pos.x}, {prev_mouse_pos.y})")
+            except Exception as e:
+                log.debug(f"Could not restore mouse position: {e}")
+
+        if prev_foreground and win32gui and prev_foreground != rect.hwnd:
+            try:
+                win32gui.SetForegroundWindow(prev_foreground)
+                log.debug(f"Restored foreground window (hwnd={prev_foreground})")
+            except Exception as e:
+                log.debug(f"Could not restore foreground window: {e}")
+
+        if ctx is not None:
+            fx = round(click_x / rect.width,  4) if rect.width  else 0.0
+            fy = round(click_y / rect.height, 4) if rect.height else 0.0
+            ctx.game_state = record_action_in_state(
+                ctx.game_state,
+                Action(action_type=ActionType.CLICK, x=click_x, y=click_y, reason=message),
+                ax=ax, ay=ay, fx=fx, fy=fy,
+            )
+
+        return True
+    return False
 
 def close_perks():
     do_click("Closing perks mode by clicking 'X'", 0.878, 0.100)
@@ -2878,105 +2948,6 @@ def cleanup_old_click_debug_files(config: Config, keep_count: int = 20, max_age_
         log.warning(f"Failed to cleanup old click_debug files: {e}")
 
 
-def execute_click(x: int, y: int, rect: WindowRect, config: Config, bring_to_front: bool = False, reason: str = "") -> bool:
-    """Execute click action. Side effect."""
-    global ctx
-    log = logging.getLogger(__name__)
-
-    if ctx is not None and not ctx.input_enabled:
-        log.debug(f"Click suppressed (paused): {reason}")
-        return False
-
-    # Capture debug screenshot with crosshairs BEFORE clicking
-    try:
-        debug_img = capture_window(rect)
-        if debug_img:
-            draw = ImageDraw.Draw(debug_img)
-            # Draw crosshairs at click location
-            crosshair_size = 40
-            crosshair_color = (0, 255, 0)  # Green
-            crosshair_width = 3
-            
-            # Horizontal line
-            draw.line([(x - crosshair_size, y), (x + crosshair_size, y)], 
-                     fill=crosshair_color, width=crosshair_width)
-            # Vertical line
-            draw.line([(x, y - crosshair_size), (x, y + crosshair_size)], 
-                     fill=crosshair_color, width=crosshair_width)
-            # Center circle
-            draw.ellipse([(x-5, y-5), (x+5, y+5)], outline=crosshair_color, width=crosshair_width)
-            
-            # Add text annotation
-            draw.text((x + crosshair_size + 10, y), 
-                     f"Click: ({x},{y})\nAbs: ({rect.left + x},{rect.top + y})",
-                     fill=crosshair_color)
-            
-            # Save debug image
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            reason_slug = ("_" + re.sub(r"[^\w]+", "_", reason).strip("_")) if reason else ""
-            debug_path = config.debug_dir / f"click_debug_{timestamp}{reason_slug}.png"
-            debug_img.save(debug_path)
-            log.debug(f"Debug screenshot saved: {debug_path}")
-            
-            # Cleanup old files - delete files older than 24 hours
-            cleanup_old_click_debug_files(config)
-    except Exception as e:
-        log.warning(f"Could not create debug screenshot: {e}")
-    
-    # Bring window to foreground before clicking
-    assert not bring_to_front, "Bringing to front is currently disabled to avoid issues. Set bring_to_front=True to enable (use with caution)."
-    if bring_to_front:
-        if rect.hwnd and win32gui:
-            try:
-                win32gui.SetForegroundWindow(rect.hwnd)
-                time.sleep(0.1)  # Brief delay for window to come to front
-                log.debug(f"Brought window to foreground (hwnd={rect.hwnd})")
-            except Exception as e:
-                log.warning(f"Could not bring window to foreground: {e}")
-        
-    ax, ay = to_absolute_coords(x, y, rect)
-    log.debug(f"click({x}, {y}) → abs({ax}, {ay})")
-
-    # Snapshot focus + cursor so we can restore them after clicking
-    prev_foreground = None
-    prev_mouse_pos = None
-    try:
-        if win32gui:
-            prev_foreground = win32gui.GetForegroundWindow()
-        prev_mouse_pos = pyautogui.position()
-    except Exception as e:
-        log.debug(f"Could not snapshot focus/cursor: {e}")
-
-    pyautogui.click(ax, ay, interval=config.click_pause)
-    log.info(f"Clicked at ({ax}, {ay}); sleep for {config.click_pause:.2f} seconds" + (f"  [{reason}]" if reason else ""))
-    time.sleep(config.click_pause)
-
-    # Restore cursor position
-    if prev_mouse_pos is not None:
-        try:
-            pyautogui.moveTo(prev_mouse_pos.x, prev_mouse_pos.y)
-            log.debug(f"Restored mouse to ({prev_mouse_pos.x}, {prev_mouse_pos.y})")
-        except Exception as e:
-            log.debug(f"Could not restore mouse position: {e}")
-
-    # Restore foreground window (skip if it was BlueStacks itself)
-    if prev_foreground and win32gui and prev_foreground != rect.hwnd:
-        try:
-            win32gui.SetForegroundWindow(prev_foreground)
-            log.debug(f"Restored foreground window (hwnd={prev_foreground})")
-        except Exception as e:
-            log.debug(f"Could not restore foreground window: {e}")
-
-    if ctx is not None:
-        fx = round(x / rect.width,  4) if rect.width  else 0.0
-        fy = round(y / rect.height, 4) if rect.height else 0.0
-        ctx.game_state = record_action_in_state(
-            ctx.game_state,
-            Action(action_type=ActionType.CLICK, x=x, y=y, reason=reason),
-            ax=ax, ay=ay, fx=fx, fy=fy,
-        )
-
-    return True
 
 
 def execute_swipe(x: int, y: int, distance: int, direction: str,
