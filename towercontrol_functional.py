@@ -3172,6 +3172,34 @@ def ensure_window_correct_size():
         except Exception as e:
             log.warning(f"Could not resize/move window: {e}")
 
+def _priority_click(frame, filter_fn, log_message, reason, wait_time):
+    """
+    Helper for priority click actions. Returns True if a click was performed and tick should exit.
+    """
+    global ctx
+    log = logging.getLogger(__name__)
+    marks = [r for r in frame.results if filter_fn(r)]
+    if marks:
+        log.info(f"{log_message} ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking and exiting tick")
+        execute_click(marks[0].center[0], marks[0].center[1], ctx.window_rect, ctx.config, reason=reason)
+        log.info(f'waiting {wait_time} seconds for progress')
+        time.sleep(wait_time)
+        return True
+    return False
+
+# PRIORITY: Check for template-matched buttons ("My games" and "RESUME BATTLE")
+def check_template_and_click(template, label, region, threshold, click_reason):
+    if template is not None:
+        pos = detect_template_in_region(img, template, label, *region, threshold=threshold)
+        if pos:
+            log.info(f"PRIORITY: '{label}' button detected at ({pos[0]:.4f}, {pos[1]:.4f}) - clicking and exiting tick")
+            do_click(click_reason, pos[0], pos[1])
+            return True
+    else:
+        log.info(f'no {label.lower()} template loaded, skipping that check')
+    return False
+
+
 def automation_loop_tick():
     """Single tick of automation loop."""
     global ctx
@@ -3188,46 +3216,47 @@ def automation_loop_tick():
     ctx.frame = frame
     update_tier_from_frame(frame)
 
+
     # PRIORITY: Check for "Go Back" button at the top and click it immediately
-    go_back_marks = [r for r in frame.results if 
-                     ('go' in r.text.lower() and 'back' in r.text.lower()) or 
-                     r.text.lower() == 'go back']
-    # Filter for buttons near the top of the screen (y < 0.15)
-    go_back_marks = [r for r in go_back_marks if r.fy < 0.15]
-    if go_back_marks:
-        log.info(f"PRIORITY: 'Go Back' button detected at ({go_back_marks[0].fx:.4f}, {go_back_marks[0].fy:.4f}) - clicking and exiting tick")
-        execute_click(go_back_marks[0].center[0], go_back_marks[0].center[1], 
-                     ctx.window_rect, ctx.config, reason="Go Back button (priority)")
+    if _priority_click(
+        frame,
+        filter_fn=lambda r: (("go" in r.text.lower() and "back" in r.text.lower()) or r.text.lower() == "go back") and r.fy < 0.15,
+        log_message="PRIORITY: 'Go Back' button detected at",
+        reason="Go Back button (priority)",
+        wait_time=2,
+    ):
         return  # Exit the tick function immediately
 
-    # PRIORITY: Check for "My games" button at the top and click it immediately (template matching)
-    if ctx.my_games_template is not None:
-        my_games_pos = detect_template_in_region(img, ctx.my_games_template, "My games", 
-                                                  0.2, 0.0, 0.6, 0.15, threshold=0.65)
-        if my_games_pos:
-            log.info(f"PRIORITY: 'My games' button detected at ({my_games_pos[0]:.4f}, {my_games_pos[1]:.4f}) - clicking and exiting tick")
-            do_click("My games button (priority, template match)", my_games_pos[0], my_games_pos[1])
-            return  # Exit the tick function immediately
-    else:
-        log.info('no my games template loaded, skipping that check')
     # PRIORITY: Check for "The Tower" app icon/text and click it immediately
-    tower_marks = [r for r in frame.results if 'Tower' in r.text and r.fy < 0.4 and r.fx > 0.8]
-    if tower_marks:
-        log.info(f"PRIORITY: 'The Tower' icon/text detected at ({tower_marks[0].fx:.4f}, {tower_marks[0].fy:.4f}) - clicking and exiting tick")
-        execute_click(tower_marks[0].center[0], tower_marks[0].center[1], 
-                     ctx.window_rect, ctx.config, reason="The Tower app icon (priority)")
-        log.info('waiting 10 seconds for game to start')
-        time.sleep(10)
+    if _priority_click(
+        frame,
+        filter_fn=lambda r: ('Tower' in r.text and r.fy < 0.4 and r.fx > 0.8),
+        log_message="PRIORITY: 'The Tower' icon/text detected at",
+        reason="The Tower app icon (priority)",
+        wait_time=10,
+    ):
         return  # Exit the tick function immediately
 
-    # PRIORITY: Check for "RESUME BATTLE" button and click it immediately (template matching)
-    if ctx.resume_battle_template is not None:
-        resume_pos = detect_template_in_region(img, ctx.resume_battle_template, "RESUME BATTLE", 
-                                               0.4, 0.7, 0.8, 0.95, threshold=0.75)
-        if resume_pos:
-            log.info(f"PRIORITY: 'RESUME BATTLE' button detected at ({resume_pos[0]:.4f}, {resume_pos[1]:.4f}) - clicking and exiting tick")
-            do_click("Resume Battle button (priority, template match)", resume_pos[0], resume_pos[1])
-            return  # Exit the tick function immediately
+
+    # Check for "My games" button
+    if check_template_and_click(
+        ctx.my_games_template,
+        "My games",
+        (0.2, 0.0, 0.6, 0.15),
+        0.65,
+        "My games button (priority, template match)"
+    ):
+        return  # Exit the tick function immediately
+
+    # Check for "RESUME BATTLE" button
+    if check_template_and_click(
+        ctx.resume_battle_template,
+        "RESUME BATTLE",
+        (0.4, 0.7, 0.8, 0.95),
+        0.75,
+        "Resume Battle button (priority, template match)"
+    ):
+        return  # Exit the tick function immediately
 
     # PRIORITY: Check for cloud grab warning dialog ("Warning" + "Yes" button)
     if ctx.config.cloud_grab_enabled:
