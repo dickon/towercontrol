@@ -3303,7 +3303,7 @@ def automation_loop_tick():
         if time.time() < ctx.no_perk_until:
             log.info(f"Perk cooldown active - skipping perk check for {ctx.no_perk_until - time.time():.0f}s more")
         else:
-            newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.42, 0.00, 0.8, 0.10, threshold=0.9)
+            newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.42, 0.00, 0.8, 0.10, threshold=0.75)
             if newperk_pos:
                 do_click("Clicking new perk icon (template match)", newperk_pos[0], newperk_pos[1])
                 mode = 'perks'
