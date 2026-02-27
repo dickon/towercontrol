@@ -3180,15 +3180,19 @@ def _priority_click(frame, filter_fn, log_message, reason, wait_time):
     log = logging.getLogger(__name__)
     marks = [r for r in frame.results if filter_fn(r)]
     if marks:
-        log.info(f"{log_message} ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking and exiting tick")
+        log.info(f"{log_message} ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking and exiting tick at ({marks[0].center[0]}, {marks[0].center[1]})")
         execute_click(marks[0].center[0], marks[0].center[1], ctx.window_rect, ctx.config, reason=reason)
         log.info(f'waiting {wait_time} seconds for progress')
         time.sleep(wait_time)
         return True
+    else:
+        log.info(f'no matches for {reason}, skipping that check')
     return False
 
 # PRIORITY: Check for template-matched buttons ("My games" and "RESUME BATTLE")
-def check_template_and_click(template, label, region, threshold, click_reason):
+def check_template_and_click(img, template, label, region, threshold, click_reason):
+    log = logging.getLogger(__name__)
+
     if template is not None:
         pos = detect_template_in_region(img, template, label, *region, threshold=threshold)
         if pos:
@@ -3238,18 +3242,18 @@ def automation_loop_tick():
         return  # Exit the tick function immediately
 
 
-    # Check for "My games" button
     if check_template_and_click(
+        img,
         ctx.my_games_template,
         "My games",
         (0.2, 0.0, 0.6, 0.15),
-        0.65,
+        0.4,
         "My games button (priority, template match)"
     ):
         return  # Exit the tick function immediately
 
-    # Check for "RESUME BATTLE" button
     if check_template_and_click(
+        img,
         ctx.resume_battle_template,
         "RESUME BATTLE",
         (0.4, 0.7, 0.8, 0.95),
@@ -3279,9 +3283,10 @@ def automation_loop_tick():
     # Check for BATTLE button via template matching
     process_battle_button(img)
 
-    # Build screen state (inlined from build_screen_state)
-    log.debug('build screen state')
-    
+    click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281)))
+    click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.5951,   0.8168))
+    click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429))
+    click_if_present('tap', lambda r: r.text == 'Tap' and r.is_near(0.380, 0.937))
 
     # Extract wave number for comparison
     wave_num_str, _ = extract_wave_from_frame(frame)
@@ -3305,10 +3310,7 @@ def automation_loop_tick():
     log.info(f"Detected mode: {mode}")
     perk_just_clicked = False  # True when we clicked the perk icon this tick (overlay not open yet)
     perk_text = {}
-    click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281)))
-    click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.5951,   0.8168))
-    click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429))
-    click_if_present('tap', lambda r: r.text == 'Tap' and r.is_near(0.380, 0.937))
+
     game_stats_mark = [r for r in frame.results if r.text == 'GAME' and r.is_near(  0.5171,   0.2491) or r.text == 'STATS' and r.is_near(  0.6667,   0.2491)]
     defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
     attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.329, 0.632, 0.1)]
