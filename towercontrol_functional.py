@@ -143,7 +143,7 @@ PERK_CHOICES = [
     r'Unlock Spotlight',
     r'Interest( x[\d\.]+)?',    
     r'(x[\d\.]*\s*)?Defense Absolute',
-    r'x1.89 coins, but -10.0% tower max',
+    r'x1.89 coins, but',
     ]
 
 UPGRADE_PRIORITY = [
