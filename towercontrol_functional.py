@@ -147,8 +147,8 @@ PERK_CHOICES = [
     ]
 
 UPGRADE_PRIORITY = [
-    ('UTILITY', 'Enemy Attack level Skip', 1e6, True),
-    ('UTILITY', 'Enemy Health level Skip', 1e6, True),
+    ('UTILITY', 'Enemy Attack Level Skip', 1e6, True),
+    ('UTILITY', 'Enemy Health Level Skip', 1e6, True),
     ('ATTACK', 'Damage', None, False),
     ('DEFENSE', 'Health', None, False),
     ('DEFENSE', 'Shockwave Size', None, True), 
@@ -160,8 +160,8 @@ UPGRADE_PRIORITY = [
     ('DEFENSE', 'Wall Health', 1e8, True),
     ('DEFENSE', 'Wall Rebuild', 1e8, True),
     ('DEFENSE', 'Health Regen', 1e8, False),
-    ('UTILITY', 'Enemy Attack level Skip', 1e9, True),
-    ('UTILITY', 'Enemy Health level Skip', 1e9, True),
+    ('UTILITY', 'Enemy Attack Level Skip', 1e9, True),
+    ('UTILITY', 'Enemy Health Level Skip', 1e9, True),
     ('DEFENSE', 'Wall Health', 1e9, True),
     ('DEFENSE', 'Wall Rebuild', 1e9, True),
     ('DEFENSE', 'Health Regen', None, False),
@@ -217,7 +217,7 @@ class Config:
     click_pause: float = 1.0
     swipe_pause: float = 1.0
     input_delay: float = 0.15
-    loop_tick: float = 20.0
+    loop_tick: float = 3.0
     work_pace: float = 0.5
     web_host: str = "0.0.0.0"
     web_port: int = 7700
@@ -2759,6 +2759,7 @@ def _advance_upgrade_state(from_label: str = "", reason: str = "") -> None:
     from_button_img = None
     if from_label and from_label in ctx.upgrade_seen:
         from_button_img = ctx.upgrade_seen[from_label].get("crop_b64")
+    assert from_button_img
     advance_entry = {
         "timestamp": time.time(),
         "wave": ctx.game_state.wave,
@@ -2867,7 +2868,7 @@ def handle_upgrade_action(seen_page: Optional[str],
     if target_info.get('is_affordable') is False:
         cost = target_info['cost']
         if cost_threshold is not None and cost is not None and cost > cost_threshold:
-            reason = "unaffordable and cost exceeds threshold"
+            reason = f"unaffordable {cost} and cost exceeds threshold {cost_threshold}"
             log.info(f"'{want_label}' unaffordable (cost={cost}) > threshold {cost_threshold} - advancing")
             _advance_upgrade_state(from_label=want_label, reason=reason)
         else:
