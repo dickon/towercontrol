@@ -158,12 +158,29 @@ def _build_state() -> dict:
         for p in gs.perk_selection_history[-50:]
     ]
 
-    state["upgrade_purchase_history"] = [
-        {"timestamp": p.get("timestamp", 0), "wave": p.get("wave"),
-         "upgrade_name": p.get("upgrade_name", "?"), "cost": p.get("cost"),
-         "current_value": p.get("current_value")}
-        for p in gs.upgrade_purchase_history[-200:]
-    ]
+    # Expose upgrade_button_history for lookup
+    button_history = getattr(c, "upgrade_button_history", [])
+    state["upgrade_button_history"] = button_history[-5000:]
+    # Add button image to each purchase if available
+    state["upgrade_purchase_history"] = []
+    for p in gs.upgrade_purchase_history[-200:]:
+        entry = {
+            "timestamp": p.get("timestamp", 0),
+            "wave": p.get("wave"),
+            "upgrade_name": p.get("upgrade_name", "?"),
+            "cost": p.get("cost"),
+            "current_value": p.get("current_value"),
+        }
+        idx = p.get("button_snapshot_idx")
+        label = p.get("upgrade_name")
+        crop_b64 = None
+        if idx is not None and label and 0 <= idx < len(button_history):
+            snap = button_history[idx]["buttons"].get(label)
+            if snap:
+                crop_b64 = snap.get("crop_b64")
+        if crop_b64:
+            entry["button_img"] = crop_b64
+        state["upgrade_purchase_history"].append(entry)
 
     state["upgrade_advance_history"] = [
         {"timestamp": p.get("timestamp", 0), "wave": p.get("wave"),

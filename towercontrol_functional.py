@@ -2911,12 +2911,20 @@ def handle_upgrade_action(seen_page: Optional[str],
     fx = fx + 0.1
     do_click(f"Buying upgrade '{want_label}'", fx, fy)
     ctx.last_upgrade_action = now
+    # Find the most recent button snapshot before or at this purchase
+    button_snapshot_idx = None
+    for i in range(len(ctx.upgrade_button_history) - 1, -1, -1):
+        snap = ctx.upgrade_button_history[i]
+        if snap['timestamp'] <= now:
+            button_snapshot_idx = i
+            break
     purchase_entry = {
         "timestamp": now,
         "wave": ctx.game_state.wave,
         "upgrade_name": want_label,
         "cost": target_info['cost'],
         "current_value": target_info.get('current_value'),
+        "button_snapshot_idx": button_snapshot_idx,
     }
     new_purchase_history = (*ctx.game_state.upgrade_purchase_history, purchase_entry)
     if len(new_purchase_history) > 500:
@@ -3003,6 +3011,7 @@ class RuntimeContext:
     ocr_time: float = 0.0
     upgrade_mode_seen: str = None
     upgrade_seen: dict = field(default_factory=dict)  # label → {timestamp, current_value, cost, is_max, crop_b64, …}
+    upgrade_button_history: list = field(default_factory=list)  # List of last 5000 button states (dicts)
     # Watchdog state
     last_bs_restart: float = 0.0      # timestamp of last BlueStacks launch attempt
     last_game_launch: float = 0.0     # timestamp of last ADB game launch attempt
@@ -3413,6 +3422,7 @@ def automation_loop_tick():
         ctx.last_seen_upgrades = time.time()
         ctx.recover_stage = 0
         _now = time.time()
+        button_snapshot = {}
         for _label, _info in upgrade_buttons.items():
             _crop_b64 = None
             _rect = _info.get('box_rect')
@@ -3425,8 +3435,9 @@ def automation_loop_tick():
                     _crop_b64 = base64.b64encode(_buf.getvalue()).decode()
                 except Exception:
                     pass
-            ctx.upgrade_seen[_label] = {
+            button_data = {
                 'timestamp': _now,
+                'label': _label,
                 'current_value': _info.get('current_value'),
                 'cost': _info.get('cost'),
                 'is_max': _info.get('is_max', False),
@@ -3435,9 +3446,14 @@ def automation_loop_tick():
                 'cell_color_name': _info.get('cell_color_name', ''),
                 'crop_b64': _crop_b64,
             }
-        # Keep only the last 200 by timestamp
+            button_snapshot[_label] = button_data
+            ctx.upgrade_seen[_label] = button_data
+        # Store snapshot in button history (capped at 5000)
+        ctx.upgrade_button_history.append({'timestamp': _now, 'buttons': button_snapshot})
+        if len(ctx.upgrade_button_history) > 5000:
+            ctx.upgrade_button_history = ctx.upgrade_button_history[-5000:]
+        # Keep only the last 200 by timestamp in upgrade_seen
         if len(ctx.upgrade_seen) > 200:
-            # Sort by timestamp, keep most recent 200
             items = sorted(ctx.upgrade_seen.items(), key=lambda x: x[1].get('timestamp', 0), reverse=True)
             ctx.upgrade_seen = dict(items[:200])
     elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 30.0 and ctx.recover_stage == 0:

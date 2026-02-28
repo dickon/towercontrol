@@ -386,10 +386,14 @@ function renderUpgradePurchaseHistory(history) {
     const t  = new Date(p.timestamp * 1000).toLocaleTimeString();
     const cost = p.cost != null ? p.cost.toLocaleString() : "—";
     const val  = fmtVal(p.current_value);
+    let upgradeCell = esc(p.upgrade_name);
+    if (p.button_img) {
+      upgradeCell = `<img src="data:image/jpeg;base64,${p.button_img}" style="height:28px;vertical-align:middle;margin-right:4px;border-radius:3px;image-rendering:pixelated" title="Upgrade button image"> ` + upgradeCell;
+    }
     tr.innerHTML =
       `<td class="text-muted ps-2">${t}</td>` +
       `<td class="text-info">${esc(p.wave ?? "?")}</td>` +
-      `<td>${esc(p.upgrade_name)}</td>` +
+      `<td>${upgradeCell}</td>` +
       `<td class="text-end text-secondary">${esc(val)}</td>` +
       `<td class="text-end pe-2 text-warning">${esc(cost)}</td>`;
     tbody.appendChild(tr);
