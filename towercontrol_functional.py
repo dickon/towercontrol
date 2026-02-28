@@ -2471,7 +2471,7 @@ def detect_floating_gem(
         best_val = 0.0
         best_match_cx: Optional[int] = None
         best_match_cy: Optional[int] = None
-        threshold = 0.58
+        threshold = 0.85
 
         center_pt = (tw // 2, th // 2)
         for rot_deg in range(0, 360, 10):
@@ -3044,6 +3044,7 @@ def click_if_present(name, condition, callback=None):
             callback()
             return True
     else:
+        log.info(f'No matches for condition "{name}"')
         return False
 
 def do_ocr():
@@ -3189,6 +3190,18 @@ def automation_loop_tick():
     ctx.frame = frame
     update_tier_from_frame(frame)
 
+    log.info(f'{[r for r in frame.results if r.text == "TOURNAMENT"]}')
+    # PRIORITY: Check for "TOURNAMENT" at (0.353, 0.196) and exit killed by screen
+    tournament_detected = any(
+        r.text.strip().upper() == "TOURNAMENT" and abs(r.fx - 0.515) < 0.02 and abs(r.fy - 0.208) < 0.02
+        for r in frame.results
+    )
+    log.info(f'Tournament check: {"detected" if tournament_detected else "not detected"}')
+    if tournament_detected:
+        log.info("TOURNAMENT detected at (0.353, 0.196) - clicking to exit killed by screen")
+        do_click("TOURNAMENT exit killed by screen", 0.5884, 0.7704)
+        return False
+
 
     # PRIORITY: Check for "Go Back" button at the top and click it immediately
     if _priority_click(
@@ -3256,6 +3269,10 @@ def automation_loop_tick():
         return False
     
     if click_if_present('slashmin', lambda r: r.text == 'Slashmin' and r.is_near(0.380, 0.937)):
+        return False
+
+    log.info(f'return text: {[r for r in frame.results if r.text == "Return"]}')
+    if click_if_present('return', lambda r: r.text == 'Return' and r.is_near(0.458, 0.937, 0.2)):
         return False
     
     # Extract wave number for comparison
