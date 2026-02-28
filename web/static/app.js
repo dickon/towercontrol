@@ -947,10 +947,16 @@ function renderTimeline(data) {
     const newDataMaxT     = Math.max(...allTs);
 
     if (!_overviewInitialized) {
-      // First paint: show full data extent
+      // First paint: show last hour if possible, else full data extent
       _overviewDataMaxT = newDataMaxT;
-      _viewMinT = _overviewDataMinT;
-      _viewMaxT = _overviewDataMaxT;
+      const ONE_HOUR_MS = 60 * 60 * 1000;
+      if (_overviewDataMaxT - _overviewDataMinT > ONE_HOUR_MS) {
+        _viewMaxT = _overviewDataMaxT;
+        _viewMinT = _overviewDataMaxT - ONE_HOUR_MS;
+      } else {
+        _viewMinT = _overviewDataMinT;
+        _viewMaxT = _overviewDataMaxT;
+      }
       _overviewInitialized = true;
     } else {
       // Auto-follow: if the right edge of the window was at (or within 2 s of)
@@ -1028,6 +1034,7 @@ function renderTimeline(data) {
         yRate: {
           position: "right",
           title:    { display: true, text: "Cash /min", color: "#8f8", font: { size: 10 } },
+          min: 0,
           ticks: {
             color: "#8f8",
             font:  { size: 10 },
@@ -1039,6 +1046,7 @@ function renderTimeline(data) {
           position: "right",
           offset: true,
           title:    { display: true, text: "Coin /min", color: "#f9a", font: { size: 10 } },
+          min: 0,
           ticks: {
             color: "#f9a",
             font:  { size: 10 },
@@ -1050,6 +1058,7 @@ function renderTimeline(data) {
           position: "right",
           offset: true,
           title:    { display: true, text: "w/h", color: "#c8f", font: { size: 10 } },
+          min: 0,
           ticks:    { color: "#c8f", font: { size: 10 } },
           grid:     { drawOnChartArea: false },
         },
