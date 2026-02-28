@@ -2138,12 +2138,6 @@ def _parse_upgrade_cost(texts: List[str]) -> Tuple[bool, Optional[float]]:
         parsed = parse_number_with_suffix(cleaned)
         if parsed is not None:
             return False, parsed
-    # Second pass: short strings with no digits or '$' are OCR misreads of "Max"
-    # (e.g. EasyOCR reads "Max" as "(ME" or "oe" on darker buttons)
-    for text in texts:
-        stripped = text.strip()
-        if 2 <= len(stripped) <= 6 and re.fullmatch(r'[^\d$]+', stripped):
-            return True, None
     return False, None
 
 
@@ -3031,6 +3025,7 @@ def mark_battle_start():
     ctx.upgrade_scroll_start = 0.0
     ctx.upgrade_scroll_direction = 'down'
     ctx.no_perk_until = 0.0
+    ctx.rate_history = []
 
 def click_if_present(name, condition, callback=None):
     global ctx
@@ -3632,6 +3627,13 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
             value = _parse_resource_value(raw)
             if value is None or value < 0:
                 return None
+            prev_rec = ctx.rate_history[-1] if ctx.rate_history else None
+            if prev_rec:
+                lkey = 'coin' if key == 'gold' else key 
+                prev_value = prev_rec.get(f"{lkey}_pm")
+                if prev_value is not None and (value < prev_value / 20 or value > prev_value * 30):
+                    log.warning(f"Unrealistic {key} rate detected: {value:.6g} (previous {prev_value:.6g}) — ignoring this sample")
+                    return None
             log.info(f"Direct /min rate: {key}={value:.6g}")
             # Successful /min read — reset any pending toggle counter.
             ctx._hud_toggle_pending.pop(key, None)
