@@ -147,16 +147,16 @@ PERK_CHOICES = [
     ]
 
 UPGRADE_PRIORITY = [
-    ('UTILITY', 'Enemy Attack level Skip', 1e7, True),
-    ('UTILITY', 'Enemy Health level Skip', 1e7, True),
+    ('UTILITY', 'Enemy Attack level Skip', 1e6, True),
+    ('UTILITY', 'Enemy Health level Skip', 1e6, True),
     ('ATTACK', 'Damage', None, False),
     ('DEFENSE', 'Health', None, False),
-#    ('DEFENSE', 'Shockwave Size', None, True), 
-#    ('DEFENSE', 'Shockwave Frequency', None, True),
-#    ('DEFENSE', 'Land Mine Chance', None, True),
-#    ('DEFENSE', 'Land Mine Damage', None, True),
-#    ('DEFENSE', 'Land Mine Radius', None, True),
-#    ('DEFENSE', 'Death Defy', None, True),
+    ('DEFENSE', 'Shockwave Size', None, True), 
+    ('DEFENSE', 'Shockwave Frequency', None, True),
+    ('DEFENSE', 'Land Mine Chance', None, True),
+    ('DEFENSE', 'Land Mine Damage', None, True),
+    ('DEFENSE', 'Land Mine Radius', None, True),
+    ('DEFENSE', 'Death Defy', None, True),
     ('DEFENSE', 'Wall Health', 1e8, True),
     ('DEFENSE', 'Wall Rebuild', 1e8, True),
     ('DEFENSE', 'Health Regen', 1e8, False),
@@ -2755,12 +2755,17 @@ def _advance_upgrade_state(from_label: str = "", reason: str = "") -> None:
                  f"'{to_label}'")
     else:
         log.info("All priority upgrades complete")
+    # Attempt to get the button image (base64) for the 'from' upgrade if available
+    from_button_img = None
+    if from_label and from_label in ctx.upgrade_seen:
+        from_button_img = ctx.upgrade_seen[from_label].get("crop_b64")
     advance_entry = {
         "timestamp": time.time(),
         "wave": ctx.game_state.wave,
         "from_upgrade": from_label,
         "to_upgrade": to_label,
         "reason": reason,
+        "from_button_img": from_button_img,
     }
     new_advance_history = (*ctx.game_state.upgrade_advance_history, advance_entry)
     if len(new_advance_history) > 200:
@@ -3412,6 +3417,11 @@ def automation_loop_tick():
                 'cell_color_name': _info.get('cell_color_name', ''),
                 'crop_b64': _crop_b64,
             }
+        # Keep only the last 200 by timestamp
+        if len(ctx.upgrade_seen) > 200:
+            # Sort by timestamp, keep most recent 200
+            items = sorted(ctx.upgrade_seen.items(), key=lambda x: x[1].get('timestamp', 0), reverse=True)
+            ctx.upgrade_seen = dict(items[:200])
     elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 30.0 and ctx.recover_stage == 0:
         # is more than 1 minute since last perk was selected
         if time.time() - ctx.no_perk_until > 60.0 and wave_num:

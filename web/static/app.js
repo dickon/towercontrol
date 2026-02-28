@@ -405,10 +405,14 @@ function renderUpgradeAdvanceHistory(history) {
   for (const p of [...history].reverse()) {
     const tr = document.createElement("tr");
     const t  = new Date(p.timestamp * 1000).toLocaleTimeString();
+    let fromCell = esc(p.from_upgrade);
+    if (p.from_button_img) {
+      fromCell = `<img src="data:image/jpeg;base64,${p.from_button_img}" style="height:28px;vertical-align:middle;margin-right:4px;border-radius:3px;image-rendering:pixelated" title="From upgrade button image"> ` + fromCell;
+    }
     tr.innerHTML =
       `<td class="text-muted ps-2">${t}</td>` +
       `<td class="text-info">${esc(p.wave ?? "?")}</td>` +
-      `<td class="text-secondary">${esc(p.from_upgrade)}</td>` +
+      `<td class="text-secondary">${fromCell}</td>` +
       `<td class="text-success">${esc(p.to_upgrade)}</td>` +
       `<td class="text-muted">${esc(p.reason)}</td>`;
     tbody.appendChild(tr);

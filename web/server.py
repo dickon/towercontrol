@@ -168,7 +168,8 @@ def _build_state() -> dict:
     state["upgrade_advance_history"] = [
         {"timestamp": p.get("timestamp", 0), "wave": p.get("wave"),
          "from_upgrade": p.get("from_upgrade", "?"), "to_upgrade": p.get("to_upgrade", "?"),
-         "reason": p.get("reason", "?")}
+         "reason": p.get("reason", "?"),
+         "from_button_img": p.get("from_button_img")}
         for p in gs.upgrade_advance_history[-50:]
     ]
 
