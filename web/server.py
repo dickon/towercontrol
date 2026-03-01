@@ -211,7 +211,7 @@ def _build_state() -> dict:
     try:
         prio = _mod._active_upgrade_priority()
         state["upgrade_priority"] = [
-            {"page": p[0], "label": p[1], "cost_threshold": p[2], "needs_scroll": p[3]}
+            {"page": p[0], "label": p[1], "cost_threshold": p[2], "needs_scroll": p[3] if len(p) > 3 else False}
             for p in prio
         ]
         state["upgrade_state"] = c.upgrade_state
