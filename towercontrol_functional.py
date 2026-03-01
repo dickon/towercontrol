@@ -90,10 +90,10 @@ UPGRADE_BUTTON_ROWS = [
 # Attack upgrade labels
 ATTACK_UPGRADES = [
     'Damage', 'Attack Speed', 'Critical Chance', 'Critical Factor', 'Range',
-    'Damage Per Meter', 'Multishot Chance', 'Multishot Targets',
+    'Damage / Meter', 'Multishot Chance', 'Multishot Targets',
     'Rapid Fire Chance', 'Rapid Fire Duration', 'Bounce Shot Chance',
     'Bounce Shot Targets', 'Bounce Shot Range', 'Super Crit Chance',
-    'Super Crit Mult', 'Rend Armor Chance', 'Rend Armor Mult'
+    'Super Crit Mult'
 ]
 
 # Defense upgrade labels
@@ -143,41 +143,36 @@ PERK_CHOICES = [
     r'Unlock Spotlight',
     r'Interest( x[\d\.]+)?',    
     r'(x[\d\.]*\s*)?Defense Absolute',
-    r'x1.89 coins, but',
+    #r'x1.89 coins, but',
     ]
 
 UPGRADE_PRIORITY = [
-    ('UTILITY', 'Enemy Attack Level Skip', 1e6, True),
-    ('UTILITY', 'Enemy Health Level Skip', 1e6, True),
-    ('ATTACK', 'Damage', None, False),
-    ('DEFENSE', 'Health', None, False),
-    ('DEFENSE', 'Shockwave Size', None, True), 
-    ('DEFENSE', 'Shockwave Frequency', None, True),
-    ('DEFENSE', 'Land Mine Chance', None, True),
-    ('DEFENSE', 'Land Mine Damage', None, True),
-    ('DEFENSE', 'Land Mine Radius', None, True),
-    ('DEFENSE', 'Death Defy', None, True),
-    ('DEFENSE', 'Wall Health', 1e8, True),
-    ('DEFENSE', 'Wall Rebuild', 1e8, True),
-    ('DEFENSE', 'Health Regen', 1e8, False),
-    ('UTILITY', 'Enemy Attack Level Skip', 1e9, True),
-    ('UTILITY', 'Enemy Health Level Skip', 1e9, True),
-    ('DEFENSE', 'Wall Health', 1e9, True),
-    ('DEFENSE', 'Wall Rebuild', 1e9, True),
-    ('DEFENSE', 'Health Regen', None, False),
-    ('DEFENSE', 'Defense Absolute', None, False),
-    ('DEFENSE', 'Wall Health', None, True),
-
+    ('UTILITY', 'Enemy Attack Level Skip', 1e6),
+    ('UTILITY', 'Enemy Health Level Skip', 1e6),
+    ('ATTACK', 'Damage', None),
+    ('DEFENSE', 'Health', None),
+    ('DEFENSE', 'Shockwave Size', None),
+    ('DEFENSE', 'Shockwave Frequency', None),
+    ('DEFENSE', 'Land Mine Chance', None),
+    ('DEFENSE', 'Land Mine Damage', None),
+    ('DEFENSE', 'Land Mine Radius', None),
+    ('DEFENSE', 'Death Defy', None),
+    ('DEFENSE', 'Health Regen', None),
+    ('UTILITY', 'Enemy Attack Level Skip', 1e9),
+    ('UTILITY', 'Enemy Health Level Skip', 1e9),
+    ('DEFENSE', 'Defense Absolute', None),
+    ('DEFENSE', 'Wall Health', None),
+    ('DEFENSE', 'Wall Rebuild', None),
 ] 
 
 UPGRADE_PRIORITY_HIGH_TIER = [
-    ('ATTACK', 'Damage', 1e6, False),
-    ('ATTACK', 'Damage Per Meter', None, False),
-    ('ATTACK', 'Damage', None, False),
-    ('DEFENSE', 'Health', 1e6, False),
-    ('DEFENSE', 'Wall Health', 1e6, True),
-    ('DEFENSE', 'Health Regen', 1e6, False),
-    ('DEFENSE', 'Health', None, False),
+    ('ATTACK', 'Damage', 1e6),
+    ('ATTACK', 'Damage Per Meter', None),
+    ('ATTACK', 'Damage', None),
+    ('DEFENSE', 'Health', 1e6),
+    ('DEFENSE', 'Wall Health', 1e6),
+    ('DEFENSE', 'Health Regen', 1e6),
+    ('DEFENSE', 'Health', None),
 ] + UPGRADE_PRIORITY
 
 FLOATER_POSITIONS = [
@@ -2715,6 +2710,182 @@ UPGRADE_TAB_CLICK = {
 }
 
 
+# Default row-to-row spacing as a fraction of image height (derived from
+# UPGRADE_BUTTON_ROWS centre y values: 0.69, 0.80, 0.90 → mean gap ≈ 0.105).
+_UPGRADE_ROW_HEIGHT_FRAC: float = 0.105
+
+# Number of upgrade rows simultaneously visible in the scroll viewport.
+_UPGRADE_VISIBLE_ROWS: int = 3
+
+# Maximum rows to move in a single swipe.  Large drags through BlueStacks are
+# nonlinearly dampened by Android scroll physics, so we cap each jump and rely
+# on multiple ticks to converge on the target.
+_UPGRADE_MAX_SWIPE_ROWS: int = 3
+
+# After this many seconds of failed jump-scroll attempts, fall back to slow
+# sequential scrolling.
+_UPGRADE_JUMP_FALLBACK_SECS: float = 900.0   # 15 minutes
+
+
+def _get_category_upgrades_list(category: str) -> List[str]:
+    """Return the ordered upgrade list for a category."""
+    if category == 'ATTACK':
+        return ATTACK_UPGRADES
+    elif category == 'DEFENSE':
+        return DEFENSE_UPGRADES
+    elif category == 'UTILITY':
+        return UTILITY_UPGRADES
+    return []
+
+
+def _upgrade_row_index(category: str, label: str) -> Optional[int]:
+    """Return the 0-based row index for *label* within its *category*.
+
+    The upgrade list stores items left-to-right, row-by-row (2 columns per
+    row), so list index 0,1 → row 0; index 2,3 → row 1; etc.
+    """
+    upgrades = _get_category_upgrades_list(category)
+    for i, name in enumerate(upgrades):
+        if name.lower() == label.lower():
+            return i // 2
+    return None
+
+
+def _total_category_rows(category: str) -> int:
+    """Return the total number of rows for a category."""
+    n = len(_get_category_upgrades_list(category))
+    return (n + 1) // 2
+
+
+def _compute_row_height_from_boxes(upgrade_buttons: Dict[str, Any]) -> Optional[float]:
+    """Compute row height (fractional y) from detected upgrade boxes.
+
+    Groups visible buttons into rows by fy_center proximity, then returns
+    the median centre-to-centre y gap.  Returns None when fewer than 2 rows
+    are detected.
+    """
+    if not upgrade_buttons:
+        return None
+
+    fy_centers: List[float] = []
+    for info in upgrade_buttons.values():
+        rect = info.get('box_rect')
+        if rect:
+            fy_centers.append((rect[1] + rect[3]) / 2)
+
+    if len(fy_centers) < 2:
+        return None
+
+    fy_centers.sort()
+    rows: List[List[float]] = [[fy_centers[0]]]
+    for fc in fy_centers[1:]:
+        if fc - rows[-1][-1] < 0.03:
+            rows[-1].append(fc)
+        else:
+            rows.append([fc])
+
+    if len(rows) < 2:
+        return None
+
+    row_centers = [sum(r) / len(r) for r in rows]
+    gaps = [row_centers[i + 1] - row_centers[i] for i in range(len(row_centers) - 1)]
+    return sorted(gaps)[len(gaps) // 2]  # median
+
+
+def _estimate_visible_top_row(category: str,
+                              visible_labels: List[str]) -> Optional[int]:
+    """From the currently visible upgrade labels, determine the topmost row index."""
+    rows: List[int] = []
+    for label in visible_labels:
+        r = _upgrade_row_index(category, label)
+        if r is not None:
+            rows.append(r)
+    return min(rows) if rows else None
+
+
+def _compute_upgrade_scroll_vector(
+    category: str,
+    want_label: str,
+    upgrade_buttons: Dict[str, Any],
+    h: int,
+) -> Optional[Tuple[str, int]]:
+    """Compute the swipe (direction, pixel_distance) to move toward *want_label*.
+
+    Uses the currently visible buttons to determine the current scroll position,
+    then computes a swipe toward the target row.  The swipe is capped at
+    _UPGRADE_MAX_SWIPE_ROWS per call so that BlueStacks scroll physics stay in
+    the linear regime; multiple ticks converge on the target.
+
+    Returns ``('up'|'down', pixels)`` or ``None`` if the position cannot be
+    determined from the currently visible buttons.
+    """
+    log = logging.getLogger(__name__)
+
+    target_row = _upgrade_row_index(category, want_label)
+    if target_row is None:
+        log.warning(f"_compute_upgrade_scroll_vector: '{want_label}' not in {category} list")
+        return None
+
+    visible_labels = list(upgrade_buttons.keys())
+    visible_top = _estimate_visible_top_row(category, visible_labels)
+    if visible_top is None:
+        log.warning("_compute_upgrade_scroll_vector: cannot determine current scroll position")
+        return None
+
+    # Use minimum-scroll logic: move just enough to bring the target into view,
+    # rather than centering it.  This avoids overshooting when the target is
+    # only 1 row outside the visible window (which caused oscillation when the
+    # center-based 2-row swipe overshot by 2 rows in the opposite direction).
+    if target_row < visible_top:
+        # Target is above the window — scroll up to align target at top
+        row_delta = target_row - visible_top  # negative
+    elif target_row >= visible_top + _UPGRADE_VISIBLE_ROWS:
+        # Target is below the window — scroll down to align target at bottom
+        row_delta = target_row - (visible_top + _UPGRADE_VISIBLE_ROWS - 1)  # positive
+    else:
+        row_delta = 0
+
+    if row_delta == 0:
+        log.debug(f"Target row {target_row} already in viewport (visible_top={visible_top}) — no scroll needed")
+        return None
+
+    desired_top = visible_top + row_delta  # for logging only
+
+    # Cap swipe to _UPGRADE_MAX_SWIPE_ROWS to stay in the linear scroll regime
+    capped_delta = max(-_UPGRADE_MAX_SWIPE_ROWS,
+                       min(_UPGRADE_MAX_SWIPE_ROWS, row_delta))
+
+    # Determine row height in pixels
+    rh_frac = _compute_row_height_from_boxes(upgrade_buttons)
+    if rh_frac is None:
+        rh_frac = _UPGRADE_ROW_HEIGHT_FRAC
+    row_height_px = rh_frac * h
+
+    pixel_distance = int(abs(capped_delta) * row_height_px)
+
+    direction = 'down' if capped_delta > 0 else 'up'
+    log.info(
+        f"Scroll vector: target_row={target_row}, visible_top={visible_top}, "
+        f"desired_top={desired_top}, delta={row_delta} rows (capped={capped_delta}), "
+        f"row_height={row_height_px:.0f}px → {direction} {pixel_distance}px"
+    )
+    return (direction, pixel_distance)
+
+
+def _do_upgrade_jump_scroll(direction: str, pixels: int,
+                            w: int, h: int, message: str) -> None:
+    """Execute a precise jump-scroll of the upgrade list by *pixels*."""
+    global ctx
+    log = logging.getLogger(__name__)
+    if not ctx.window_rect:
+        return
+    scroll_x = int(0.595 * w)
+    scroll_y = int(0.8325 * h)
+    log.info(f"Jump scroll {direction} by {pixels}px — {message}")
+    execute_swipe(scroll_x, scroll_y, pixels, direction,
+                  ctx.window_rect, ctx.config, ctx.input_enabled)
+
+
 def _click_upgrade_tab(want_page: str) -> None:
     """Click the upgrade sub-tab for the given category."""
     if want_page in UPGRADE_TAB_CLICK:
@@ -2746,6 +2917,7 @@ def _advance_upgrade_state(from_label: str = "", reason: str = "") -> None:
     global ctx
     log = logging.getLogger(__name__)
     ctx.upgrade_state += 1
+    ctx.upgrade_scroll_attempt_start = 0.0
     ctx.upgrade_scroll_start = 0.0
     ctx.upgrade_scroll_direction = 'down'
     prio = _active_upgrade_priority()
@@ -2794,7 +2966,8 @@ def handle_upgrade_action(seen_page: Optional[str],
     Steps:
       1. Ensure the correct upgrade sub-tab (ATTACK/DEFENSE/UTILITY) is open.
       2. Look for the target upgrade label among visible buttons.
-         - Not found → scroll (down first, switch to up after upgrade_scroll_timeout).
+         - Not found → compute jump-scroll from known list position.
+         - After 15 min of failed jumps → fall back to slow sequential scroll.
          - Found, cost is None (MAX) → advance to next priority item.
          - Found, cost exceeds threshold → advance to next priority item.
          - Found, affordable → click to purchase.
@@ -2816,9 +2989,9 @@ def handle_upgrade_action(seen_page: Optional[str],
             log.info("Upgrade priority reset after 30 minutes")
         return
 
-    want_page, want_label, cost_threshold, needs_scroll = prio[ctx.upgrade_state]
+    want_page, want_label, cost_threshold = prio[ctx.upgrade_state]
     log.info(f"Upgrade state {ctx.upgrade_state}: targeting '{want_label}' on {want_page} tab "
-             f"(threshold={cost_threshold}, needs_scroll={needs_scroll})")
+             f"(threshold={cost_threshold})")
 
     if seen_page is None:
         log.info("No upgrade tab visible - skipping upgrade action this tick")
@@ -2838,23 +3011,53 @@ def handle_upgrade_action(seen_page: Optional[str],
             break
 
     if target_info is None:
-        # Not visible - scroll to find it
-        if ctx.upgrade_scroll_start == 0.0:
-            ctx.upgrade_scroll_start = now
-            ctx.upgrade_scroll_direction = 'down' if prio[ctx.upgrade_state][3] else 'up'
-            log.info(f"'{want_label}' not on screen - beginning scroll  {ctx.upgrade_scroll_direction}")
+        # Not visible — try to jump-scroll based on list-position calculation
+        if ctx.upgrade_scroll_attempt_start == 0.0:
+            ctx.upgrade_scroll_attempt_start = now
+        attempt_elapsed = now - ctx.upgrade_scroll_attempt_start
 
-        elapsed = now - ctx.upgrade_scroll_start
-        if ctx.upgrade_scroll_direction == 'down' and elapsed > ctx.config.upgrade_scroll_timeout:
-            log.info(f"Scroll down timed out after {elapsed:.0f}s - switching scroll direction")
-            ctx.upgrade_scroll_direction = 'up' if ctx.upgrade_scroll_direction == 'down' else 'down'
-            ctx.upgrade_scroll_start = now
-
-        _do_upgrade_scroll(ctx.upgrade_scroll_direction, w, h, f'scrolling {ctx.upgrade_scroll_direction} for {want_label}; elapsed {elapsed:.1f}s of {ctx.config.upgrade_scroll_timeout}')
+        if attempt_elapsed > _UPGRADE_JUMP_FALLBACK_SECS:
+            # ── Fallback: slow sequential scrolling after 15 min ──────────
+            if ctx.upgrade_scroll_start == 0.0:
+                ctx.upgrade_scroll_start = now
+                ctx.upgrade_scroll_direction = 'down'
+                log.info(f"'{want_label}' jump-scroll failed for {attempt_elapsed:.0f}s "
+                         f"— falling back to slow scroll {ctx.upgrade_scroll_direction}")
+            scroll_elapsed = now - ctx.upgrade_scroll_start
+            if scroll_elapsed > ctx.config.upgrade_scroll_timeout:
+                ctx.upgrade_scroll_direction = (
+                    'up' if ctx.upgrade_scroll_direction == 'down' else 'down'
+                )
+                ctx.upgrade_scroll_start = now
+                log.info(f"Fallback scroll direction switched to {ctx.upgrade_scroll_direction}")
+            _do_upgrade_scroll(
+                ctx.upgrade_scroll_direction, w, h,
+                f'FALLBACK scrolling {ctx.upgrade_scroll_direction} for {want_label}; '
+                f'elapsed {scroll_elapsed:.1f}s'
+            )
+        else:
+            # ── Primary: computed jump-scroll ──────────────────────────────
+            scroll_result = _compute_upgrade_scroll_vector(
+                want_page, want_label, upgrade_buttons, h
+            )
+            if scroll_result is not None:
+                direction, pixels = scroll_result
+                _do_upgrade_jump_scroll(
+                    direction, pixels, w, h,
+                    f"jump to '{want_label}' (attempt {attempt_elapsed:.0f}s)"
+                )
+            else:
+                # Cannot determine scroll position (no visible labels from
+                # this category) — do a small blind scroll down
+                _do_upgrade_scroll(
+                    'down', w, h,
+                    f"blind scroll for '{want_label}' (no position reference)"
+                )
         ctx.last_upgrade_action = now
         return
 
-    # Found - reset scroll tracking
+    # Found — reset scroll tracking
+    ctx.upgrade_scroll_attempt_start = 0.0
     ctx.upgrade_scroll_start = 0.0
 
     # If cost is unknown (OCR failed and not explicitly maxed), skip this tick
@@ -2886,7 +3089,7 @@ def handle_upgrade_action(seen_page: Optional[str],
         if ctx.upgrade_state >= len(prio):
             return
 
-        want_page, want_label, cost_threshold, needs_scroll = prio[ctx.upgrade_state]
+        want_page, want_label, cost_threshold = prio[ctx.upgrade_state]
 
         # Stop batch if the next upgrade is on a different tab or not currently visible
         if want_page != seen_page:
@@ -3004,8 +3207,9 @@ class RuntimeContext:
     last_upgrade_action: float = 0.0        # timestamp of last upgrade purchase attempt
     last_seen_upgrades: float = 0.0  # timestamp when upgrade buttons were last visible
     recover_stage: int = 0
-    upgrade_scroll_start: float = 0.0       # when current scroll direction started (0 = not scrolling)
-    upgrade_scroll_direction: str = 'down'  # 'down' or 'up'
+    upgrade_scroll_attempt_start: float = 0.0  # when jump-scroll attempts began (0 = not scrolling)
+    upgrade_scroll_start: float = 0.0       # fallback: when slow-scroll direction started
+    upgrade_scroll_direction: str = 'down'  # fallback: 'down' or 'up'
     no_perk_until: float = 0.0              # skip perk processing until this timestamp (set when no perks selectable)
     upgrades_finished_time: Optional[int] = None
     ocr_time: float = 0.0
@@ -3037,6 +3241,7 @@ def mark_battle_start():
     log.info("Battle start detected - marking in state")
     ctx.game_state = replace(ctx.game_state, battle_start_time=time.time(), wave_history=[])
     ctx.upgrade_state = 0
+    ctx.upgrade_scroll_attempt_start = 0.0
     ctx.upgrade_scroll_start = 0.0
     ctx.upgrade_scroll_direction = 'down'
     ctx.no_perk_until = 0.0
