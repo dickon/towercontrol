@@ -278,7 +278,7 @@ def _build_state() -> dict:
     # The frontend watches this via WebSocket and refreshes the chart automatically.
     try:
         _tl_dir_mt = int((_debug_dir.stat().st_mtime if _debug_dir and _debug_dir.exists() else 0) * 2)
-        state["timeline_seq"] = len(gs.wave_history) + len(gs.action_history) + _tl_dir_mt
+        state["timeline_seq"] = len(gs.wave_history) + len(gs.action_history) + len(gs.upgrade_purchase_history) + _tl_dir_mt
     except Exception:
         pass
 
@@ -668,6 +668,33 @@ async def api_timeline():
     # ── cash/coin rate history
     rate_history = list(getattr(c, "rate_history", [])) if c is not None else []
 
+    # ── upgrade cash spend rate (30-minute rolling window)
+    spend_rate_history: list = []
+    _SPEND_WINDOW = 1800  # 30 minutes
+    if c is not None and c.game_state:
+        purchases = sorted(
+            (p for p in c.game_state.upgrade_purchase_history
+             if p.get("cost") is not None and p.get("timestamp") is not None),
+            key=lambda p: p["timestamp"]
+        )
+        if purchases:
+            first_t = purchases[0]["timestamp"]
+            for i, p in enumerate(purchases):
+                t_now    = p["timestamp"]
+                cutoff_t = t_now - _SPEND_WINDOW
+                # Sum all purchase costs within the look-back window
+                window_cost = sum(
+                    q["cost"] for q in purchases[:i + 1]
+                    if q["timestamp"] >= cutoff_t
+                )
+                # Denominator: actual history available, capped at 30 min
+                elapsed = min(_SPEND_WINDOW, t_now - first_t)
+                denom_minutes = max(elapsed / 60.0, 1.0 / 60.0)  # at least 1 second
+                spend_rate_history.append({
+                    "t":        t_now,
+                    "spend_pm": window_cost / denom_minutes,
+                })
+
     # ── capture ticks: parse debug dir filenames (last 2 days only)
     ticks = []
     if _debug_dir is not None:
@@ -717,11 +744,12 @@ async def api_timeline():
             })
 
     return {
-        "wave_history":      wave_history,
-        "wave_rate_history": wave_rate_history,
-        "rate_history":      rate_history,
-        "capture_ticks":     ticks,
-        "action_history":    action_history,
+        "wave_history":       wave_history,
+        "wave_rate_history":  wave_rate_history,
+        "rate_history":       rate_history,
+        "spend_rate_history": spend_rate_history,
+        "capture_ticks":      ticks,
+        "action_history":     action_history,
     }
 
 

@@ -3321,6 +3321,12 @@ def mark_battle_start():
     ctx.upgrade_scroll_start = 0.0
     ctx.upgrade_scroll_direction = 'down'
     ctx.no_perk_until = 0.0
+    # Clear rate_history for the new battle (display only).
+    # The raw _cash_samples / _coin_samples buffers are intentionally kept:
+    # they give the rolling-median guard a baseline on the first few ticks of
+    # the new battle and prevent a single bad absolute-mode reading from
+    # poisoning the chart again.
+    ctx.rate_history = []
 
 def click_if_present(name, condition, callback=None):
     global ctx
@@ -3881,11 +3887,36 @@ def _parse_resource_value(text: str) -> Optional[float]:
     Handles clean values (``'5.3B'``), explicit rate display (``'242M/min'``),
     and common OCR artefacts around the /min suffix (``'229M/mir?'``,
     ``'>\xa9NIM/min.'``).
+
+    Also corrects frequent Tesseract digit misreads before parsing:
+
+    * ``O`` / ``o`` → ``0``  (letter O confused with zero)
+    * ``I`` / ``l`` / ``i`` → ``1``  (letter I / lowercase-L confused with one)
+
+    Only the numeric portion (before any K/M/B/T scale suffix) is touched so
+    that valid suffix letters are never mangled.
     """
-    # Strip any leading non-numeric garbage (e.g. ">\xa9NIM" prefix)
-    cleaned = re.sub(r'^[^0-9]*', '', text.strip())
-    # Strip trailing /min-like suffix including OCR variants and stray punctuation
-    cleaned = re.sub(r'\s*[/\\|l]\s*\S*$', '', cleaned).strip()
+    cleaned = text.strip()
+    # 1. Strip the /min-like rate suffix first, using the canonical pattern
+    #    (_MIN_RATE_RE).  This is intentionally more specific than a simple
+    #    [/l] match so that a lowercase-l that is actually a misread digit
+    #    (e.g. "24lM" meaning "241M") is never swept into the suffix strip.
+    cleaned = _MIN_RATE_RE.sub('', cleaned)
+    # Catch a bare trailing slash/pipe that _MIN_RATE_RE might leave behind.
+    cleaned = re.sub(r'[\s/\\|.?!]+$', '', cleaned).strip()
+    # 2. Strip any leading non-numeric garbage (e.g. ">\xa9NIM" prefix).
+    #    Broaden the class to also skip OCR misread letters at the start.
+    cleaned = re.sub(r'^[^0-9OolIli]*', '', cleaned)
+    # 3. Fix common OCR digit misreads in the numeric portion only.
+    #    Split at the optional scale suffix so we never corrupt it.
+    num_m = re.match(r'^([0-9OolIli,.\s]+)([KMBTkmbt]?)(.*)$', cleaned)
+    if num_m:
+        num_part  = num_m.group(1)
+        suffix    = num_m.group(2)
+        remainder = num_m.group(3)
+        num_part  = num_part.replace('O', '0').replace('o', '0')
+        num_part  = num_part.replace('I', '1').replace('l', '1').replace('i', '1')
+        cleaned   = num_part + suffix + remainder
     m = re.match(r'([0-9,.]+\s*[KMBTkmbt]?)', cleaned)
     if not m:
         return None
@@ -3923,6 +3954,11 @@ def _detect_slashmin(img: Optional[Image.Image]) -> Optional[bool]:
     return False
 
 
+# Number of valid samples to keep in the rolling-median buffers.
+# 7 samples ≈ ~2 minutes of history at a 20-second tick interval.
+_RATE_SAMPLE_WINDOW = 7
+
+
 def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> None:
     """Sample cash/coin resource values and append a per-minute rate entry to ctx.rate_history."""
     log = logging.getLogger(__name__)
@@ -3935,7 +3971,21 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
     # back to absolute-value mode.
     toggled_this_tick: list = []  # mutable cell shared across _sample calls
 
-    def _sample(key: str) -> Optional[float]:
+    def _rolling_median(samples: list) -> Optional[float]:
+        """Return the median of the last _RATE_SAMPLE_WINDOW valid readings.
+
+        Returns None when fewer than 3 samples are available so the caller
+        can fall back to a simpler single-previous-value check.
+        """
+        recent = [v for _, v in samples[-_RATE_SAMPLE_WINDOW:]]
+        if len(recent) < 3:
+            return None
+        s = sorted(recent)
+        mid = len(s) // 2
+        # Even-length: average of two middle values; odd-length: middle value.
+        return (s[mid] + s[~mid]) / 2
+
+    def _sample(key: str, raw_samples: list) -> Optional[float]:
         """Return a per-minute rate for the given resource key, or None.
 
         If the HUD is in rate-display mode the raw OCR text is parsed and
@@ -3953,15 +4003,59 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
             value = _parse_resource_value(raw)
             if value is None or value < 0:
                 return None
-            prev_rec = ctx.rate_history[-1] if ctx.rate_history else None
-            if prev_rec:
-                lkey = 'coin' if key == 'gold' else key 
-                prev_value = prev_rec.get(f"{lkey}_pm")
-                if prev_value is not None and (value < prev_value / 20 or value > prev_value * 30):
-                    log.warning(f"Unrealistic {key} rate detected: {value:.6g} (previous {prev_value:.6g}) — ignoring this sample")
+
+            # ── Outlier guard ──────────────────────────────────────────────
+            # Compare the new reading against a rolling median of recent valid
+            # samples.  This catches the common failure mode where a single
+            # bad OCR tick (e.g. one digit misread) causes a 50-80 % apparent
+            # drop that would pass the old single-prev-value / 20 threshold.
+            median = _rolling_median(raw_samples)
+            if median is not None:
+                if value < median * 0.25:
+                    log.warning(
+                        f"Outlier {key} rate {value:.6g}/min is >75%% below rolling "
+                        f"median {median:.6g}/min — discarding as likely OCR misread"
+                    )
                     return None
+                if value > median * 15:
+                    # Distinguish a genuinely bad spike (15–500×) from a
+                    # poisoned-baseline situation (>500×).  The latter arises
+                    # when the buffer was seeded with absolute-mode HUD values
+                    # (e.g. '75' instead of '75M/min') making the median ~1000×
+                    # too small.  In that case, reset and trust the new reading.
+                    ratio = value / median if median > 0 else float('inf')
+                    if ratio > 500:
+                        log.warning(
+                            f"{key} sample buffer appears poisoned "
+                            f"(rolling median {median:.6g}, new reading {value:.6g}, "
+                            f"ratio {ratio:.0f}×) — resetting buffer and accepting new value"
+                        )
+                        raw_samples.clear()
+                        # fall through so the value is accepted and appended below
+                    else:
+                        log.warning(
+                            f"Outlier {key} rate {value:.6g}/min is >15× rolling "
+                            f"median {median:.6g}/min — discarding as likely OCR misread"
+                        )
+                        return None
+            else:
+                # Fewer than 3 confirmed samples yet — use simple prev-value
+                # sanity check as a bootstrap guard.
+                prev_rec = ctx.rate_history[-1] if ctx.rate_history else None
+                if prev_rec:
+                    lkey = 'coin' if key == 'gold' else key
+                    prev_value = prev_rec.get(f"{lkey}_pm")
+                    if prev_value is not None and (value < prev_value / 20 or value > prev_value * 30):
+                        log.warning(
+                            f"Unrealistic {key} rate {value:.6g}/min "
+                            f"(previous {prev_value:.6g}/min) — ignoring this sample"
+                        )
+                        return None
+
             log.info(f"Direct /min rate: {key}={value:.6g}")
-            # Successful /min read — reset any pending toggle counter.
+            # Successful /min read — update rolling buffer and reset toggle counter.
+            raw_samples.append((now, value))
+            del raw_samples[:-20]  # cap buffer to last 20 readings
             ctx._hud_toggle_pending.pop(key, None)
             return value
 
@@ -3995,8 +4089,8 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
             log.info(f"HUD '{key}' not in /min mode but skipping toggle — already clicked this tick")
         return None
 
-    cash_pm = _sample("cash")
-    coin_pm = _sample("gold")  # "gold" resource covers gold/coins OCR
+    cash_pm = _sample("cash", ctx._cash_samples)
+    coin_pm = _sample("gold", ctx._coin_samples)  # "gold" resource covers gold/coins OCR
 
     if cash_pm is None and coin_pm is None:
         return

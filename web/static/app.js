@@ -876,6 +876,11 @@ function renderTimeline(data) {
     .map(p => ({ x: p.t * 1000, y: p.coin_pm }));
   coinPts = filterOutliersIQR(coinPts, 'y');
 
+  let spendPts = (data.spend_rate_history || [])
+    .filter(p => p.spend_pm != null)
+    .map(p => ({ x: p.t * 1000, y: p.spend_pm }));
+  // No IQR filter on spend — each point is already an aggregated rate
+
   let waveRatePts = (data.wave_rate_history || [])
     .map(p => ({ x: p.t * 1000, y: p.waves_ph }));
   waveRatePts = filterOutliersIQR(waveRatePts, 'y');
@@ -925,6 +930,17 @@ function renderTimeline(data) {
       yAxisID: "yCoinRate",
     },
     {
+      label: "Spend /min",
+      data: spendPts,
+      borderColor: "#fa0",
+      backgroundColor: "transparent",
+      borderWidth: 1.5,
+      borderDash: [4, 2],
+      pointRadius: 2,
+      tension: 0.2,
+      yAxisID: "yRate",
+    },
+    {
       label: "Wave /h",
       data: waveRatePts,
       borderColor: "#c8f",
@@ -943,6 +959,7 @@ function renderTimeline(data) {
     ...tickPts.map(p => p.x),
     ...cashPts.map(p => p.x),
     ...coinPts.map(p => p.x),
+    ...spendPts.map(p => p.x),
     ...waveRatePts.map(p => p.x),
   ];
 
@@ -1080,7 +1097,8 @@ function renderTimeline(data) {
     _timelineChart.data.datasets[1].data = tickPts;
     _timelineChart.data.datasets[2].data = cashPts;
     _timelineChart.data.datasets[3].data = coinPts;
-    _timelineChart.data.datasets[4].data = waveRatePts;
+    _timelineChart.data.datasets[4].data = spendPts;
+    _timelineChart.data.datasets[5].data = waveRatePts;
     _timelineChart.options.scales.x.time.unit           = timeUnit;
     _timelineChart.options.scales.x.time.displayFormats = { minute: displayFormat, hour: displayFormat };
     _timelineChart.options.scales.x.min = _viewMinT || undefined;
