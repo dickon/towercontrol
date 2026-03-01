@@ -2922,6 +2922,46 @@ def _click_upgrade_tab(want_page: str) -> None:
         do_click(f"Switching to {want_page} upgrade tab", fx, fy)
 
 
+# Bottom-bar coordinates used to *expand* the upgrade panel when it has been
+# collapsed (i.e. the tab headers are not visible).  These differ from the
+# UPGRADE_TAB_CLICK positions which switch between sub-tabs while the panel
+# is already open.
+_UPGRADE_PANEL_REOPEN_COORDS: Dict[str, Tuple[float, float]] = {
+    'ATTACK':  (0.3232, 0.9711),
+    'DEFENSE': (0.3865, 0.985),
+    'UTILITY': (0.7000, 0.9719),
+}
+
+
+def _reopen_upgrade_panel(category: str) -> None:
+    """Click the bottom-bar icon to expand the upgrade panel from a collapsed state.
+
+    Should be called when the upgrade tab headers (ATTACK / DEFENSE / UTILITY)
+    are not visible at all, indicating the panel has been collapsed.  After
+    calling this, callers should wait for the UI to animate open and then
+    re-capture + re-run OCR before proceeding.
+    """
+    log = logging.getLogger(__name__)
+    if category in _UPGRADE_PANEL_REOPEN_COORDS:
+        fx, fy = _UPGRADE_PANEL_REOPEN_COORDS[category]
+        log.info(f"Upgrade panel collapsed — clicking to reopen for {category} at ({fx}, {fy})")
+        do_click(f"Reopening collapsed upgrade panel for {category}", fx, fy)
+
+
+def _collapse_upgrade_panel(category: str) -> None:
+    """Click the bottom-bar icon to collapse (hide) the upgrade panel.
+
+    The bottom-bar toggle is a simple show/hide: clicking it once closes the
+    panel when it is open.  This is the inverse of _reopen_upgrade_panel and
+    uses the same coordinates (it is the same button).
+    """
+    log = logging.getLogger(__name__)
+    if category in _UPGRADE_PANEL_REOPEN_COORDS:
+        fx, fy = _UPGRADE_PANEL_REOPEN_COORDS[category]
+        log.info(f"Deliberately collapsing upgrade panel for {category} at ({fx}, {fy})")
+        do_click(f"Collapsing upgrade panel for {category}", fx, fy)
+
+
 def _do_upgrade_scroll(direction: str, w: int, h: int, message) -> None:
     """Drag the upgrade list up or down by ~200 px."""
     global ctx

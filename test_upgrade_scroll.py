@@ -101,6 +101,8 @@ class Stats:
         self.counts  = collections.Counter()
         self.by_cat  = {c: collections.Counter() for c in ('ATTACK', 'DEFENSE', 'UTILITY')}
         self.failures: List[Dict] = []
+        self.collapsed_reopens: int = 0    # times the panel was found collapsed and recovered
+        self.deliberate_collapses: int = 0  # times we intentionally collapsed the panel
 
     def record(self, category: str, label: str, result: str) -> None:
         self.total += 1
@@ -145,6 +147,10 @@ class Stats:
                   f"  CLOSE={self.by_cat[cat]['CLOSE']}"
                   f"  MISS={self.by_cat[cat]['MISS']}"
                   f"  FAIL={self.by_cat[cat]['FAIL']}")
+
+        if self.deliberate_collapses or self.collapsed_reopens:
+            print(f"  Deliberate collapses       : {self.deliberate_collapses}")
+            print(f"  Collapsed-panel recoveries : {self.collapsed_reopens}")
 
         if self.failures:
             print(f"\n  Failures ({len(self.failures)}):")
@@ -226,11 +232,67 @@ def run_torture(duration_minutes: float = 10.0, delay: float = 2.0,
             if current_tab != category:
                 print(f"  [WARN] Tab switch may have failed (detected: {current_tab})")
 
+        # -- Step 2.5: deliberate collapse (33% of rounds) -----------------
+        # Intentionally collapse the panel to exercise the recovery path.  We
+        # only do this when the panel IS open (current_tab is not None) so we
+        # know the toggle will actually close it.  Re-capture afterwards so
+        # Step 3 works from a fresh (collapsed) frame.
+        if current_tab is not None and random.random() < 0.33:
+            print("  [CHAOS] Deliberately collapsing upgrade panel...")
+            tc._collapse_upgrade_panel(category)
+            stats.deliberate_collapses += 1
+            time.sleep(delay)  # let the animation complete
+            img, frame, w, h = _capture_and_ocr()
+            if not frame:
+                print("  [SKIP] OCR failed after deliberate collapse")
+                stats.record(category, label, 'OCR_FAIL')
+                time.sleep(delay)
+                continue
+            current_tab = _detect_current_tab(frame)
+            print(f"  After collapse: tab={current_tab}")
+
         # -- Step 3: check already visible ---------------------------------
         upgrade_buttons = tc.detect_upgrade_buttons(frame, img, tc.ctx.config)
         visible_labels  = list(upgrade_buttons.keys())
         visible_top     = tc._estimate_visible_top_row(category, visible_labels)
         print(f"  Visible: {visible_labels}  (top row: {visible_top})")
+
+        # -- Step 3.5: reopen collapsed upgrade panel -----------------------
+        # If no upgrade buttons are detected AND no tab header is visible, the
+        # upgrade panel has most likely been collapsed (minimised).  Use the
+        # dedicated bottom-bar click to expand it, then re-capture.
+        if not upgrade_buttons and current_tab is None:
+            print("  [INFO] Upgrade panel appears collapsed — reopening...")
+            tc._reopen_upgrade_panel(category)
+            stats.collapsed_reopens += 1
+            time.sleep(delay)
+            img, frame, w, h = _capture_and_ocr()
+            if not frame:
+                print("  [SKIP] OCR failed after panel reopen")
+                stats.record(category, label, 'OCR_FAIL')
+                time.sleep(delay)
+                continue
+            current_tab = _detect_current_tab(frame)
+            upgrade_buttons = tc.detect_upgrade_buttons(frame, img, tc.ctx.config)
+            visible_labels  = list(upgrade_buttons.keys())
+            visible_top     = tc._estimate_visible_top_row(category, visible_labels)
+            print(f"  After reopen: tab={current_tab}, visible={visible_labels}  (top row: {visible_top})")
+            # If the panel is now open but on the wrong sub-tab, switch to it
+            if current_tab is not None and current_tab != category:
+                print(f"  Switching to {category} tab after reopen...")
+                tc._click_upgrade_tab(category)
+                time.sleep(delay)
+                img, frame, w, h = _capture_and_ocr()
+                if not frame:
+                    print("  [SKIP] OCR failed after post-reopen tab switch")
+                    stats.record(category, label, 'OCR_FAIL')
+                    time.sleep(delay)
+                    continue
+                current_tab = _detect_current_tab(frame)
+                upgrade_buttons = tc.detect_upgrade_buttons(frame, img, tc.ctx.config)
+                visible_labels  = list(upgrade_buttons.keys())
+                visible_top     = tc._estimate_visible_top_row(category, visible_labels)
+                print(f"  After tab switch: tab={current_tab}, visible={visible_labels}")
 
         if label in upgrade_buttons:
             print(f"  '{label}' already visible -- no scroll needed OK")
