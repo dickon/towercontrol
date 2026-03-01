@@ -103,55 +103,11 @@
 
       </div>
 
-      <!-- Right column: log (top) + history + controls + state -->
+      <!-- Right column: perk history + upgrade history + priority + log + controls + state -->
       <div class="col-lg-5">
 
-        <!-- Log stream — top of right column -->
-        <div class="card bg-black border-secondary">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span>Log</span>
-            <div class="d-flex align-items-center gap-2">
-              <span id="logStatus" class="badge bg-secondary" style="font-size:0.65rem">connecting</span>
-              <div class="form-check form-switch mb-0 d-flex align-items-center gap-1">
-                <input class="form-check-input" type="checkbox" id="logAutoScroll" checked />
-                <label class="form-check-label small" for="logAutoScroll">auto-scroll</label>
-              </div>
-              <button class="btn btn-outline-secondary btn-sm py-0 px-2" onclick="clearLog()">clear</button>
-            </div>
-          </div>
-          <div id="logPane" style="height:440px;overflow-y:auto;background:#0a0a0a;padding:6px">
-            <pre id="logContent" class="mb-0" style="font-size:0.72rem;line-height:1.35;color:#aaa;white-space:pre-wrap;word-break:break-all"></pre>
-          </div>
-        </div>
-
-        <!-- Upgrade priority -->
-        <div class="card bg-black border-secondary mt-3">
-          <div class="card-header">Upgrade Priority</div>
-          <div class="card-body p-0" style="max-height:300px;overflow-y:auto">
-            <table class="table table-sm table-dark table-hover mb-0" style="font-size:0.75rem">
-              <thead class="text-muted" style="position:sticky;top:0;background:#000">
-                <tr>
-                  <th class="ps-2" style="width:2rem">#</th>
-                  <th style="width:5rem">Tab</th>
-                  <th>Upgrade</th>
-                  <th class="text-end pe-2">Cap</th>
-                </tr>
-              </thead>
-              <tbody id="upgradePriorityTable"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Action log -->
-        <div class="card bg-black border-secondary mt-3">
-          <div class="card-header">Recent Actions</div>
-          <div class="card-body p-1" style="max-height:260px;overflow-y:auto">
-            <ul id="actionLog" class="list-unstyled mb-0 small"></ul>
-          </div>
-        </div>
-
         <!-- Perk history -->
-        <div class="card bg-black border-secondary mt-3">
+        <div class="card bg-black border-secondary">
           <div class="card-header">Perk History</div>
           <div class="card-body p-0" style="max-height:260px;overflow-y:auto">
             <table class="table table-sm table-dark mb-0" style="font-size:0.75rem">
@@ -202,6 +158,50 @@
               </thead>
               <tbody id="upgradeAdvanceTable"></tbody>
             </table>
+          </div>
+        </div>
+
+        <!-- Upgrade priority -->
+        <div class="card bg-black border-secondary mt-3">
+          <div class="card-header">Upgrade Priority</div>
+          <div class="card-body p-0" style="max-height:300px;overflow-y:auto">
+            <table class="table table-sm table-dark table-hover mb-0" style="font-size:0.75rem">
+              <thead class="text-muted" style="position:sticky;top:0;background:#000">
+                <tr>
+                  <th class="ps-2" style="width:2rem">#</th>
+                  <th style="width:5rem">Tab</th>
+                  <th>Upgrade</th>
+                  <th class="text-end pe-2">Cap</th>
+                </tr>
+              </thead>
+              <tbody id="upgradePriorityTable"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Log stream -->
+        <div class="card bg-black border-secondary mt-3">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span>Log</span>
+            <div class="d-flex align-items-center gap-2">
+              <span id="logStatus" class="badge bg-secondary" style="font-size:0.65rem">connecting</span>
+              <div class="form-check form-switch mb-0 d-flex align-items-center gap-1">
+                <input class="form-check-input" type="checkbox" id="logAutoScroll" checked />
+                <label class="form-check-label small" for="logAutoScroll">auto-scroll</label>
+              </div>
+              <button class="btn btn-outline-secondary btn-sm py-0 px-2" onclick="clearLog()">clear</button>
+            </div>
+          </div>
+          <div id="logPane" style="height:440px;overflow-y:auto;background:#0a0a0a;padding:6px">
+            <pre id="logContent" class="mb-0" style="font-size:0.72rem;line-height:1.35;color:#aaa;white-space:pre-wrap;word-break:break-all"></pre>
+          </div>
+        </div>
+
+        <!-- Action log -->
+        <div class="card bg-black border-secondary mt-3">
+          <div class="card-header">Recent Actions</div>
+          <div class="card-body p-1" style="max-height:260px;overflow-y:auto">
+            <ul id="actionLog" class="list-unstyled mb-0 small"></ul>
           </div>
         </div>
 

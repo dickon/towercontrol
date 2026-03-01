@@ -3321,7 +3321,6 @@ def mark_battle_start():
     ctx.upgrade_scroll_start = 0.0
     ctx.upgrade_scroll_direction = 'down'
     ctx.no_perk_until = 0.0
-    ctx.rate_history = []
 
 def click_if_present(name, condition, callback=None):
     global ctx
