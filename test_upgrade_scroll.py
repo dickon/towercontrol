@@ -278,7 +278,7 @@ def run_torture(duration_minutes: float = 10.0, delay: float = 2.0,
             in_viewport_attempts = 0
             if scroll_result is None:
                 # Visible buttons don't match the target category — likely wrong tab.
-                # Force a tab re-click and re-read before giving up.
+                # Force a tab re-click and re-read, then continue scrolling attempts.
                 print(f"  [WARN] No scroll vector on attempt {attempt} — forcing tab re-click for {category}")
                 tc._click_upgrade_tab(category)
                 time.sleep(delay)
@@ -292,6 +292,9 @@ def run_torture(duration_minutes: float = 10.0, delay: float = 2.0,
                     if label in upgrade_buttons:
                         print(f"  OK SUCCESS after tab re-click")
                         found = True
+                        break
+                    # Don't break — fall through to next attempt to scroll toward target
+                    continue
                 break
 
             direction, pixels = scroll_result
