@@ -927,7 +927,7 @@ def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
     # Recovery pass: upgrade section header (UTILITY / ATTACK / DEFENSE UPGRADES)
     # Only run if no category marker is already present near the expected position.
     header_found = any(
-        r.text.upper() in ('UTILITY', 'ATTACK', 'DEFENSE') and r.is_near(0.333, 0.632, 0.15)
+        r.text.upper() in ('UTILITY', 'ATTACK', 'DEFENSE') and r.is_near(0.333, 0.632, 0.06)
         for r in scaled_results
     )
     if not header_found:
@@ -2714,6 +2714,11 @@ UPGRADE_TAB_CLICK = {
 # UPGRADE_BUTTON_ROWS centre y values: 0.69, 0.80, 0.90 → mean gap ≈ 0.105).
 _UPGRADE_ROW_HEIGHT_FRAC: float = 0.105
 
+# Sentinel tuple returned by _compute_upgrade_scroll_vector when the target
+# row is already within the visible viewport.  Callers must NOT scroll when
+# they receive this value — the label is present but OCR failed to match it.
+_UPGRADE_SCROLL_IN_VIEWPORT: Tuple[str, int] = ('in_viewport', 0)
+
 # Number of upgrade rows simultaneously visible in the scroll viewport.
 _UPGRADE_VISIBLE_ROWS: int = 3
 
@@ -2829,25 +2834,49 @@ def _compute_upgrade_scroll_vector(
     visible_labels = list(upgrade_buttons.keys())
     visible_top = _estimate_visible_top_row(category, visible_labels)
     if visible_top is None:
-        log.warning("_compute_upgrade_scroll_vector: cannot determine current scroll position")
+        if upgrade_buttons:
+            # Buttons are visible but none match the target category.  This
+            # usually means the tab detection had a false positive and we are
+            # actually on the wrong tab.  Return a large scroll-up as a
+            # position-reset heuristic so the caller can try again; the
+            # correct fix is to re-click the tab.
+            total_rows = _total_category_rows(category)
+            recovery_px = int(total_rows * _UPGRADE_ROW_HEIGHT_FRAC * h)
+            log.warning(
+                f"_compute_upgrade_scroll_vector: visible buttons {visible_labels} "
+                f"don't match {category}; returning scroll-up recovery ({recovery_px}px)"
+            )
+            return ('up', recovery_px)
+        log.warning("_compute_upgrade_scroll_vector: cannot determine current scroll position (no buttons)")
         return None
 
     # Use minimum-scroll logic: move just enough to bring the target into view,
     # rather than centering it.  This avoids overshooting when the target is
-    # only 1 row outside the visible window (which caused oscillation when the
-    # center-based 2-row swipe overshot by 2 rows in the opposite direction).
+    # only 1 row outside the visible window.
+    #
+    # Bottom-edge note: the panel's lower clipping boundary (y_frac≈0.9464)
+    # partially obscures the very last visible row when it is at position
+    # VISIBLE_ROWS-1 (the bottom slot of the 3-row window).  To keep the
+    # target away from that edge, we scroll down whenever the target is at
+    # the bottom slot OR below — placing it at position VISIBLE_ROWS-2
+    # (second from bottom) instead.
     if target_row < visible_top:
         # Target is above the window — scroll up to align target at top
         row_delta = target_row - visible_top  # negative
-    elif target_row >= visible_top + _UPGRADE_VISIBLE_ROWS:
-        # Target is below the window — scroll down to align target at bottom
-        row_delta = target_row - (visible_top + _UPGRADE_VISIBLE_ROWS - 1)  # positive
+    elif target_row >= visible_top + _UPGRADE_VISIBLE_ROWS - 1:
+        # Target is at the bottom slot or below — scroll down so target lands
+        # at second-from-bottom (VISIBLE_ROWS-2) to avoid bottom clipping.
+        row_delta = target_row - (visible_top + _UPGRADE_VISIBLE_ROWS - 2)  # positive
     else:
         row_delta = 0
 
     if row_delta == 0:
-        log.debug(f"Target row {target_row} already in viewport (visible_top={visible_top}) — no scroll needed")
-        return None
+        log.info(
+            f"Target row {target_row} is within viewport (visible_top={visible_top}, "
+            f"rows {visible_top}–{visible_top + _UPGRADE_VISIBLE_ROWS - 1} visible) — "
+            f"'{want_label}' not detected by OCR this tick"
+        )
+        return _UPGRADE_SCROLL_IN_VIEWPORT
 
     desired_top = visible_top + row_delta  # for logging only
 
@@ -3040,7 +3069,14 @@ def handle_upgrade_action(seen_page: Optional[str],
             scroll_result = _compute_upgrade_scroll_vector(
                 want_page, want_label, upgrade_buttons, h
             )
-            if scroll_result is not None:
+            if scroll_result is _UPGRADE_SCROLL_IN_VIEWPORT:
+                # Target row is in viewport but OCR didn't match the label
+                # this tick — do nothing and let the next tick retry OCR.
+                log.info(
+                    f"'{want_label}' is in viewport but OCR missed it — "
+                    f"waiting for next tick"
+                )
+            elif scroll_result is not None:
                 direction, pixels = scroll_result
                 _do_upgrade_jump_scroll(
                     direction, pixels, w, h,
@@ -3520,9 +3556,11 @@ def automation_loop_tick():
         do_click("Seen game stats, clicking to exit", 0.7601, 0.7496)
     upgrade_mode = None  # which upgrade sub-tab is currently visible; set inside if mode == 'main'
     if mode == 'main':
-        defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.1)]
-        attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.329, 0.632, 0.1)]
-        utility_marks = [r for r in frame.results if r.text.lower() == "utility" and r.is_near(0.333, 0.632, 0.1)]
+        # Tight tolerance (0.05) prevents the word "Attack" inside upgrade-button
+        # labels (e.g. "Free Attack Upgrade") from being mistaken for the ATTACK tab header.
+        defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.05)]
+        attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.329, 0.632, 0.05)]
+        utility_marks = [r for r in frame.results if r.text.lower() == "utility" and r.is_near(0.333, 0.632, 0.05)]
 
         upgrade_mode = 'DEFENSE' if defense_marks else 'ATTACK' if attack_marks else 'UTILITY' if utility_marks else None
         ctx.upgrade_mode_seen = upgrade_mode
