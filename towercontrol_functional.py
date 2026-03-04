@@ -3618,9 +3618,11 @@ def automation_loop_tick():
             ctx.last_game_ui_seen = time.time()  # upgrade tabs visible → game is running
         else:
             delay = time.time() - ctx.last_seen_upgrades
-            if wave_num and delay > 15.0 and time.time() - ctx.no_perk_until > 60.0:  # been a while since we've seen upgrade buttons or perk overlay → likely we're in the wrong tab or just finished a battle
-                pos = (0.3865, 0.985) if want_upgrades == 'DEFENSE' else (0.3232, 0.9711) if want_upgrades == 'ATTACK' else (0.7000, 0.9719)
-                do_click(f"Seen no upgrades for {delay} so clicking upgrades tab for {want_upgrades}", pos[0], pos[1])
+            if want_upgrades and delay > 5.0:
+                log.info(f"Upgrade display closed for {delay:.1f}s — reopening {want_upgrades} panel")
+                _reopen_upgrade_panel(want_upgrades)
+                ctx.last_seen_upgrades = time.time()  # reset so we don't immediately fire again
+                return False
             
         if time.time() < ctx.no_perk_until:
             log.info(f"Perk cooldown active - skipping perk check for {ctx.no_perk_until - time.time():.0f}s more")
