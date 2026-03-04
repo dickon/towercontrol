@@ -3276,6 +3276,7 @@ class RuntimeContext:
     frame: Optional[OCRFrame] = None
     running: bool = False
     input_enabled: bool = False
+    input_paused_until: float = 0.0   # epoch time when the 20-min input pause expires (0 = not paused)
     status: str = "stopped"
     last_window_check: float = 0.0
     last_seen_upgrades: float = 0.0
@@ -4367,6 +4368,12 @@ def automation_loop_run(ctx: RuntimeContext):
 
     while ctx.running:
         t0 = time.time()
+        # Auto-restore input when timed pause expires
+        if ctx.input_paused_until and time.time() >= ctx.input_paused_until:
+            ctx.input_paused_until = 0.0
+            ctx.input_enabled = True
+            ctx.status = "running"
+            log.info("Input pause expired – re-enabling input")
         try:
             watchdog_bluestacks_tick()
             watchdog_game_tick()

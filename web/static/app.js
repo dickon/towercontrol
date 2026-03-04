@@ -241,6 +241,7 @@ function handleState(s) {
   }
 
   updateParamValues(s.strategy_params || {});
+  updatePauseCountdown((s.strategy_params || {}).input_pause_remaining ?? 0);
   renderPerkHistory(s.perk_selection_history || []);
   renderUpgradePurchaseHistory(s.upgrade_purchase_history || []);
   renderUpgradeAdvanceHistory(s.upgrade_advance_history || []);
@@ -297,6 +298,44 @@ function renderCtxTable(ctx) {
       `<td class="text-muted ps-2" style="width:55%">${esc(label)}</td>` +
       `<td class="pe-2" style="${colour}">${esc(val)}</td>`;
     tbody.appendChild(tr);
+  }
+}
+
+// ── Pause input ──────────────────────────────────────────────────────────
+
+function pauseInput() {
+  const btn = document.getElementById("btnPauseInput");
+  if (btn && btn.dataset.paused === "1") {
+    // Cancel: re-enable input immediately
+    api("resume").then(r => {
+      if (r?.ok) updatePauseCountdown(0);
+    });
+  } else {
+    api("pause_input").then(r => {
+      if (r?.ok) updatePauseCountdown(r.remaining_s ?? 1200);
+    });
+  }
+}
+
+function updatePauseCountdown(remainingSecs) {
+  const btn      = document.getElementById("btnPauseInput");
+  const countEl  = document.getElementById("pauseCountdown");
+  if (!btn) return;
+
+  const secs = Math.max(0, Math.round(remainingSecs));
+  if (secs > 0) {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    const display = `${m}:${String(s).padStart(2, "0")}`;
+    if (countEl) countEl.textContent = `resuming in ${display}`;
+    btn.textContent  = "\u23F9 Cancel Pause";
+    btn.dataset.paused = "1";
+    btn.classList.replace("btn-outline-warning", "btn-warning");
+  } else {
+    if (countEl) countEl.textContent = "";
+    btn.textContent  = "\u23F8 Pause Input 20m";
+    btn.dataset.paused = "0";
+    btn.classList.replace("btn-warning", "btn-outline-warning");
   }
 }
 

@@ -218,10 +218,17 @@ def _build_state() -> dict:
     except Exception:
         pass
 
+    try:
+        _now_sp = _time.time()
+        _paused_until = c.input_paused_until
+        _pause_remaining = max(0, round(_paused_until - _now_sp)) if _paused_until else 0
+    except Exception:
+        _pause_remaining = 0
     state["strategy_params"] = {
-        "input_enabled": c.input_enabled,
-        "cloud_grab_enabled": c.config.cloud_grab_enabled,
-        "loop_tick": c.config.loop_tick,
+        "input_enabled":        c.input_enabled,
+        "input_pause_remaining": _pause_remaining,
+        "cloud_grab_enabled":   c.config.cloud_grab_enabled,
+        "loop_tick":            c.config.loop_tick,
     }
 
     # Watchdog state
@@ -443,8 +450,23 @@ async def api_resume():
     c = _ctx()
     if c:
         c.input_enabled = True
+        c.input_paused_until = 0.0
         c.status        = "running"
     return {"ok": True}
+
+
+@fapp.post("/api/pause_input")
+async def api_pause_input():
+    """Disable input for 20 minutes, then auto-restore."""
+    import time as _time
+    c = _ctx()
+    if c is None:
+        return {"ok": False, "reason": "no ctx"}
+    c.input_enabled      = False
+    c.input_paused_until = _time.time() + 20 * 60
+    c.status             = "paused"
+    remaining = round(c.input_paused_until - _time.time())
+    return {"ok": True, "paused_until": c.input_paused_until, "remaining_s": remaining}
 
 
 @fapp.post("/api/scan")
@@ -539,9 +561,6 @@ async def api_click(request: Request):
 @fapp.get("/api/params/schema")
 async def api_params_schema():
     return {
-        "input_enabled": {
-            "label": "Input enabled", "type": "bool",
-        },
         "cloud_grab_enabled": {
             "label": "Cloud Grab", "type": "bool",
         },
@@ -575,8 +594,6 @@ async def api_params(request: Request):
     c     = _ctx()
     if c is None:
         return {"ok": False}
-    if "input_enabled" in body:
-        c.input_enabled = bool(body["input_enabled"])
     if "cloud_grab_enabled" in body:
         c.config = _mod.replace(c.config, cloud_grab_enabled=bool(body["cloud_grab_enabled"]))
     if "loop_tick" in body:
