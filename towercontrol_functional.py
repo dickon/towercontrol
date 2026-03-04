@@ -2589,8 +2589,16 @@ def detect_template_in_region(
         img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
         h, w = img_cv.shape
 
+        # All caller-supplied x0/x1 fractions are in the full-width (strip-present)
+        # coordinate frame.  When the ad strip is absent the captured image is
+        # narrower (content-only), so translate the x fractions accordingly.
+        if not has_ad_strip(w, h):
+            x0 = max(0.0, min(1.0, (x0 - STRIP_FRAC) / CONTENT_FRAC))
+            x1 = max(0.0, min(1.0, (x1 - STRIP_FRAC) / CONTENT_FRAC))
+
         x_start, x_end = int(w * x0), int(w * x1)
         y_start, y_end = int(h * y0), int(h * y1)
+
         search_region = img_cv[y_start:y_end, x_start:x_end]
 
         if template.shape[0] > search_region.shape[0] or template.shape[1] > search_region.shape[1]:
@@ -2607,7 +2615,12 @@ def detect_template_in_region(
             match_x = max_loc[0] + x_start + template.shape[1] // 2
             match_y = max_loc[1] + y_start + template.shape[0] // 2
             fx, fy = match_x / w, match_y / h
-            log.debug(f"{label} detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f}")
+            # If the strip was absent the image is content-only; translate fx
+            # back to the full-width coordinate frame that callers expect.
+            ad_strip_present = has_ad_strip(w, h)
+            if not ad_strip_present:
+                fx = fx * CONTENT_FRAC + STRIP_FRAC
+            log.info(f"{label} detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f} ad strip {'present' if ad_strip_present else 'absent'}")
             return (fx, fy)
 
         return None
@@ -3525,8 +3538,8 @@ def automation_loop_tick():
         img,
         ctx.my_games_template,
         "My games",
-        (0.2, 0.0, 0.6, 0.15),
-        0.4,
+        (0.0, 0.0, 0.9, 0.3),
+        0.8,
         "My games button (priority, template match)"
     ):
         return False  # Exit the tick function immediately
@@ -3535,7 +3548,7 @@ def automation_loop_tick():
         img,
         ctx.resume_battle_template,
         "RESUME BATTLE",
-        (0.4, 0.7, 0.8, 0.95),
+        (0.1, 0.6, 0.9, 0.99),
         0.75,
         "Resume Battle button (priority, template match)"
     ):
