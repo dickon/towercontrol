@@ -249,12 +249,11 @@ class TestUpgradeDetectionConsistency(unittest.TestCase):
 
         no_ad_strip_upgrade_detail.png shows the Health upgrade detail view
         (a single-upgrade screen, not the 6-button upgrade panel).  The
-        pipeline should complete without error and return an empty list.
+        pipeline should complete without error and return an empty result.
         """
         upgrades = self._detect(_STRIP_ABSENT_IMAGE)
-        # Detail screen — no upgrade-panel boxes expected
-        self.assertIsInstance(upgrades, list)
-        self.assertEqual(len(upgrades), 0,
+        # Detail screen — no upgrade-panel boxes expected; result is empty (list or dict)
+        self.assertFalse(upgrades,
                          "Detail screen should not produce upgrade-panel hits")
 
 

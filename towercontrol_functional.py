@@ -2582,7 +2582,7 @@ def process_claim_button(img: Optional[Image.Image], claim_template: Optional[np
         result = cv2.matchTemplate(search_region, claim_template, cv2.TM_CCOEFF_NORMED)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
-        threshold = 0.65  # Slightly higher threshold for button matching
+        threshold = 0.60  # Slightly higher threshold for button matching
 
         if max_val >= threshold:
             # Convert back to full image coordinates
@@ -3636,7 +3636,7 @@ def automation_loop_tick():
     # Check for BATTLE button via template matching
     process_battle_button(img)
 
-    if click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.5007, 0.035, 0.2) or r.is_near(  0.0156,   0.9882) or r.is_near(  0.1303,   0.8281))):
+    if click_if_present('claim', lambda r: r.text.lower() == "claim"):
         return False
     
     if click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.4874,   0.8168)):
