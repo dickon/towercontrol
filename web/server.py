@@ -47,6 +47,48 @@ fapp = FastAPI(docs_url=None, redoc_url=None)
 fapp.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 # ---------------------------------------------------------------------------
+# HTTP request logging & bandwidth tracking
+# ---------------------------------------------------------------------------
+_http_logger    = logging.getLogger(__name__ + ".http")
+_bytes_sent_total: int  = 0
+_bytes_sent_lock        = threading.Lock()
+
+
+class _RequestLoggingMiddleware:
+    """Raw ASGI middleware: logs every HTTP request and accumulates bytes sent."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path   = scope.get("path", "?")
+        method = scope.get("method", "?")
+        status_code = 0
+        bytes_sent  = 0
+
+        async def send_wrapper(message):
+            nonlocal status_code, bytes_sent
+            if message["type"] == "http.response.start":
+                status_code = message.get("status", 0)
+            elif message["type"] == "http.response.body":
+                bytes_sent += len(message.get("body", b""))
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+        global _bytes_sent_total
+        with _bytes_sent_lock:
+            _bytes_sent_total += bytes_sent
+        _http_logger.info("%s %s -> %d  (%d B)", method, path, status_code, bytes_sent)
+
+
+fapp.add_middleware(_RequestLoggingMiddleware)
+
+# ---------------------------------------------------------------------------
 # Shared state (set by start_server)
 # ---------------------------------------------------------------------------
 _mod        = None          # reference to towercontrol_functional module
@@ -802,6 +844,28 @@ def start_server(mod, debug_dir: Path, host: str = "127.0.0.1", port: int = 7700
         access_log=False,
     )
     server = uvicorn.Server(config)
+
+    def _bw_reporter():
+        """Every 20 s, log HTTP throughput in Mbps if any bytes were sent."""
+        global _bytes_sent_total
+        _bw_log   = logging.getLogger(__name__ + ".bw")
+        window    = 20.0
+        last      = 0
+        while True:
+            _time.sleep(window)
+            with _bytes_sent_lock:
+                current = _bytes_sent_total
+            delta = current - last
+            last  = current
+            if delta > 0:
+                mbps = (delta * 8) / (window * 1_000_000)
+                _bw_log.info(
+                    "HTTP throughput: %.3f Mbps over last %.0f s  (cumulative: %.2f MB sent)",
+                    mbps, window, current / 1_048_576,
+                )
+
+    bw_thread = threading.Thread(target=_bw_reporter, daemon=True, name="web-bw-reporter")
+    bw_thread.start()
 
     t = threading.Thread(target=server.run, daemon=True, name="web-server")
     t.start()
