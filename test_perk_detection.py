@@ -396,7 +396,7 @@ class TestUpgradeDetectionUnexpected1771282888(unittest.TestCase):
         3. Critical Chance
         4. Critical Factor
         5. Range
-        6. Damage Per Meter
+        6. Damage / Meter
 
     This tests that all 6 upgrades are correctly detected and marked as MAX.
     """
@@ -425,7 +425,7 @@ class TestUpgradeDetectionUnexpected1771282888(unittest.TestCase):
           3. Critical Chance
           4. Critical Factor
           5. Range
-          6. Damage Per Meter
+          6. Damage / Meter
         """
         upgrades = detect_upgrade_buttons(self.frame, self.img)
 
@@ -448,7 +448,7 @@ class TestUpgradeDetectionUnexpected1771282888(unittest.TestCase):
             'Critical Chance',
             'Critical Factor',
             'Range',
-            'Damage Per Meter'
+            'Damage / Meter'
         ]
 
         for expected in expected_labels:
