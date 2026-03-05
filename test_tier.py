@@ -4,6 +4,7 @@ from pathlib import Path
 from PIL import Image
 
 import towercontrol_functional as tc
+from towercontrol_functional import crop_ad_strip
 
 IMAGES = Path(__file__).parent / "test_images"
 
@@ -11,7 +12,8 @@ IMAGES = Path(__file__).parent / "test_images"
 def _run(image_path: Path) -> tc.Optional[int]:
     """OCR an image, run tier detection, return the detected tier."""
     config = tc.Config()
-    img = Image.open(image_path)
+    img = Image.open(image_path).convert("RGB")
+    img, _ = crop_ad_strip(img)
     frame = tc.process_ocr(img, config, ocr_reader=None)
 
     # Wire up a fresh global ctx so update_tier_from_frame can write to it

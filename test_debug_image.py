@@ -8,10 +8,18 @@ from towercontrol_functional import (
     process_ocr,
     detect_upgrade_buttons,
     parse_number_with_suffix,
+    crop_ad_strip,
     UPGRADE_BUTTON_ROWS,
     UTILITY_UPGRADES,
     Config
 )
+
+
+def _load_test_image(path: Path) -> Image.Image:
+    """Load a test image and crop the ad strip if present."""
+    img = Image.open(path)
+    img, _ = crop_ad_strip(img)
+    return img
 
 
 class TestUtilityUpgrades1771264045:
@@ -22,7 +30,7 @@ class TestUtilityUpgrades1771264045:
         """Set up test fixtures."""
         self.config = Config()
         test_image = Path("test_images/unexpected_upgrades_1771264045.png")
-        self.img = Image.open(test_image)
+        self.img = _load_test_image(test_image)
         self.frame = process_ocr(self.img, self.config)
         self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
 
@@ -174,7 +182,7 @@ class TestUtilityUpgrades1771351783:
         """Set up test fixtures."""
         self.config = Config()
         test_image = Path("test_images/unexpected_upgrades_1771351783.png")
-        self.img = Image.open(test_image)
+        self.img = _load_test_image(test_image)
         self.frame = process_ocr(self.img, self.config)
         self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
 
@@ -307,7 +315,7 @@ class TestDefenseUpgrades1771362963:
         """Set up test fixtures."""
         self.config = Config()
         test_image = Path("test_images/unexpected_upgrades_1771362963.png")
-        self.img = Image.open(test_image)
+        self.img = _load_test_image(test_image)
         self.frame = process_ocr(self.img, self.config)
         self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
 
@@ -356,7 +364,7 @@ class TestDefenseUpgrades1771365389:
         """Set up test fixtures."""
         self.config = Config()
         test_image = Path("test_images/unexpected_upgrades_1771365389.png")
-        self.img = Image.open(test_image)
+        self.img = _load_test_image(test_image)
         self.frame = process_ocr(self.img, self.config)
         self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
 
@@ -395,7 +403,7 @@ class TestHealthRegenMax:
         test_image = Path("test_images/health_regen_max.png")
         if not test_image.exists():
             pytest.skip(f"Test image not found: {test_image}")
-        self.img = Image.open(test_image)
+        self.img = _load_test_image(test_image)
         self.frame = process_ocr(self.img, self.config)
         self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
 
@@ -436,7 +444,7 @@ class TestDefenseAbsoluteCost:
         test_image = Path("test_images/def_abs.png")
         if not test_image.exists():
             pytest.skip(f"Test image not found: {test_image}")
-        self.img = Image.open(test_image)
+        self.img = _load_test_image(test_image)
         self.frame = process_ocr(self.img, self.config)
         self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
 
@@ -529,7 +537,7 @@ class TestLandMineCostUnknown:
         test_image = Path("test_images/land_mine_cost_unknown.png")
         if not test_image.exists():
             pytest.skip(f"Test image not found: {test_image}")
-        self.img = Image.open(test_image)
+        self.img = _load_test_image(test_image)
         self.frame = process_ocr(self.img, self.config)
         self.upgrades = detect_upgrade_buttons(self.frame, self.img, self.config)
 

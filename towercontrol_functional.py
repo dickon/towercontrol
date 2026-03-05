@@ -40,11 +40,19 @@ import pyautogui
 # ── Ad-strip layout constants ─────────────────────────────────────────────────
 # BlueStacks can display a left-side advertising strip that widens the window
 # beyond the pure game-content area.  All fractional X coordinates in this
-# file are calibrated against the *full* (strip-present) layout.
+# file are calibrated against the *content-only* (game area) layout.
 #
-#   Strip present : window width ≈ 1523 px
-#   Strip absent  : window width ≈ 1203 px   (game content only)
+#   Strip present : window width ≈ 1523 px  (content starts at ~320 px)
+#   Strip absent  : window width ≈ 1203 px  (game content only)
 #   Common height : 2112 px
+#
+# Ad-strip compensation happens in exactly TWO places:
+#   1. capture_game_image() — crops the ad strip from captured images so all
+#      downstream processing (OCR, template matching, gem detection) works in
+#      content-only coordinate space.
+#   2. _content_frac_to_window_px() — converts content-only fractional coords
+#      back to window-relative pixel coords for clicks and swipes, adding the
+#      strip offset when the strip is present.
 #
 # These fractions are derived from those pixel counts and scale correctly
 # if BlueStacks is running at a different zoom / DPI level.
@@ -73,18 +81,31 @@ def has_ad_strip(img_width: int, img_height: int) -> bool:
     return (img_width / img_height) > _STRIP_ASPECT_CUT
 
 
+def crop_ad_strip(img: Image.Image) -> Tuple[Image.Image, bool]:
+    """Crop the left ad strip from *img* if present.
+
+    Returns (cropped_image, had_strip).  When the strip is absent the
+    original image is returned unchanged with had_strip=False.
+    """
+    w, h = img.size
+    if has_ad_strip(w, h):
+        strip_px = int(round(w * STRIP_FRAC))
+        return img.crop((strip_px, 0, w, h)), True
+    return img, False
+
+
 PERK_ROWS = [ (0, 0.273), (1, 0.373), (2, 0.473), (3, 0.573), (4, 0.673) ]
 
 # Upgrade button positions (6 buttons in 3 rows × 2 columns)
 # Format: (index, y_fraction, x_range)
-# X ranges extended to capture prices displayed on the right side of buttons
+# X ranges in content-only coordinate frame (ad strip excluded).
 UPGRADE_BUTTON_ROWS = [
-    (0, 0.69, (0.20, 0.55)),  # Row 1, Left column (extended right to capture prices)
-    (1, 0.69, (0.55, 0.95)),  # Row 1, Right column (extended right for prices)
-    (2, 0.80, (0.20, 0.55)),  # Row 2, Left column
-    (3, 0.80, (0.55, 0.95)),  # Row 2, Right column
-    (4, 0.90, (0.20, 0.55)),  # Row 3, Left column
-    (5, 0.90, (0.55, 0.95)),  # Row 3, Right column
+    (0, 0.69, (0.00, 0.43)),   # Row 1, Left column
+    (1, 0.69, (0.43, 0.94)),   # Row 1, Right column
+    (2, 0.80, (0.00, 0.43)),   # Row 2, Left column
+    (3, 0.80, (0.43, 0.94)),   # Row 2, Right column
+    (4, 0.90, (0.00, 0.43)),   # Row 3, Left column
+    (5, 0.90, (0.43, 0.94)),   # Row 3, Right column
 ]
 
 # Attack upgrade labels
@@ -176,7 +197,7 @@ UPGRADE_PRIORITY_HIGH_TIER = [
 ] + UPGRADE_PRIORITY
 
 FLOATER_POSITIONS = [
-    (0.6694, 0.3016)
+    (0.5815, 0.3016)
 ]
 
 # OCR
@@ -754,8 +775,8 @@ def _ocr_perk_row_recovery(gray_upscaled: np.ndarray, config: Config,
             continue
         y_lo = max(0, int((fy - 0.05) * h2))
         y_hi = min(h2, int((fy + 0.05) * h2))
-        x_lo = int(0.40 * w2)
-        x_hi = min(w2, int(0.82 * w2))
+        x_lo = int(0.24 * w2)
+        x_hi = min(w2, int(0.78 * w2))
         roi = gray_upscaled[y_lo:y_hi, x_lo:x_hi]
 
         # Only attempt recovery on dark-background rows
@@ -808,7 +829,7 @@ def _ocr_upgrade_header_recovery(arr: np.ndarray, config: Config) -> List[OCRRes
 
     On success it returns a single synthetic OCRResult with text equal to the
     detected category word ('UTILITY', 'ATTACK', or 'DEFENSE'), centred in the
-    header band at approximately (fx=0.33, fy=0.635) so that the existing
+    header band at approximately (fx=0.155, fy=0.635) so that the existing
     automation_loop_tick detection logic matches it unchanged.
 
     Returns an empty list if no category word is found.
@@ -822,8 +843,8 @@ def _ocr_upgrade_header_recovery(arr: np.ndarray, config: Config) -> List[OCRRes
         # Header band position (fractional)
         y_lo = max(0, int(0.60 * h))
         y_hi = min(h, int(0.67 * h))
-        x_lo = int(0.08 * w)
-        x_hi = min(w, int(0.58 * w))
+        x_lo = int(0.0 * w)
+        x_hi = min(w, int(0.47 * w))
 
         roi = arr[y_lo:y_hi, x_lo:x_hi]
         if roi.size == 0:
@@ -907,7 +928,7 @@ def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
     detected_rows = set()
     for r in scaled_results:
         for row_idx, fy in PERK_ROWS:
-            if abs(r.fy - fy) < 0.05 and 0.45 < r.fx < 0.82:
+            if abs(r.fy - fy) < 0.05 and 0.30 < r.fx < 0.78:
                 detected_rows.add(row_idx)
                 break
 
@@ -927,7 +948,7 @@ def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
     # Recovery pass: upgrade section header (UTILITY / ATTACK / DEFENSE UPGRADES)
     # Only run if no category marker is already present near the expected position.
     header_found = any(
-        r.text.upper() in ('UTILITY', 'ATTACK', 'DEFENSE') and r.is_near(0.333, 0.632, 0.06)
+        r.text.upper() in ('UTILITY', 'ATTACK', 'DEFENSE') and r.is_near(0.1556, 0.632, 0.06)
         for r in scaled_results
     )
     if not header_found:
@@ -995,28 +1016,6 @@ def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
                         scaled_results = scaled_results + [synthetic]
             except Exception:
                 pass
-
-    # ── Strip-normalisation ───────────────────────────────────────────────────
-    # All hard-coded fx thresholds in this file assume the full-width layout
-    # (strip present, width ≈ 1523 px).  When the strip is absent the captured
-    # image is narrower (≈ 1203 px) so every OCRResult's x coordinate is
-    # shifted left by the missing strip width.  We correct this by adding the
-    # equivalent strip offset to each bbox x-value and reporting a wider
-    # image_size — making all downstream comparisons transparent to the
-    # presence or absence of the strip.
-    if not has_ad_strip(w, h):
-        full_w = int(round(w / CONTENT_FRAC))   # infer what full width would be
-        strip_px = full_w - w                    # pixels missing from the left
-        scaled_results = [
-            OCRResult(
-                text=r.text,
-                bbox=(r.bbox[0] + strip_px, r.bbox[1], r.bbox[2], r.bbox[3]),
-                confidence=r.confidence,
-                image_size=(full_w, h),
-            )
-            for r in scaled_results
-        ]
-        w = full_w  # keep image_size consistent in the returned OCRFrame
 
     # Save preprocessed debug image (first variant)
     try:
@@ -1113,7 +1112,7 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
         # Match patterns like "Wave 123", "W 123", "Wave: 123", "w:123", etc.
         match = re.search(r'(?:wave|w)[:\s]*([0-9,]+)', text, re.IGNORECASE)
         if match:
-            if not r.is_near(0.73, 0.55, 0.08):
+            if not r.is_near(0.6582, 0.55, 0.08):
                 log.debug(f"Wave ignored (wrong position {r.fx:.3f},{r.fy:.3f}): '{text}'")
                 continue
             wave_num = match.group(1).replace(',', '')
@@ -1147,7 +1146,7 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
                             best_candidate = candidate
 
             if best_num and best_candidate:
-                if not best_candidate.is_near(0.73, 0.55, 0.06):
+                if not best_candidate.is_near(0.6582, 0.55, 0.06):
                     log.debug(f"Wave ignored (wrong position {best_candidate.fx:.3f},{best_candidate.fy:.3f}): '{best_num}'")
                     continue
                 if len(best_num) < 2:
@@ -1160,7 +1159,7 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
     for r in frame.results:
         text_lower = r.text.lower().strip()
         if text_lower.startswith(('wave', 'w')):
-            if not r.is_near(0.73, 0.55, 0.08):
+            if not r.is_near(0.6582, 0.55, 0.08):
                 log.debug(f"Wave ignored (wrong position {r.fx:.3f},{r.fy:.3f}): '{r.text}'")
                 continue
             # Extract any digits from the text
@@ -1182,19 +1181,35 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
     return None, None
 
 
+def _content_frac_to_window_px(fx: float, fy: float) -> Tuple[int, int]:
+    """Convert content-only fractional coordinates to window-relative pixel coords.
+
+    This is the SECOND of two ad-strip compensation points.  All fractional
+    coordinates in this codebase are expressed in the content-only frame
+    (ad strip excluded).  When the window includes the ad strip, this
+    function adds the strip offset so that clicks/swipes land at the
+    correct absolute screen position.
+    """
+    w = ctx.window_rect.width
+    h = ctx.window_rect.height
+    if has_ad_strip(w, h):
+        strip_px = int(round(w * STRIP_FRAC))
+        game_w = w - strip_px
+        px_x = strip_px + int(fx * game_w)
+    else:
+        px_x = int(fx * w)
+    px_y = int(fy * h)
+    return px_x, px_y
+
+
 def do_click(message, click_x_frac, click_y_frac):
     global ctx
     log = logging.getLogger(__name__)
     w = ctx.window_rect.width
     h = ctx.window_rect.height
-    # All stored click fractions are expressed in the full-width (strip-present)
-    # coordinate frame.  When the window is narrow (strip absent) we translate
-    # the x fraction into the game-content-only frame before converting to pixels.
-    if not has_ad_strip(w, h):
-        click_x_frac = (click_x_frac - STRIP_FRAC) / CONTENT_FRAC
-        click_x_frac = max(0.0, min(1.0, click_x_frac))
-    click_x = int(click_x_frac * w)
-    click_y = int(click_y_frac * h)
+    # All stored click fractions are in the content-only coordinate frame.
+    # _content_frac_to_window_px adds the ad-strip offset when needed.
+    click_x, click_y = _content_frac_to_window_px(click_x_frac, click_y_frac)
     rect = ctx.window_rect
     config = ctx.config
     if rect and config:
@@ -1269,7 +1284,7 @@ def do_click(message, click_x_frac, click_y_frac):
     return False
 
 def close_perks():
-    do_click("Closing perks mode by clicking 'X'", 0.878, 0.100)
+    do_click("Closing perks mode by clicking 'X'", 0.8455, 0.100)
 
 
 # ============================================================================
@@ -1294,7 +1309,7 @@ def collect_perk_texts(frame: OCRFrame) -> dict:
     perk_items: dict = {}
     for r in frame.results:
         for (row, dy) in PERK_ROWS:
-            if abs(r.fy - dy) < 0.05 and r.fx > 0.45 and r.fx < 0.82:
+            if abs(r.fy - dy) < 0.05 and r.fx > 0.30 and r.fx < 0.78:
                 perk_items.setdefault(row, [])
                 perk_items[row].append((r.fx, r.text))
     # Sort each row's texts by x-position and extract text only
@@ -2450,9 +2465,10 @@ def load_slashmin_template(config: Config) -> Optional[np.ndarray]:
 
 # Gems orbit a fixed centre point.  The tip of the gem always points toward that
 # centre, and all gems orbit at the same radius.
-_GEM_ORBIT_CENTER_FX: float = 0.5989   # fractional x of orbit centre
+# Coordinates are in the content-only frame (ad strip excluded).
+_GEM_ORBIT_CENTER_FX: float = 0.4922   # fractional x of orbit centre
 _GEM_ORBIT_CENTER_FY: float = 0.2630   # fractional y of orbit centre
-_GEM_ORBIT_RADIUS_FW: float = 0.2956   # orbital radius as a fraction of image width
+_GEM_ORBIT_RADIUS_FW: float = 0.3742   # orbital radius as a fraction of content-only image width
 _GEM_SEARCH_MARGIN_PX: int  = 100      # extra pixels beyond orbit radius to search
 
 
@@ -2592,7 +2608,7 @@ def process_battle_button(img: Optional[Image.Image]) -> None:
 
     battle_button_pos = None
     if ctx.battle_template is not None:
-        battle_button_pos = detect_template_in_region(img, ctx.battle_template, "BATTLE button", 0.28, 0.71, 0.88, 0.91, threshold=0.95)
+        battle_button_pos = detect_template_in_region(img, ctx.battle_template, "BATTLE button", 0.0885, 0.71, 0.8481, 0.91, threshold=0.95)
     else:
         log.error('no battle button template')
     if battle_button_pos:
@@ -2622,12 +2638,9 @@ def detect_template_in_region(
         img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
         h, w = img_cv.shape
 
-        # All caller-supplied x0/x1 fractions are in the full-width (strip-present)
-        # coordinate frame.  When the ad strip is absent the captured image is
-        # narrower (content-only), so translate the x fractions accordingly.
-        if not has_ad_strip(w, h):
-            x0 = max(0.0, min(1.0, (x0 - STRIP_FRAC) / CONTENT_FRAC))
-            x1 = max(0.0, min(1.0, (x1 - STRIP_FRAC) / CONTENT_FRAC))
+        # All caller-supplied fractions are in the content-only coordinate
+        # frame.  Since the image is already cropped to content-only (by
+        # crop_ad_strip at capture time) we use them directly.
 
         x_start, x_end = int(w * x0), int(w * x1)
         y_start, y_end = int(h * y0), int(h * y1)
@@ -2648,12 +2661,9 @@ def detect_template_in_region(
             match_x = max_loc[0] + x_start + template.shape[1] // 2
             match_y = max_loc[1] + y_start + template.shape[0] // 2
             fx, fy = match_x / w, match_y / h
-            # If the strip was absent the image is content-only; translate fx
-            # back to the full-width coordinate frame that callers expect.
-            ad_strip_present = has_ad_strip(w, h)
-            if not ad_strip_present:
-                fx = fx * CONTENT_FRAC + STRIP_FRAC
-            log.info(f"{label} detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f} ad strip {'present' if ad_strip_present else 'absent'}")
+            # Image is always content-only (cropped at capture time), so
+            # fx/fy are already in the content-only coordinate frame.
+            log.info(f"{label} detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f}")
             return (fx, fy)
 
         return None
@@ -2750,9 +2760,9 @@ CATEGORY_UPGRADES: Dict[str, set] = {
 
 # Fractional (fx, fy) coordinates for clicking each upgrade sub-tab
 UPGRADE_TAB_CLICK = {
-    'ATTACK':  (0.321,  0.985),
-    'DEFENSE': (0.5105, 0.985),
-    'UTILITY': (0.7,    0.985),
+    'ATTACK':  (0.1404, 0.985),
+    'DEFENSE': (0.3803, 0.985),
+    'UTILITY': (0.6202, 0.985),
 }
 
 
@@ -2954,8 +2964,7 @@ def _do_upgrade_jump_scroll(direction: str, pixels: int,
     log = logging.getLogger(__name__)
     if not ctx.window_rect:
         return
-    scroll_x = int(0.595 * w)
-    scroll_y = int(0.8325 * h)
+    scroll_x, scroll_y = _content_frac_to_window_px(0.4873, 0.8325)
     log.info(f"Jump scroll {direction} by {pixels}px — {message}")
     execute_swipe(scroll_x, scroll_y, pixels, direction,
                   ctx.window_rect, ctx.config, ctx.input_enabled)
@@ -2973,9 +2982,9 @@ def _click_upgrade_tab(want_page: str) -> None:
 # UPGRADE_TAB_CLICK positions which switch between sub-tabs while the panel
 # is already open.
 _UPGRADE_PANEL_REOPEN_COORDS: Dict[str, Tuple[float, float]] = {
-    'ATTACK':  (0.3232, 0.9711),
-    'DEFENSE': (0.3865, 0.985),
-    'UTILITY': (0.7000, 0.9719),
+    'ATTACK':  (0.1432, 0.9711),
+    'DEFENSE': (0.2233, 0.985),
+    'UTILITY': (0.6202, 0.9719),
 }
 
 
@@ -3014,8 +3023,7 @@ def _do_upgrade_scroll(direction: str, w: int, h: int, message) -> None:
     log = logging.getLogger(__name__)
     if not ctx.window_rect:
         return
-    scroll_x = int(0.595 * w)
-    scroll_y = int(0.8325 * h)
+    scroll_x, scroll_y = _content_frac_to_window_px(0.4873, 0.8325)
     execute_swipe(scroll_x, scroll_y, 400, direction, ctx.window_rect, ctx.config, ctx.input_enabled)
 
 
@@ -3425,14 +3433,17 @@ def do_ocr():
         ctx.status = "no_window"
         return None
 
-    # Capture screen
+    # Capture screen and crop ad strip (FIRST ad-strip compensation point)
     log.debug(f"Capturing window: {ctx.window_rect.width} x {ctx.window_rect.height} at ({ctx.window_rect.left}, {ctx.window_rect.top})")
-    img = capture_window(ctx.window_rect)
+    raw_img = capture_window(ctx.window_rect)
     img_capture_time = time.time()  # used for gem dead-reckoning dt
     log.debug('Capture done')
-    if not img:
+    if not raw_img:
         log.warning("Failed to capture window")
         return None
+    img, had_strip = crop_ad_strip(raw_img)
+    if had_strip:
+        log.debug('Ad strip detected and cropped: %dx%d → %dx%d', raw_img.width, raw_img.height, img.width, img.height)
 
     # time OCR
     try:
@@ -3531,12 +3542,12 @@ def check_cloud_grab_warning(frame) -> bool:
     log = logging.getLogger(__name__)
     if not ctx.config.cloud_grab_enabled:
         return False
-    warning_marks = [r for r in frame.results if r.text.lower() == "warning" and r.is_near(0.513, 0.261, 0.15)]
-    yes_marks = [r for r in frame.results if r.text.lower() == "yes" and r.is_near(0.501, 0.541, 0.05)]
+    warning_marks = [r for r in frame.results if r.text.lower() == "warning" and r.is_near(0.3835, 0.261, 0.15)]
+    yes_marks = [r for r in frame.results if r.text.lower() == "yes" and r.is_near(0.3683, 0.541, 0.05)]
     log.info(f'Cloud grab warning check: found {len(warning_marks)} warning marks and {len(yes_marks)} yes marks')
     if warning_marks and yes_marks:
         log.info(f"PRIORITY: Cloud grab warning detected - clicking Yes at ({yes_marks[0].fx:.4f}, {yes_marks[0].fy:.4f})")
-        do_click("Cloud grab warning Yes button", 0.74, 0.71)
+        do_click("Cloud grab warning Yes button", 0.6708, 0.71)
         return True
     return False
 
@@ -3559,13 +3570,13 @@ def automation_loop_tick():
     log.info(f'{[r for r in frame.results if r.text == "TOURNAMENT"]}')
     # PRIORITY: Check for "TOURNAMENT" at (0.353, 0.196) and exit killed by screen
     tournament_detected = any(
-        r.text.strip().upper() == "TOURNAMENT" and abs(r.fx - 0.515) < 0.02 and abs(r.fy - 0.208) < 0.02
+        r.text.strip().upper() == "TOURNAMENT" and abs(r.fx - 0.386) < 0.025 and abs(r.fy - 0.208) < 0.02
         for r in frame.results
     )
     log.info(f'Tournament check: {"detected" if tournament_detected else "not detected"}')
     if tournament_detected:
-        log.info("TOURNAMENT detected at (0.353, 0.196) - clicking to exit killed by screen")
-        do_click("TOURNAMENT exit killed by screen", 0.5884, 0.7704)
+        log.info("TOURNAMENT detected - clicking to exit killed by screen")
+        do_click("TOURNAMENT exit killed by screen", 0.4789, 0.7704)
         return False
 
 
@@ -3582,7 +3593,7 @@ def automation_loop_tick():
     # PRIORITY: Check for "The Tower" app icon/text and click it immediately
     if _priority_click(
         frame,
-        filter_fn=lambda r: ('Tower' in r.text and r.fy < 0.4 and r.fx > 0.8),
+        filter_fn=lambda r: ('Tower' in r.text and r.fy < 0.4 and r.fx > 0.747),
         log_message="PRIORITY: 'The Tower' icon/text detected at",
         reason="The Tower app icon (priority)",
         wait_time=10,
@@ -3594,7 +3605,7 @@ def automation_loop_tick():
         img,
         ctx.my_games_template,
         "My games",
-        (0.0, 0.0, 0.9, 0.3),
+        (0.0, 0.0, 0.8734, 0.3),
         0.8,
         "My games button (priority, template match)"
     ):
@@ -3604,7 +3615,7 @@ def automation_loop_tick():
         img,
         ctx.resume_battle_template,
         "RESUME BATTLE",
-        (0.1, 0.6, 0.9, 0.99),
+        (0.0, 0.6, 0.8734, 0.99),
         0.75,
         "Resume Battle button (priority, template match)"
     ):
@@ -3625,20 +3636,20 @@ def automation_loop_tick():
     # Check for BATTLE button via template matching
     process_battle_button(img)
 
-    if click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.6056, 0.035, 0.2) or r.is_near(  0.2224,   0.9882) or r.is_near(  0.3130,   0.8281))):
+    if click_if_present('claim', lambda r: r.text.lower() == "claim" and (r.is_near(0.5007, 0.035, 0.2) or r.is_near(  0.0156,   0.9882) or r.is_near(  0.1303,   0.8281))):
         return False
     
-    if click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.5951,   0.8168)):
+    if click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.4874,   0.8168)):
         return False
 
-    if click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7644,   0.7429)):
+    if click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7017,   0.7429)):
         return False
     
-    if click_if_present('slashmin', lambda r: r.text == 'Slashmin' and r.is_near(0.380, 0.937)):
+    if click_if_present('slashmin', lambda r: r.text == 'Slashmin' and r.is_near(0.2151, 0.937)):
         return False
 
     log.info(f'return text: {[r for r in frame.results if r.text == "Return"]}')
-    if click_if_present('return', lambda r: r.text == 'Return' and r.is_near(0.458, 0.937, 0.2)):
+    if click_if_present('return', lambda r: r.text == 'Return' and r.is_near(0.3138, 0.937, 0.2)):
         return False
     
     # Extract wave number for comparison
@@ -3652,8 +3663,8 @@ def automation_loop_tick():
             pass
     
     texts: tuple[str, float, float] = [(r.text, r.fx, r.fy) for r in frame.results]
-    perks_mode = [t for t in texts if t[0] == 'Perks' and abs(t[1]-0.612) < 0.1 and abs(t[2]-0.098) < 0.1]
-    choose = [t for t in texts if t[0] == 'Choose' and abs(t[1]-0.522) < 0.05 and abs(t[2]-0.206) < 0.05]
+    perks_mode = [t for t in texts if t[0] == 'Perks' and abs(t[1]-0.5089) < 0.1 and abs(t[2]-0.098) < 0.1]
+    choose = [t for t in texts if t[0] == 'Choose' and abs(t[1]-0.3949) < 0.05 and abs(t[2]-0.206) < 0.05]
     log.debug('perks_mode: %s, choose: %s', perks_mode, choose)
     if perks_mode and choose:
         log.info("Perks mode found")
@@ -3664,18 +3675,18 @@ def automation_loop_tick():
     perk_just_clicked = False  # True when we clicked the perk icon this tick (overlay not open yet)
     perk_text = {}
 
-    game_stats_mark = [r for r in frame.results if r.text == 'GAME' and r.is_near(  0.5171,   0.2491) or r.text == 'STATS' and r.is_near(  0.6667,   0.2491)]
-    info_marks = [r for r in frame.results if r.text.lower() == "info" and r.is_near(0.4771, 0.2067, 0.1)]
+    game_stats_mark = [r for r in frame.results if r.text == 'GAME' and r.is_near(  0.3886,   0.2491) or r.text == 'STATS' and r.is_near(  0.5780,   0.2491)]
+    info_marks = [r for r in frame.results if r.text.lower() == "info" and r.is_near(0.3380, 0.2067, 0.1)]
     if game_stats_mark:
         mode = 'killed by'
-        do_click("Seen game stats, clicking to exit", 0.7601, 0.7496)
+        do_click("Seen game stats, clicking to exit", 0.6963, 0.7496)
     upgrade_mode = None  # which upgrade sub-tab is currently visible; set inside if mode == 'main'
     if mode == 'main':
         # Tight tolerance (0.05) prevents the word "Attack" inside upgrade-button
         # labels (e.g. "Free Attack Upgrade") from being mistaken for the ATTACK tab header.
-        defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.343, 0.632, 0.05)]
-        attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.329, 0.632, 0.05)]
-        utility_marks = [r for r in frame.results if r.text.lower() == "utility" and r.is_near(0.333, 0.632, 0.05)]
+        defense_marks = [r for r in frame.results if r.text.lower() == "defense" and r.is_near(0.1682, 0.632, 0.05)]
+        attack_marks = [r for r in frame.results if r.text.lower() == "attack" and r.is_near(0.1505, 0.632, 0.05)]
+        utility_marks = [r for r in frame.results if r.text.lower() == "utility" and r.is_near(0.1556, 0.632, 0.05)]
 
         upgrade_mode = 'DEFENSE' if defense_marks else 'ATTACK' if attack_marks else 'UTILITY' if utility_marks else None
         ctx.upgrade_mode_seen = upgrade_mode
@@ -3713,7 +3724,7 @@ def automation_loop_tick():
         if time.time() < ctx.no_perk_until:
             log.info(f"Perk cooldown active - skipping perk check for {ctx.no_perk_until - time.time():.0f}s more")
         else:
-            newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.42, 0.00, 0.8, 0.10, threshold=0.75)
+            newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.2657, 0.00, 0.7468, 0.10, threshold=0.75)
             if newperk_pos:
                 do_click("Clicking new perk icon (template match)", newperk_pos[0], newperk_pos[1])
                 mode = 'perks'
@@ -3758,7 +3769,7 @@ def automation_loop_tick():
             log.info(f"Best perk choice: '{best_choice}' in row {best_row} with text '{perk_text_join[best_row]}'")
             # click the perk in that row
             message = f"Clicking perk at row {best_row} (choice: '{best_choice}')"
-            do_click(message, 0.671, PERK_ROWS[best_row][1])
+            do_click(message, 0.5835, PERK_ROWS[best_row][1])
             # Record perk selection in game state history
             perk_entry = {
                 "timestamp": time.time(),
@@ -3836,12 +3847,12 @@ def automation_loop_tick():
         # is more than 1 minute since last perk was selected
         if time.time() - ctx.no_perk_until > 60.0 and wave_num:
             log.info("No upgrade buttons visible for 30s - clicking low moddle to dismiss popup")
-            do_click("Dismiss popup blocking upgrades", 0.58, 0.9)
+            do_click("Dismiss popup blocking upgrades", 0.4683, 0.9)
             ctx.recover_stage = 1
     elif mode == 'main' and time.time() - ctx.last_seen_upgrades > 45.0 and ctx.recover_stage == 1 and info_marks and wave_num:
         if time.time() - ctx.no_perk_until > 60.0:
             log.info("No upgrade buttons visible for 45s - clicking top right to dismiss wave")
-            do_click('Dismiss wave info', 0.9129, 0.1411)
+            do_click('Dismiss wave info', 0.8897, 0.1411)
 
     # Game-restart detection: reset upgrade state when wave drops sharply
     if check_wave_restart(ctx.game_state):
@@ -3883,10 +3894,10 @@ def automation_loop_tick():
         if wave and _HUD_VAL_RE.match(ocr.text.strip()):
             # Use separate x/y bounds so the two closely-spaced HUD rows
             # (cash at y≈0.048, coin at y≈0.083) don't cross-match.
-            if "cash" not in resources and 0.242 <= ocr.fx <= 0.490 and abs(ocr.fy - 0.048) < 0.018:
+            if "cash" not in resources and 0.040 <= ocr.fx <= 0.354 and abs(ocr.fy - 0.048) < 0.018:
                 resources["cash"] = ocr.text
                 log.debug(f"Position-based cash: '{ocr.text}' at ({ocr.fx:.3f}, {ocr.fy:.3f})")
-            elif "gold" not in resources and 0.264 <= ocr.fx <= 0.490 and abs(ocr.fy - 0.083) < 0.018:
+            elif "gold" not in resources and 0.068 <= ocr.fx <= 0.354 and abs(ocr.fy - 0.083) < 0.018:
                 resources["gold"] = ocr.text
                 log.debug(f"Position-based gold/coin: '{ocr.text}' at ({ocr.fx:.3f}, {ocr.fy:.3f})")
 
@@ -4012,13 +4023,14 @@ def _parse_resource_value(text: str) -> Optional[float]:
 
 
 # Fractional (fx, fy) HUD positions to click to toggle to /min display mode
+# Coordinates are in the content-only frame (ad strip excluded).
 _HUD_TOGGLE_POS: dict = {
-    "cash": (0.351, 0.048),
-    "gold": (0.362, 0.083),
+    "cash": (0.1784, 0.048),
+    "gold": (0.1923, 0.083),
 }
 
-# Single search region covering both HUD rows, centred at (0.4, 0.07).
-_SLASHMIN_REGION: tuple = (0.24, 0.02, 0.56, 0.12)
+# Single search region covering both HUD rows.
+_SLASHMIN_REGION: tuple = (0.0378, 0.02, 0.4430, 0.12)
 
 
 def _detect_slashmin(img: Optional[Image.Image]) -> Optional[bool]:
@@ -4220,13 +4232,13 @@ def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
         click_frac_x  = click_x / img_w
         click_frac_y = click_y / img_h
         log.info(f"Clicking floating gem at fractional position ({click_frac_x:.3f}, {click_frac_y:.3f}) angle {angle_from_north:.1f}° advanced to {advanced_angle:.1f}°")
-        # TODO take into account ad strip
         do_click("floating gem", click_frac_x, click_frac_y)
         
-        # Post-click verification: re-capture and re-detect
+        # Post-click verification: re-capture, crop ad strip, and re-detect
         time.sleep(0.3)
-        post_img = capture_window(ctx.window_rect)
-        if post_img is not None:
+        post_raw = capture_window(ctx.window_rect)
+        if post_raw is not None:
+            post_img, _ = crop_ad_strip(post_raw)
             post_pos = detect_floating_gem(post_img, ctx.gem_template, ctx.config)
             if post_pos is None:
                 log.info("Gem click HIT - gem no longer detected")

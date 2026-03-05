@@ -30,11 +30,19 @@ from towercontrol_functional import (
     detect_upgrade_buttons,
     detect_floating_gem,
     load_gem_template,
+    crop_ad_strip,
     process_ocr,
     initialize_ocr_backend,
 )
 
 TEST_IMAGES_DIR = Path(__file__).resolve().parent / "test_images"
+
+
+def _load_test_image(path: Path) -> Image.Image:
+    """Load a test image and crop the ad strip if present."""
+    img = Image.open(path).convert("RGB")
+    img, _ = crop_ad_strip(img)
+    return img
 
 
 class TestPerkDetection(unittest.TestCase):
@@ -201,7 +209,7 @@ class TestPerkDetectionWithImage(unittest.TestCase):
             raise unittest.SkipTest(f"Test image not found: {cls.IMAGE_PATH}")
         cls.config = Config()
         cls.ocr_reader = initialize_ocr_backend(cls.config)
-        cls.img = Image.open(cls.IMAGE_PATH).convert("RGB")
+        cls.img = _load_test_image(cls.IMAGE_PATH)
         cls.frame = process_ocr(cls.img, cls.config, cls.ocr_reader)
 
     def test_ocr_produces_results(self):
@@ -263,7 +271,7 @@ class TestPerkDetectionWithImage(unittest.TestCase):
         perk_region_results = []
         for r in self.frame.results:
             for row, dy in PERK_ROWS:
-                if abs(r.fy - dy) < 0.05 and 0.45 < r.fx < 0.82:
+                if abs(r.fy - dy) < 0.05 and 0.30 < r.fx < 0.78:
                     perk_region_results.append((row, r.text, r.fx, r.fy))
 
         self.assertGreater(
@@ -296,7 +304,7 @@ class TestPerkDetectionImage130242(unittest.TestCase):
             raise unittest.SkipTest(f"Test image not found: {cls.IMAGE_PATH}")
         cls.config = Config()
         cls.ocr_reader = initialize_ocr_backend(cls.config)
-        cls.img = Image.open(cls.IMAGE_PATH).convert("RGB")
+        cls.img = _load_test_image(cls.IMAGE_PATH)
         cls.frame = process_ocr(cls.img, cls.config, cls.ocr_reader)
 
     def test_ocr_produces_results(self):
@@ -373,7 +381,7 @@ class TestPerkDetectionImage130242(unittest.TestCase):
         perk_region_results = []
         for r in self.frame.results:
             for row, dy in PERK_ROWS:
-                if abs(r.fy - dy) < 0.05 and 0.45 < r.fx < 0.82:
+                if abs(r.fy - dy) < 0.05 and 0.30 < r.fx < 0.78:
                     perk_region_results.append((row, r.text, r.fx, r.fy))
 
         self.assertGreater(
@@ -409,7 +417,7 @@ class TestUpgradeDetectionUnexpected1771282888(unittest.TestCase):
             raise unittest.SkipTest(f"Test image not found: {cls.IMAGE_PATH}")
         cls.config = Config()
         cls.ocr_reader = initialize_ocr_backend(cls.config)
-        cls.img = Image.open(cls.IMAGE_PATH).convert("RGB")
+        cls.img = _load_test_image(cls.IMAGE_PATH)
         cls.frame = process_ocr(cls.img, cls.config, cls.ocr_reader)
 
     def test_ocr_produces_results(self):
@@ -494,7 +502,7 @@ class TestUtilityUpgradesDetection(unittest.TestCase):
     The tab-detection logic in automation_loop_tick uses:
         utility_marks = [r for r in frame.results
                          if r.text.lower() == "utility"
-                         and r.is_near(0.333, 0.632, 0.1)]
+                         and r.is_near(0.1556, 0.632, 0.1)]
 
     This test documents both that detection — and its current OCR limitation
     (the "UTILITY UPGRADES" header text is not reliably split / located by the
@@ -509,7 +517,7 @@ class TestUtilityUpgradesDetection(unittest.TestCase):
             raise unittest.SkipTest(f"Test image not found: {cls.IMAGE_PATH}")
         cls.config = Config()
         cls.ocr_reader = initialize_ocr_backend(cls.config)
-        cls.img = Image.open(cls.IMAGE_PATH).convert("RGB")
+        cls.img = _load_test_image(cls.IMAGE_PATH)
         cls.frame = process_ocr(cls.img, cls.config, cls.ocr_reader)
 
     def test_ocr_produces_results(self):
@@ -518,12 +526,12 @@ class TestUtilityUpgradesDetection(unittest.TestCase):
                            "OCR should detect text in the utils.png image")
 
     def test_utility_tab_detected(self):
-        """OCR finds 'utility' near (0.333, 0.632) — mirrors automation_loop_tick logic.
+        """OCR finds 'utility' near (0.1556, 0.632) — mirrors automation_loop_tick logic.
 
         This is the exact check used to set seen='UTILITY' in the main loop:
             utility_marks = [r for r in frame.results
                              if r.text.lower() == "utility"
-                             and r.is_near(0.333, 0.632, 0.1)]
+                             and r.is_near(0.1556, 0.632, 0.1)]
 
         The header is recovered by _ocr_upgrade_header_recovery in process_ocr
         (inverted adaptive-threshold block=31, PSM 6) which emits a synthetic
@@ -531,13 +539,13 @@ class TestUtilityUpgradesDetection(unittest.TestCase):
         """
         utility_marks = [
             r for r in self.frame.results
-            if r.text.lower() == "utility" and r.is_near(0.333, 0.632, 0.1)
+            if r.text.lower() == "utility" and r.is_near(0.1556, 0.632, 0.1)
         ]
         print(f"\nAll OCR results: {[(r.text, round(r.fx,3), round(r.fy,3)) for r in self.frame.results]}")
         print(f"utility_marks: {utility_marks}")
         self.assertGreater(
             len(utility_marks), 0,
-            "Expected at least one OCR result with text 'utility' near (0.333, 0.632) "
+            "Expected at least one OCR result with text 'utility' near (0.1556, 0.632) "
             "— the UTILITY UPGRADES tab indicator visible in utils.png",
         )
 
@@ -582,7 +590,7 @@ class TestAttackDamageMax(unittest.TestCase):
             raise unittest.SkipTest(f"Test image not found: {cls.IMAGE_PATH}")
         cls.config = Config()
         cls.ocr_reader = initialize_ocr_backend(cls.config)
-        cls.img = Image.open(cls.IMAGE_PATH).convert("RGB")
+        cls.img = _load_test_image(cls.IMAGE_PATH)
         cls.frame = process_ocr(cls.img, cls.config, cls.ocr_reader)
 
     def test_ocr_produces_results(self):
@@ -643,7 +651,7 @@ class TestFloatingGemDetection(unittest.TestCase):
         path = TEST_IMAGES_DIR / filename
         if not path.exists():
             self.skipTest(f"Test image not found: {path}")
-        return Image.open(path).convert("RGB")
+        return _load_test_image(path)
 
     # --- images that SHOULD detect a gem ---
 
