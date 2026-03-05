@@ -249,7 +249,24 @@ def run_torture(duration_minutes: float = 10.0, delay: float = 2.0,
                 time.sleep(delay)
                 continue
             current_tab = _detect_current_tab(frame)
+            upgrade_buttons_after = tc.detect_upgrade_buttons(frame, img, tc.ctx.config)
             print(f"  After collapse: tab={current_tab}")
+
+            # After a chaos collapse the panel may have reopened on the wrong
+            # sub-tab (e.g. ATTACK instead of DEFENSE).  Switch immediately so
+            # subsequent scroll logic uses the correct category buttons.
+            if current_tab is not None and current_tab != category:
+                print(f"  Switching to {category} tab after chaos collapse (was {current_tab})...")
+                tc._click_upgrade_tab(category)
+                time.sleep(delay)
+                img, frame, w, h = _capture_and_ocr()
+                if not frame:
+                    print("  [SKIP] OCR failed after post-collapse tab switch")
+                    stats.record(category, label, 'OCR_FAIL')
+                    time.sleep(delay)
+                    continue
+                current_tab = _detect_current_tab(frame)
+                print(f"  After post-collapse tab switch: tab={current_tab}")
 
         # -- Step 3: check already visible ---------------------------------
         upgrade_buttons = tc.detect_upgrade_buttons(frame, img, tc.ctx.config)

@@ -1671,6 +1671,19 @@ def _find_upgrade_boxes(img: Image.Image) -> List[Tuple[int, int, int, int]]:
         f"v_peaks={[p + x_left for p in v_peaks]}"
     )
 
+    # Anchor v_peaks at both panel edges so that boxes are formed even when
+    # the leftmost or rightmost border line is absent or faint.
+    # • Left edge (x=0 in panel coords): if the first detected peak is more
+    #   than 15 % of panel width from the left, the left column's outer
+    #   border is missing — prepend a synthetic anchor at x=0.
+    # • Right edge (x=pw): always append so the rightmost column closes.
+    if not v_peaks or v_peaks[0] > pw * 0.15:
+        v_peaks = [0] + v_peaks
+        log.debug("_find_upgrade_boxes: prepended synthetic left-edge v_peak at x=0")
+    if not v_peaks or v_peaks[-1] < pw * 0.85:
+        v_peaks = v_peaks + [pw]
+        log.debug(f"_find_upgrade_boxes: appended synthetic right-edge v_peak at x={pw}")
+
     # Build boxes from consecutive pairs of separator lines.
     # Append the panel bottom as a fallback "last separator" so that the
     # bottom box is detected even when its closing border line is faint or
