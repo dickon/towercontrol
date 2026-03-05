@@ -2045,7 +2045,8 @@ def _ocr_box_value(img: Image.Image, box_x: int, box_y: int,
         return None
 
 
-def _match_upgrade_label(texts: List[str]) -> Optional[str]:
+def _match_upgrade_label(texts: List[str],
+                         exclude: Optional[set] = None) -> Optional[str]:
     """Match text fragments against the known upgrade label list.
 
     Sorts known labels by word-count descending so longer / more-specific
@@ -2056,10 +2057,14 @@ def _match_upgrade_label(texts: List[str]) -> Optional[str]:
     2. For labels with 3+ words, allow at most one word to be missing
        (handles OCR dropping words like "Per" in "Damage Per Meter").
 
+    ``exclude`` is an optional set of label strings to skip (used when a
+    label has already been claimed by another box in the same frame).
+
     Returns the matched label string, or None if no match found.
     """
     texts_lower = [t.lower() for t in texts]
-    sorted_labels = sorted(ALL_UPGRADE_LABELS, key=lambda l: len(l.split()), reverse=True)
+    candidate_labels = [l for l in ALL_UPGRADE_LABELS if not (exclude and l in exclude)]
+    sorted_labels = sorted(candidate_labels, key=lambda l: len(l.split()), reverse=True)
 
     def _word_found(word: str) -> bool:
         return any(word in lt or lt in word for lt in texts_lower)
@@ -2263,16 +2268,31 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             # Label fallback: if global OCR missed the label text (common for
             # white-on-dark labels like "Damage"), run Tesseract on the label
             # region and try matching again.
-            if label is None:
+            # Also retry when the matched label is already claimed by another
+            # box in this frame — two buttons can share most of their words
+            # (e.g. "Enemy Attack Level Skip" vs "Enemy Health Level Skip") and
+            # OCR dropping one distinguishing word forces both to resolve to the
+            # same label.
+            already_taken = label is not None and label in upgrades
+            if label is None or already_taken:
                 ocr_text = _ocr_box_label(img, box_x, box_y, box_w, box_h, config)
                 if ocr_text:
                     words = [w.strip() for w in re.split(r'[\s\n]+', ocr_text)
                              if len(w.strip()) >= 2]
-                    label = _match_upgrade_label(words)
-                    if label:
-                        log.debug(
-                            f"Recovered label via targeted OCR: {ocr_text!r} → '{label}'"
-                        )
+                    # When retrying due to collision, exclude the already-taken label
+                    exclude_set = {label} if already_taken else None
+                    recovered = _match_upgrade_label(words, exclude=exclude_set)
+                    if recovered:
+                        if already_taken:
+                            log.info(
+                                f"Label collision on '{label}' — targeted OCR resolved "
+                                f"duplicate box as '{recovered}' (OCR: {ocr_text!r})"
+                            )
+                        else:
+                            log.debug(
+                                f"Recovered label via targeted OCR: {ocr_text!r} → '{recovered}'"
+                            )
+                        label = recovered
 
             if current_value is None and label is not None:
                 ocr_text = _ocr_box_value(img, box_x, box_y, box_w, box_h, config)
@@ -3076,8 +3096,31 @@ def handle_upgrade_action(seen_page: Optional[str],
              f"(threshold={cost_threshold})")
 
     if seen_page is None:
-        log.info("No upgrade tab visible - skipping upgrade action this tick")
-        return
+        # Tab-header OCR failed (common when no-strip layout shifts or animation
+        # causes a miss), but upgrade buttons may still be visible.  Try to
+        # infer the current tab from the visible button labels.
+        if upgrade_buttons:
+            label_set = {lbl.lower() for lbl in upgrade_buttons}
+            votes: Dict[str, int] = {}
+            for cat, cat_list in (
+                ('ATTACK', ATTACK_UPGRADES),
+                ('DEFENSE', DEFENSE_UPGRADES),
+                ('UTILITY', UTILITY_UPGRADES),
+            ):
+                votes[cat] = sum(1 for name in cat_list if name.lower() in label_set)
+            best_cat = max(votes, key=lambda c: votes[c])
+            if votes[best_cat] > 0:
+                seen_page = best_cat
+                log.info(
+                    f"Tab header not detected by OCR — inferred '{seen_page}' "
+                    f"from {votes[best_cat]} matching button label(s)"
+                )
+            else:
+                log.info("No upgrade tab visible and buttons don't match any category - skipping")
+                return
+        else:
+            log.info("No upgrade tab visible - skipping upgrade action this tick")
+            return
 
     if seen_page != want_page:
         log.info(f"Currently on '{seen_page}', need '{want_page}' - switching tab")
