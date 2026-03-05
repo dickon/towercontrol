@@ -3633,10 +3633,26 @@ def automation_loop_tick():
         else:
             delay = time.time() - ctx.last_seen_upgrades
             if want_upgrades and delay > 5.0:
-                log.info(f"Upgrade display closed for {delay:.1f}s — reopening {want_upgrades} panel")
-                _reopen_upgrade_panel(want_upgrades)
-                ctx.last_seen_upgrades = time.time()  # reset so we don't immediately fire again
-                return False
+                # Before toggling the panel, confirm it is genuinely closed by
+                # checking for visible upgrade buttons.  The bottom-bar toggle
+                # opens AND closes the panel, so firing it while the panel is
+                # already open would collapse it instead of expanding it.
+                live_buttons = detect_upgrade_buttons(frame, img, ctx.config)
+                if live_buttons:
+                    # Panel IS open — tab headers were just missed by OCR this
+                    # tick (animation, partial render, etc.).  Update the
+                    # timestamp so we don't fire again on the very next tick.
+                    log.info(
+                        f"Tab headers not detected for {delay:.1f}s but "
+                        f"{len(live_buttons)} upgrade button(s) still visible — "
+                        f"panel is open, skipping reopen toggle"
+                    )
+                    ctx.last_seen_upgrades = time.time()
+                else:
+                    log.info(f"Upgrade display closed for {delay:.1f}s — reopening {want_upgrades} panel")
+                    _reopen_upgrade_panel(want_upgrades)
+                    ctx.last_seen_upgrades = time.time()  # reset so we don't immediately fire again
+                    return False
             
         if time.time() < ctx.no_perk_until:
             log.info(f"Perk cooldown active - skipping perk check for {ctx.no_perk_until - time.time():.0f}s more")
@@ -4428,9 +4444,57 @@ def initialize_ocr_backend(config: Config):
         return None
 
 
+def _enable_windows_ansi() -> None:
+    """Enable ANSI virtual terminal processing on Windows consoles."""
+    import ctypes
+    import ctypes.wintypes
+    try:
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        STD_OUTPUT_HANDLE = -11
+        handle = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        mode = ctypes.wintypes.DWORD()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+    except Exception:
+        pass  # Not a real console (e.g. redirected), ignore silently
+
+
+class _ColoredFormatter(logging.Formatter):
+    """Logging formatter that adds ANSI colour codes based on log level."""
+
+    _RESET   = "\033[0m"
+    _BOLD    = "\033[1m"
+    _DIM     = "\033[2m"
+
+    # Mapping: level → (prefix applied to the whole line, level-label colour)
+    _LEVEL_STYLES: Dict[int, Tuple[str, str]] = {
+        logging.DEBUG:    ("\033[2m",          "\033[2;37m"),   # dim grey
+        logging.INFO:     ("",                 "\033[36m"),     # cyan label
+        logging.WARNING:  ("\033[33m",         "\033[1;33m"),   # yellow
+        logging.ERROR:    ("\033[31m",         "\033[1;31m"),   # red
+        logging.CRITICAL: ("\033[1;41m",       "\033[1;37m"),   # bold white on red bg
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        line_colour, level_colour = self._LEVEL_STYLES.get(
+            record.levelno, ("", "")
+        )
+        original_levelname = record.levelname
+        record.levelname = f"{level_colour}{record.levelname:<7}{self._RESET}"
+        formatted = super().format(record)
+        record.levelname = original_levelname  # restore for other handlers
+        if line_colour:
+            formatted = f"{line_colour}{formatted}{self._RESET}"
+        return formatted
+
+
 def setup_logging():
     """Configure logging."""
     import sys
+
+    # Enable ANSI colours on Windows
+    _enable_windows_ansi()
 
     # Force stdout to line-buffered so console output appears immediately.
     if hasattr(sys.stdout, "reconfigure"):
@@ -4443,9 +4507,15 @@ def setup_logging():
     # Fixed filename; rotates at 5 MB, keeps 5 backups.
     log_file = log_dir / "towercontrol.log"
 
-    # Create formatters
+    # Plain formatter for file/buffer handlers
     formatter = logging.Formatter(
         "%(asctime)s  %(levelname)-7s  %(message)s",
+        datefmt="%H:%M:%S"
+    )
+
+    # Coloured formatter for the console
+    colored_formatter = _ColoredFormatter(
+        "%(asctime)s  %(levelname)s  %(message)s",
         datefmt="%H:%M:%S"
     )
 
@@ -4456,7 +4526,7 @@ def setup_logging():
     # Console handler — INFO and above
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
+    console_handler.setFormatter(colored_formatter)
     logger.addHandler(console_handler)
 
     # Rotating file handler — DEBUG and above
