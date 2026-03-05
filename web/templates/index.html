@@ -17,7 +17,6 @@
   <nav class="navbar navbar-dark bg-black px-3 d-flex justify-content-between">
     <div class="d-flex align-items-center gap-3">
       <span class="navbar-brand mb-0 h1">&#x1f3ef; TowerControl</span>
-      <a class="btn btn-outline-secondary btn-sm" href="/captures">&#128247; Captures</a>
     </div>
     <span id="statusBadge" class="badge bg-secondary">offline</span>
   </nav>
@@ -56,17 +55,46 @@
         <!-- Game view with coordinate inspector -->
         <div class="card bg-black border-secondary">
           <div class="card-header d-flex justify-content-between align-items-center">
-            <span>Game View</span>
+            <div class="btn-group btn-group-sm" role="group" id="viewModeGroup">
+              <button type="button" id="btnLiveMode"    class="btn btn-outline-info   active" onclick="setViewMode('live')">&#9679; Live</button>
+              <button type="button" id="btnHistoryMode" class="btn btn-outline-warning"       onclick="setViewMode('history')">&#9654; History</button>
+            </div>
             <div class="d-flex align-items-center gap-2">
               <span id="coordDisplay" class="text-info small font-monospace" style="min-width:160px;text-align:right"></span>
               <small id="windowInfo" class="text-muted"></small>
             </div>
           </div>
           <div class="card-body p-1 text-center position-relative">
-            <div style="position:relative;display:inline-block;max-width:100%">
+
+            <!-- Live view (WebSocket JPEG) -->
+            <div id="liveView" style="position:relative;display:inline-block;max-width:100%">
               <canvas id="gameCanvas" class="game-canvas"></canvas>
               <canvas id="overlayCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none"></canvas>
             </div>
+
+            <!-- History view (recorded video) -->
+            <div id="historyView" style="display:none;flex-direction:column;align-items:center;gap:6px">
+              <video id="historyPlayer"
+                     style="max-width:100%;max-height:70vh;background:#000;border-radius:4px"
+                     controls
+                     preload="metadata"
+                     playsinline>
+              </video>
+              <!-- Playback speed and status -->
+              <div class="d-flex align-items-center gap-3 py-1">
+                <span class="text-muted small">Speed:</span>
+                <div class="btn-group btn-group-sm">
+                  <button class="btn btn-outline-secondary" onclick="setPlaybackRate(0.5)">0.5×</button>
+                  <button class="btn btn-outline-secondary active" id="speedBtn1x" onclick="setPlaybackRate(1)">1×</button>
+                  <button class="btn btn-outline-secondary" onclick="setPlaybackRate(2)">2×</button>
+                  <button class="btn btn-outline-secondary" onclick="setPlaybackRate(4)">4×</button>
+                  <button class="btn btn-outline-secondary" onclick="setPlaybackRate(8)">8×</button>
+                </div>
+                <span id="historyTimestamp" class="text-muted small font-monospace"></span>
+                <span id="historySegInfo" class="text-muted small"></span>
+              </div>
+            </div>
+
             <div id="noImage" class="overlay-msg">No capture&mdash;is BlueStacks running?</div>
           </div>
         </div>

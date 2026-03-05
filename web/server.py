@@ -5,6 +5,9 @@ Endpoints:
   GET  /                   — main dashboard
   GET  /captures           — capture file browser
   GET  /debug/<path>       — serve a file from the debug dir
+  GET  /video/<filename>   — serve a recorded MP4 segment (range-request friendly)
+  GET  /video/segments     — JSON list of completed video segments with timestamps
+  GET  /video/active       — JSON metadata for the currently-recording segment
   WS   /ws                 — push state + JPEG image every second
   GET  /log/stream         — SSE stream of INFO+ log lines
   GET  /api/captures       — JSON list of archived capture sets
@@ -15,7 +18,7 @@ Endpoints:
 
 Usage (from run.py):
     from web.server import start_server
-    start_server(mod, mod.ctx.config.debug_dir, host, port)
+    start_server(mod, mod.ctx.config.debug_dir, video_dir=..., host, port)
 """
 
 import asyncio
@@ -93,6 +96,7 @@ fapp.add_middleware(_RequestLoggingMiddleware)
 # ---------------------------------------------------------------------------
 _mod        = None          # reference to towercontrol_functional module
 _debug_dir: Optional[Path] = None
+_video_dir: Optional[Path] = None
 
 # ---------------------------------------------------------------------------
 # SSE log queue  (thread-safe; asyncio consumer polls it)
@@ -326,8 +330,7 @@ def _build_state() -> dict:
     # Lightweight sequence value: increments whenever timeline data changes.
     # The frontend watches this via WebSocket and refreshes the chart automatically.
     try:
-        _tl_dir_mt = int((_debug_dir.stat().st_mtime if _debug_dir and _debug_dir.exists() else 0) * 2)
-        state["timeline_seq"] = len(gs.wave_history) + len(gs.action_history) + len(gs.upgrade_purchase_history) + _tl_dir_mt
+        state["timeline_seq"] = len(gs.wave_history) + len(gs.action_history) + len(gs.upgrade_purchase_history)
     except Exception:
         pass
 
@@ -376,14 +379,9 @@ def _list_capture_sets() -> list:
 # Routes
 # ---------------------------------------------------------------------------
 
-@fapp.get("/", response_class=HTMLResponse)
+@fapp.get("/")
 async def index(request: Request):
     return _templates.TemplateResponse("index.html", {"request": request})
-
-
-@fapp.get("/captures", response_class=HTMLResponse)
-async def captures_page(request: Request):
-    return _templates.TemplateResponse("captures.html", {"request": request})
 
 
 @fapp.get("/debug/{filename:path}")
@@ -451,6 +449,92 @@ async def log_stream():
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+# ── Video serving ────────────────────────────────────────────────────────────
+
+@fapp.get("/video/segments")
+async def video_segments():
+    """Return completed video segment metadata for the frontend player."""
+    c = _ctx()
+    vr = getattr(c, "video_recorder", None) if c else None
+
+    completed = []
+    if vr is not None:
+        for s in vr.segments:
+            completed.append({
+                "filename":    s.filename,
+                "start_ts":    s.start_ts,
+                "end_ts":      s.end_ts,
+                "frame_count": s.frame_count,
+                "size_bytes":  s.size_bytes,
+                "wall_times":  s.wall_times,
+                "is_active":   False,
+            })
+    elif _video_dir is not None:
+        # Fall back to scanning the video directory
+        import json as _json
+        meta_path = _video_dir / "segments.json"
+        if meta_path.exists():
+            try:
+                data = _json.loads(meta_path.read_text(encoding="utf-8"))
+                for s in data:
+                    if (_video_dir / s["filename"]).exists():
+                        completed.append({**s, "is_active": False})
+            except Exception:
+                pass
+    return completed
+
+
+@fapp.get("/video/active")
+async def video_active():
+    """Return partial metadata for the currently-recording segment, or null."""
+    c = _ctx()
+    vr = getattr(c, "video_recorder", None) if c else None
+    if vr is None:
+        return None
+    seg = vr.active_segment
+    if seg is None:
+        return None
+    return {
+        "filename":    seg.filename,
+        "start_ts":    seg.start_ts,
+        "end_ts":      seg.end_ts,
+        "frame_count": seg.frame_count,
+        "size_bytes":  seg.size_bytes,
+        "wall_times":  seg.wall_times,
+        "is_active":   True,
+    }
+
+
+@fapp.get("/video/{filename}")
+async def serve_video(filename: str):
+    """Serve a video segment file with range-request support for seeking."""
+    # Determine video directory: prefer VideoRecorder's dir, fall back to _video_dir
+    c = _ctx()
+    vr = getattr(c, "video_recorder", None) if c else None
+    if vr is not None:
+        vdir = vr._dir
+    elif _video_dir is not None:
+        vdir = _video_dir
+    else:
+        return Response("Video directory not configured", status_code=503)
+
+    path = (vdir / filename).resolve()
+    # Security: prevent path traversal
+    try:
+        path.relative_to(vdir.resolve())
+    except ValueError:
+        return Response("Forbidden", status_code=403)
+    if not path.exists():
+        return Response("Not found", status_code=404)
+    if not filename.endswith(".mp4"):
+        return Response("Only .mp4 files served here", status_code=400)
+    return FileResponse(
+        str(path),
+        media_type="video/mp4",
+        headers={"Accept-Ranges": "bytes"},
+    )
 
 
 # ── REST API ─────────────────────────────────────────────────────────────────
@@ -648,52 +732,12 @@ async def api_params(request: Request):
 
 # ── Timeline ─────────────────────────────────────────────────────────────────
 
-_CAPTURE_TICK_RE = re.compile(
-    r"capture_"
-    r"(\d{8})_(\d{6})"          # date YYYYMMDD, time HHMMSS
-    r"(?:_\d+)?"                 # optional microseconds field
-    r"(?:_t(\d+))?"              # optional tier  _t6
-    r"(?:_w(\d+))?"              # optional wave  _w3077
-    r"(?:_(ATTACK|DEFENSE|UTILITY))?"  # optional tab
-    r"\.txt$"
-)
-
-_CAPTURE_PNG_RE = re.compile(
-    r"capture_"
-    r"(\d{8})_(\d{6})"          # date YYYYMMDD, time HHMMSS
-    r"(?:_\d+)?"                 # optional microseconds field
-    r"(?:_t(\d+))?"              # optional tier
-    r"(?:_w(\d+))?"              # optional wave
-    r"(?:_(ATTACK|DEFENSE|UTILITY))?"  # optional tab
-    r"\.png$"
-)
-
-
-def _build_png_index(debug_dir: Path) -> tuple[dict, dict]:
-    """Return (plain_index, annotated_index) mapping (date,time,tier,wave,tab) -> filename."""
-    plain: dict = {}
-    annotated: dict = {}
-    for f in debug_dir.glob("capture_*.png"):
-        if f.stem.startswith("capture_annotated_"):
-            # Strip "capture_annotated_" prefix; re-prepend "capture_" for the regex
-            stripped = "capture_" + f.name[len("capture_annotated_"):]
-            m = _CAPTURE_PNG_RE.match(stripped)
-            target = annotated
-        else:
-            m = _CAPTURE_PNG_RE.match(f.name)
-            target = plain
-        if m:
-            key = (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5))
-            target[key] = f.name
-    return plain, annotated
-
 
 @fapp.get("/api/timeline")
 async def api_timeline():
-    """Return wave history, rate history, and debug capture ticks for the timeline chart."""
+    """Return wave history and rate history for the timeline chart."""
     import time as _time
     c = _ctx()
-    _two_days_ago = _time.time() - 2 * 86400
 
     # ── wave history (bot-recorded)
     wave_history = []
@@ -754,38 +798,6 @@ async def api_timeline():
                     "spend_pm": window_cost / denom_minutes,
                 })
 
-    # ── capture ticks: parse debug dir filenames (last 2 days only)
-    ticks = []
-    if _debug_dir is not None:
-        plain_idx, anno_idx = _build_png_index(_debug_dir)
-        for f in _debug_dir.glob("capture_*.txt"):
-            if f.stem.startswith("capture_annotated_"):
-                continue
-            m = _CAPTURE_TICK_RE.match(f.name)
-            if not m:
-                continue
-            try:
-                dt = datetime.datetime.strptime(
-                    m.group(1) + m.group(2), "%Y%m%d%H%M%S"
-                )
-                # Treat as local time; convert to UTC epoch
-                ts = dt.timestamp()
-            except ValueError:
-                continue
-            if ts < _two_days_ago:
-                continue
-            key = (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5))
-            ticks.append({
-                "t":         ts,
-                "wave":      int(m.group(4)) if m.group(4) else None,
-                "tier":      int(m.group(3)) if m.group(3) else None,
-                "tab":       m.group(5),
-                "file":      f.name,
-                "png":       plain_idx.get(key),
-                "png_anno":  anno_idx.get(key),
-            })
-        ticks.sort(key=lambda x: x["t"])
-
     # ── action history: clicks with fractional coords
     action_history = []
     if c is not None and c.game_state:
@@ -807,7 +819,6 @@ async def api_timeline():
         "wave_rate_history":  wave_rate_history,
         "rate_history":       rate_history,
         "spend_rate_history": spend_rate_history,
-        "capture_ticks":      ticks,
         "action_history":     action_history,
     }
 
@@ -816,7 +827,7 @@ async def api_timeline():
 # Server bootstrap
 # ---------------------------------------------------------------------------
 
-def start_server(mod, debug_dir: Path, host: str = "127.0.0.1", port: int = 7700) -> threading.Thread:
+def start_server(mod, debug_dir: Path, video_dir: Optional[Path] = None, host: str = "127.0.0.1", port: int = 7700) -> threading.Thread:
     """
     Start the uvicorn server in a background daemon thread.
 
@@ -824,11 +835,13 @@ def start_server(mod, debug_dir: Path, host: str = "127.0.0.1", port: int = 7700
     ----------
     mod        : the towercontrol_functional module (for live ctx access)
     debug_dir  : Path to the debug/ directory
+    video_dir  : Path to the video/ directory (optional; needed for static serving)
     host, port : bind address
     """
-    global _mod, _debug_dir
+    global _mod, _debug_dir, _video_dir
     _mod       = mod
     _debug_dir = debug_dir
+    _video_dir = video_dir
 
     # Register SSE log handler on the root logger
     fmt = logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s", datefmt="%H:%M:%S")

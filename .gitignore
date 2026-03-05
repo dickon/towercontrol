@@ -39,6 +39,12 @@ screenshots/
 logs/*.log*
 *.log
 
+# Video output
+video/
+
+# FFmpeg binary
+ffmpeg.exe
+
 # IDE
 .vscode/
 .idea/

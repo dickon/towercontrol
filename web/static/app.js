@@ -9,12 +9,17 @@ let imgNatW = 0, imgNatH = 0;   // natural size of the last received image
 let _clickCrosshair = null;     // {fx, fy} of pinned action crosshair, or null
 let _timelineChart  = null;     // Chart.js instance for the timeline widget
 let _liveImageSrc      = null;     // data-URL of the last live frame (for hover restore)
-let _hoverFile         = null;     // filename currently previewed on timeline hover
-let _hoverTimeMs       = null;     // chart time (ms) at current timeline hover position
-let _timelineHovering  = false;    // true while mouse is over the timeline canvas
 let _timelineActions   = [];       // [{t, fx, fy, reason}] from last timeline fetch
 let _timelineSeq       = null;     // last timeline_seq seen via WebSocket
 let _clickInjectionEnabled = false; // toggled by chkClickInject; off by default
+
+// ── Video player state ─────────────────────────────────────────────────────────
+let _viewMode          = 'live';   // 'live' | 'history'
+let _videoSegments     = [];       // [{filename, start_ts, end_ts, wall_times, is_active}]
+let _activeSegment     = null;     // currently-recording segment metadata
+let _currentSegFile    = null;     // filename loaded in the <video> element
+let _playheadTs        = null;     // current video wall-clock timestamp (null = not playing)
+let _segmentsPollTimer = null;
 
 // ── Timeline overview (Ableton-style range navigator) ────────────────────────
 let _overviewDataMinT   = 0;      // ms – earliest point in full dataset
@@ -39,10 +44,18 @@ document.addEventListener("DOMContentLoaded", () => {
   canvas.addEventListener("mousemove",  onCanvasMouseMove);
   canvas.addEventListener("mouseleave", onCanvasMouseLeave);
 
+  // Wire up video player time updates
+  const vp = document.getElementById("historyPlayer");
+  if (vp) {
+    vp.addEventListener("timeupdate", _onVideoTimeUpdate);
+    vp.addEventListener("ended",       _onVideoEnded);
+  }
+
   connectWS();
   connectLog();
   loadParamSchema();
   fetchTimeline();
+  _startSegmentPolling();
   setInterval(fetchTimeline, 30000); // fallback poll; real-time updates come via WebSocket
 });
 
@@ -165,21 +178,18 @@ function handleState(s) {
   if (s.image) {
     const src = "data:image/jpeg;base64," + s.image;
     _liveImageSrc = src;          // keep a copy for timeline-hover restore
-    // Only update the canvas when not previewing a capture hover
-    if (!_hoverFile) {
-      const img = new Image();
-      img.onload = () => {
-        imgNatW       = img.naturalWidth;
-        imgNatH       = img.naturalHeight;
-        canvas.width  = imgNatW;
-        canvas.height = imgNatH;
-        overlay.width  = imgNatW;
-        overlay.height = imgNatH;
-        ctx.drawImage(img, 0, 0);
-        document.getElementById("noImage").style.display = "none";
-      };
-      img.src = src;
-    }
+    const img = new Image();
+    img.onload = () => {
+      imgNatW       = img.naturalWidth;
+      imgNatH       = img.naturalHeight;
+      canvas.width  = imgNatW;
+      canvas.height = imgNatH;
+      overlay.width  = imgNatW;
+      overlay.height = imgNatH;
+      ctx.drawImage(img, 0, 0);
+      document.getElementById("noImage").style.display = "none";
+    };
+    img.src = src;
   }
 
   // Window info
@@ -861,14 +871,6 @@ function renderTimeline(data) {
   // Build dataset arrays
   const wavePts = (data.wave_history  || []).map(p => ({ x: p.t * 1000, y: p.wave }));
 
-  const tickPts = (data.capture_ticks || [])
-    .filter(p => p.wave != null)
-    .map(p => ({
-      x: p.t * 1000, y: p.wave,
-      _file: p.file, _tier: p.tier, _tab: p.tab,
-      _png: p.png, _png_anno: p.png_anno,
-    }));
-
   // Store action history for crosshair overlay during hover
   _timelineActions = (data.action_history || []);
 
@@ -904,6 +906,26 @@ function renderTimeline(data) {
     },
   };
 
+  const _playheadPlugin = {
+    id: "playhead",
+    afterDraw(chart) {
+      if (_playheadTs == null) return;
+      const xScale = chart.scales.x;
+      const { ctx: c2, chartArea: ca } = chart;
+      const xPx = xScale.getPixelForValue(_playheadTs * 1000);
+      if (xPx < ca.left || xPx > ca.right) return;
+      c2.save();
+      c2.strokeStyle = "rgba(255,255,255,0.85)";
+      c2.lineWidth = 2;
+      c2.setLineDash([4, 3]);
+      c2.beginPath();
+      c2.moveTo(xPx, ca.top);
+      c2.lineTo(xPx, ca.bottom);
+      c2.stroke();
+      c2.restore();
+    },
+  };
+
 
   let cashPts = (data.rate_history || [])
     .filter(p => p.cash_pm != null)
@@ -933,17 +955,6 @@ function renderTimeline(data) {
       borderWidth: 1.5,
       pointRadius: 2,
       tension: 0.15,
-      yAxisID: "yWave",
-    },
-    {
-      label: "Captures",
-      data: tickPts,
-      borderColor: "#fc3",
-      backgroundColor: "#fc3",
-      borderWidth: 0,
-      pointRadius: 6,
-      pointStyle: "triangle",
-      showLine: false,
       yAxisID: "yWave",
     },
     {
@@ -995,7 +1006,6 @@ function renderTimeline(data) {
   // Determine if session spans multiple calendar days
   const allTs = [
     ...wavePts.map(p => p.x),
-    ...tickPts.map(p => p.x),
     ...cashPts.map(p => p.x),
     ...coinPts.map(p => p.x),
     ...spendPts.map(p => p.x),
@@ -1045,7 +1055,7 @@ function renderTimeline(data) {
   const chartConfig = {
     type: "line",
     data: { datasets },
-    plugins: [_clickLinesPlugin],
+    plugins: [_clickLinesPlugin, _playheadPlugin],
     options: {
       animation: false,
       responsive: true,
@@ -1063,12 +1073,6 @@ function renderTimeline(data) {
             },
             label(ci) {
               const raw = ci.raw;
-              // Capture tick: show filename + tab
-              if (ci.datasetIndex === 1) {
-                const tier = raw._tier ? ` t${raw._tier}` : "";
-                const tab  = raw._tab  ? ` [${raw._tab}]` : "";
-                return `\u{1F4F8}${tier}${tab}  w${raw.y}  ${raw._file}`;
-              }
               const v = raw.y;
               if (v == null) return null;
               return `${ci.dataset.label}: ${_fmtRate(v)}`;
@@ -1133,17 +1137,16 @@ function renderTimeline(data) {
   if (_timelineChart) {
     // Patch datasets in-place and redraw without animation
     _timelineChart.data.datasets[0].data = wavePts;
-    _timelineChart.data.datasets[1].data = tickPts;
-    _timelineChart.data.datasets[2].data = cashPts;
-    _timelineChart.data.datasets[3].data = coinPts;
-    _timelineChart.data.datasets[4].data = spendPts;
-    _timelineChart.data.datasets[5].data = waveRatePts;
+    _timelineChart.data.datasets[1].data = cashPts;
+    _timelineChart.data.datasets[2].data = coinPts;
+    _timelineChart.data.datasets[3].data = spendPts;
+    _timelineChart.data.datasets[4].data = waveRatePts;
     _timelineChart.options.scales.x.time.unit           = timeUnit;
     _timelineChart.options.scales.x.time.displayFormats = { minute: displayFormat, hour: displayFormat };
     _timelineChart.options.scales.x.min = _viewMinT || undefined;
     _timelineChart.options.scales.x.max = _viewMaxT || undefined;
     // Swap in the freshly-built plugin (carries updated _reasonHue closure)
-    _timelineChart.config.plugins = [_clickLinesPlugin];
+    _timelineChart.config.plugins = [_clickLinesPlugin, _playheadPlugin];
     _timelineChart.update("none");
   } else {
     _timelineChart = new Chart(cvs, chartConfig);
@@ -1156,133 +1159,173 @@ function renderTimeline(data) {
 }
 
 function _attachTimelineHover(cvs) {
-  // Shared scrub logic used by both mouse and touch
-  function _scrubAt(clientX) {
+  // Click anywhere on the timeline chart → seek video to that timestamp
+  function _seekAt(clientX) {
     if (!_timelineChart) return;
-    const ticks  = _timelineChart.data.datasets[1].data;
     const rect   = cvs.getBoundingClientRect();
     const xPixel = clientX - rect.left;
     const xScale = _timelineChart.scales.x;
     const tMs    = xScale.getValueForPixel(xPixel);
-    _timelineHovering = true;
-    _hoverTimeMs = tMs;
-    let best = null, bestDist = Infinity;
-    for (const tick of ticks) {
-      const d = Math.abs(tick.x - tMs);
-      if (d < bestDist) { bestDist = d; best = tick; }
+    if (tMs != null) seekToTimestamp(tMs / 1000);
+  }
+
+  cvs.addEventListener("click", (e) => _seekAt(e.clientX));
+  cvs.addEventListener("touchend", (e) => {
+    if (e.changedTouches.length) _seekAt(e.changedTouches[0].clientX);
+  });
+}
+
+// ── Video player: mode, segment polling, seeking ───────────────────────────────
+
+function setViewMode(mode) {
+  _viewMode = mode;
+  const liveView    = document.getElementById("liveView");
+  const historyView = document.getElementById("historyView");
+  const btnLive     = document.getElementById("btnLiveMode");
+  const btnHistory  = document.getElementById("btnHistoryMode");
+  if (mode === "live") {
+    if (liveView)    liveView.style.display    = "";
+    if (historyView) historyView.style.display = "none";
+    if (btnLive)    { btnLive.classList.add("active");    }
+    if (btnHistory) { btnHistory.classList.remove("active"); }
+  } else {
+    if (liveView)    liveView.style.display    = "none";
+    if (historyView) historyView.style.display = "flex";
+    if (btnLive)    { btnLive.classList.remove("active"); }
+    if (btnHistory) { btnHistory.classList.add("active");    }
+  }
+}
+
+function setPlaybackRate(rate) {
+  const vp = document.getElementById("historyPlayer");
+  if (vp) vp.playbackRate = rate;
+  // Update active button highlight
+  document.querySelectorAll("#historyView .btn-group .btn").forEach(btn => {
+    btn.classList.toggle("active", parseFloat(btn.textContent) === rate);
+  });
+}
+
+function _startSegmentPolling() {
+  async function poll() {
+    try {
+      const [segsResp, activeResp] = await Promise.all([
+        fetch("/video/segments"),
+        fetch("/video/active"),
+      ]);
+      if (segsResp.ok) _videoSegments = await segsResp.json();
+      if (activeResp.ok) _activeSegment = await activeResp.json();
+      _renderOverview(); // repaint to show video segment range
+    } catch (_) {}
+  }
+  poll();
+  _segmentsPollTimer = setInterval(poll, 15000);
+}
+
+/**
+ * Seek the history video player to the given Unix timestamp (seconds).
+ * Switches to history mode automatically.
+ */
+function seekToTimestamp(targetTs) {
+  // Build combined segment list (completed + active)
+  const allSegs = [..._videoSegments];
+  if (_activeSegment) allSegs.push(_activeSegment);
+  if (!allSegs.length) return;
+
+  // Find the segment containing this timestamp
+  let seg = null;
+  for (const s of allSegs) {
+    if (targetTs >= s.start_ts && targetTs <= s.end_ts + 5) {
+      seg = s; break;
     }
-    const file = best ? (best._png_anno || best._png) : null;
-    if (file && file !== _hoverFile) {
-      _loadCapturePreview(file);
+  }
+  // Fallback: nearest segment
+  if (!seg) {
+    seg = allSegs.reduce((best, s) => {
+      const dBest = Math.min(Math.abs(targetTs - best.start_ts), Math.abs(targetTs - best.end_ts));
+      const dCurr = Math.min(Math.abs(targetTs - s.start_ts), Math.abs(targetTs - s.end_ts));
+      return dCurr < dBest ? s : best;
+    });
+  }
+
+  // Calculate video time using wall_times index for accuracy, fall back to linear estimate
+  let videoTime = targetTs - seg.start_ts; // default: seconds from segment start
+  if (seg.wall_times && seg.wall_times.length > 0) {
+    // Find the frame whose wall_time is closest to targetTs
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < seg.wall_times.length; i++) {
+      const d = Math.abs(seg.wall_times[i] - targetTs);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    videoTime = bestIdx; // at 1fps, frame index = seconds
+  }
+
+  // Switch to history mode
+  setViewMode("history");
+
+  const vp = document.getElementById("historyPlayer");
+  if (!vp) return;
+
+  if (_currentSegFile !== seg.filename) {
+    _currentSegFile = seg.filename;
+    vp.src = `/video/${encodeURIComponent(seg.filename)}`;
+    vp.load();
+    vp.addEventListener("loadedmetadata", () => {
+      vp.currentTime = Math.max(0, videoTime);
+    }, { once: true });
+    // Update segment info
+    const si = document.getElementById("historySegInfo");
+    if (si) si.textContent = seg.filename;
+  } else {
+    vp.currentTime = Math.max(0, videoTime);
+  }
+}
+
+function _onVideoTimeUpdate() {
+  const vp  = document.getElementById("historyPlayer");
+  if (!vp) return;
+
+  // Reconstruct the wall-clock timestamp from the video position
+  const vt  = vp.currentTime;
+  const allSegs = [..._videoSegments];
+  if (_activeSegment) allSegs.push(_activeSegment);
+
+  let wallTs = null;
+  const seg = allSegs.find(s => s.filename === _currentSegFile);
+  if (seg) {
+    if (seg.wall_times && seg.wall_times.length > 0) {
+      const idx = Math.min(Math.round(vt), seg.wall_times.length - 1);
+      wallTs = seg.wall_times[idx];
     } else {
-      _drawTimelineCrosshairs(tMs);
+      wallTs = seg.start_ts + vt;
     }
   }
 
-  cvs.addEventListener("mousemove", (e) => _scrubAt(e.clientX));
-  cvs.addEventListener("mouseleave", () => _clearTimelineHover());
+  _playheadTs = wallTs;
+  _renderOverview(); // move playhead on overview
 
-  // Touch scrubbing (iPad / mobile)
-  cvs.addEventListener("touchmove", (e) => {
-    e.preventDefault();
-    _scrubAt(e.touches[0].clientX);
-  }, { passive: false });
-  cvs.addEventListener("touchend", () => _clearTimelineHover());
-}
-
-function _loadCapturePreview(filename) {
-  _hoverFile = filename;
-  const img = new Image();
-  img.onload = () => {
-    canvas.width  = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    overlay.width  = img.naturalWidth;
-    overlay.height = img.naturalHeight;
-    ctx.drawImage(img, 0, 0);
-    document.getElementById("noImage").style.display = "none";
-    _drawTimelineCrosshairs(_hoverTimeMs);
-  };
-  img.src = "/debug/" + filename;
-}
-
-function _drawTimelineCrosshairs(tMs) {
-  if (!octx || !overlay.width || !overlay.height) return;
-  octx.clearRect(0, 0, overlay.width, overlay.height);
-
-  if (tMs != null && _timelineActions.length > 0) {
-    const tSec = tMs / 1000;
-
-    // Find the single nearest action by time
-    let nearest = null, nearestDist = Infinity;
-    for (const a of _timelineActions) {
-      const d = Math.abs(a.t - tSec);
-      if (d < nearestDist) { nearestDist = d; nearest = a; }
-    }
-
-    if (nearest) {
-      const cx  = nearest.fx * overlay.width;
-      const cy  = nearest.fy * overlay.height;
-      const arm = Math.max(30, overlay.width * 0.03);
-      octx.save();
-      octx.strokeStyle = "#ff0";
-      octx.lineWidth   = 2.5;
-      octx.beginPath(); octx.moveTo(cx - arm, cy); octx.lineTo(cx + arm, cy); octx.stroke();
-      octx.beginPath(); octx.moveTo(cx, cy - arm); octx.lineTo(cx, cy + arm); octx.stroke();
-      octx.beginPath(); octx.arc(cx, cy, 7, 0, Math.PI * 2); octx.stroke();
-      octx.restore();
-
-      // Tooltip: reason + time delta
-      const dt   = Math.round(nearest.t - tSec);
-      const sign = dt >= 0 ? "+" : "";
-      const tip  = `${nearest.reason || "click"}  (${sign}${dt}s)`;
-      octx.save();
-      octx.font      = "12px monospace";
-      octx.fillStyle = "rgba(0,0,0,0.6)";
-      const tw = octx.measureText(tip).width;
-      const tx = Math.min(cx + 10, overlay.width - tw - 6);
-      const ty = Math.max(cy - 10, 16);
-      octx.fillRect(tx - 2, ty - 13, tw + 4, 16);
-      octx.fillStyle = "#ff0";
-      octx.fillText(tip, tx, ty);
-      octx.restore();
-    }
-  }
-
-  // Bottom filename label
-  if (_hoverFile) {
-    octx.save();
-    octx.font        = "bold 13px monospace";
-    octx.globalAlpha = 0.9;
-    const label = "\u23F8 " + _hoverFile +
-                  (_timelineActions.length === 0 ? "  [no action data]" : "");
-    octx.fillStyle = "rgba(0,0,0,0.55)";
-    const tw = octx.measureText(label).width;
-    octx.fillRect(4, overlay.height - 22, tw + 8, 18);
-    octx.fillStyle = "#fc3";
-    octx.fillText(label, 8, overlay.height - 8);
-    octx.restore();
+  // Update timestamp display
+  const el = document.getElementById("historyTimestamp");
+  if (el && wallTs) {
+    el.textContent = new Date(wallTs * 1000).toLocaleString();
   }
 }
 
-function _clearTimelineHover() {
-  if (!_timelineHovering) return;
-  _timelineHovering = false;
-  _hoverFile   = null;
-  _hoverTimeMs = null;
-  octx.clearRect(0, 0, overlay.width, overlay.height);
-  // Restore the live image if available
-  if (_liveImageSrc) {
-    const img = new Image();
-    img.onload = () => {
-      imgNatW       = img.naturalWidth;
-      imgNatH       = img.naturalHeight;
-      canvas.width  = imgNatW;
-      canvas.height = imgNatH;
-      overlay.width  = imgNatW;
-      overlay.height = imgNatH;
-      ctx.drawImage(img, 0, 0);
-    };
-    img.src = _liveImageSrc;
+function _onVideoEnded() {
+  // Auto-advance to the next segment if one exists
+  const allSegs = [..._videoSegments];
+  if (_activeSegment) allSegs.push(_activeSegment);
+  const idx = allSegs.findIndex(s => s.filename === _currentSegFile);
+  if (idx >= 0 && idx + 1 < allSegs.length) {
+    const next = allSegs[idx + 1];
+    _currentSegFile = next.filename;
+    const vp = document.getElementById("historyPlayer");
+    if (vp) {
+      vp.src = `/video/${encodeURIComponent(next.filename)}`;
+      vp.load();
+      vp.play().catch(() => {});
+      const si = document.getElementById("historySegInfo");
+      if (si) si.textContent = next.filename;
+    }
   }
 }
 
@@ -1387,6 +1430,19 @@ function _renderOverview() {
   if (vL + 5 < vR - 7) {               // only draw if window is wide enough
     c.fillRect(vL + 3, hY, 2, hH);
     c.fillRect(vR - 5, hY, 2, hH);
+  }
+
+  // Playhead (current video position)
+  if (_playheadTs != null) {
+    const phPx = toPx(_playheadTs * 1000);
+    if (phPx >= 0 && phPx <= W) {
+      c.save();
+      c.strokeStyle = "rgba(255,255,255,0.85)";
+      c.lineWidth = 2;
+      c.setLineDash([4, 3]);
+      c.beginPath(); c.moveTo(phPx, 0); c.lineTo(phPx, H); c.stroke();
+      c.restore();
+    }
   }
 
   // Time labels at window edges

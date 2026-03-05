@@ -284,6 +284,12 @@ class Config:
         d.mkdir(exist_ok=True)
         return d
 
+    @property
+    def video_dir(self) -> Path:
+        d = self.base_dir / "video"
+        d.mkdir(exist_ok=True)
+        return d
+
 
 # ============================================================================
 # DATA STRUCTURES
@@ -3380,6 +3386,7 @@ class RuntimeContext:
     _cash_samples: list = field(default_factory=list)  # raw (timestamp, value) for cash rate
     _coin_samples: list = field(default_factory=list)  # raw (timestamp, value) for coin rate
     _hud_toggle_pending: dict = field(default_factory=dict)  # key → consecutive ticks where /min not seen but toggle wanted
+    video_recorder: Any = None  # VideoRecorder instance (set after ctx creation)
 
     def update_window(self):
         """Update window rect if needed."""
@@ -3446,14 +3453,24 @@ def do_ocr():
         log.debug('Ad strip detected and cropped: %dx%d → %dx%d', raw_img.width, raw_img.height, img.width, img.height)
 
     # time OCR
+    # Push frame to video recorder (uses full-res image, before OCR)
+    if ctx.video_recorder is not None:
+        try:
+            # Lazily start the recorder once we know dimensions
+            if not ctx.video_recorder._running:
+                ctx.video_recorder.start(img.width, img.height)
+            elif img.width != ctx.video_recorder._width or img.height != ctx.video_recorder._height:
+                ctx.video_recorder.resize(img.width, img.height)
+            ctx.video_recorder.push_frame(img, img_capture_time)
+        except Exception as e:
+            log.debug("Video recorder push_frame error: %s", e)
+
     try:
         ocr_t0 = time.time()
         frame = process_ocr(img, ctx.config, ctx.ocr_reader)
         ocr_t1 = time.time()
         ctx.ocr_time = ocr_t1 - ocr_t0
-        if frame:
-            save_debug_files(img, frame, ctx.config)
-        else:
+        if not frame:
             log.warning("OCR processing failed")
             return None
     except Exception as e:
@@ -4740,12 +4757,32 @@ def main():
     ctx.last_seen_upgrades = time.time()
     ctx.last_game_ui_seen = time.time()   # don't trigger game launch immediately on startup
 
+    # Initialize video recorder
+    try:
+        from video_recorder import VideoRecorder
+        ffmpeg_path = config.base_dir / "ffmpeg.exe"
+        if not ffmpeg_path.exists():
+            ffmpeg_path = "ffmpeg"  # fall back to PATH
+        ctx.video_recorder = VideoRecorder(
+            output_dir=config.video_dir,
+            ffmpeg_path=str(ffmpeg_path),
+        )
+        log.info("VideoRecorder initialized (output: %s)", config.video_dir)
+    except Exception as exc:
+        log.warning("VideoRecorder init failed: %s", exc)
+
     # Run automation loop on main thread
     try:
         automation_loop_run(ctx)
     except KeyboardInterrupt:
         log.info("Interrupted by user")
         ctx.running = False
+    finally:
+        if ctx.video_recorder is not None:
+            try:
+                ctx.video_recorder.stop()
+            except Exception as exc:
+                log.warning("VideoRecorder stop error: %s", exc)
 
 
 if __name__ == "__main__":

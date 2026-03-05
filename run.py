@@ -62,7 +62,13 @@ def _start_web_server() -> None:
         print("[web] ctx not available after 30 s — web server not started")
         return
 
-    start_server(mod, c.config.debug_dir, host=c.config.web_host, port=c.config.web_port)
+    start_server(
+        mod,
+        c.config.debug_dir,
+        video_dir=c.config.video_dir,
+        host=c.config.web_host,
+        port=c.config.web_port,
+    )
 
 
 if __name__ == "__main__":
