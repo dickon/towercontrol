@@ -1184,6 +1184,7 @@ function setViewMode(mode) {
   const btnLive     = document.getElementById("btnLiveMode");
   const btnHistory  = document.getElementById("btnHistoryMode");
   if (mode === "live") {
+    _stopSlowPlayTimer();
     if (liveView)    liveView.style.display    = "";
     if (historyView) historyView.style.display = "none";
     if (btnLive)    { btnLive.classList.add("active");    }
@@ -1196,13 +1197,64 @@ function setViewMode(mode) {
   }
 }
 
-function setPlaybackRate(rate) {
+// Recorded video fps – must match _FPS in video_recorder.py
+const VIDEO_FPS = 5;
+// Minimum playbackRate reliably supported by browsers (~1/16)
+const BROWSER_MIN_RATE = 0.0625;
+
+let _slowPlayTimer  = null;   // setInterval handle for sub-minimum rates
+let _currentPlayFps = 1;      // last requested fps
+
+function _stopSlowPlayTimer() {
+  if (_slowPlayTimer !== null) {
+    clearInterval(_slowPlayTimer);
+    _slowPlayTimer = null;
+  }
+}
+
+/**
+ * Set playback to targetFps real-displayed-frames-per-second.
+ * For fps values that map below the browser's minimum playbackRate the video
+ * is paused and a JS timer advances currentTime by one video frame at the
+ * appropriate interval.
+ */
+function setPlaybackFps(fps) {
+  if (!fps || fps <= 0) return;
+  _currentPlayFps = fps;
+  _stopSlowPlayTimer();
+
   const vp = document.getElementById("historyPlayer");
-  if (vp) vp.playbackRate = rate;
-  // Update active button highlight
-  document.querySelectorAll("#historyView .btn-group .btn").forEach(btn => {
-    btn.classList.toggle("active", parseFloat(btn.textContent) === rate);
+
+  // Update button highlights
+  document.querySelectorAll("#fpsButtonGroup .btn").forEach(btn => {
+    btn.classList.toggle("active", parseFloat(btn.textContent) === fps);
   });
+  const customInput = document.getElementById("customFpsInput");
+  if (customInput) customInput.value = fps;
+
+  if (!vp) return;
+
+  const rate = fps / VIDEO_FPS;   // equivalent playbackRate multiplier
+
+  if (rate >= BROWSER_MIN_RATE) {
+    // Native playback is fine
+    vp.playbackRate = rate;
+    if (vp.paused && !vp.ended) vp.play().catch(() => {});
+  } else {
+    // Too slow for the browser – drive manually
+    vp.pause();
+    const frameStep  = 1 / VIDEO_FPS;          // seconds to advance per game frame
+    const intervalMs = (1000 / fps);            // ms between displayed frames
+    _slowPlayTimer = setInterval(() => {
+      if (!vp || vp.ended) { _stopSlowPlayTimer(); return; }
+      vp.currentTime = Math.min(vp.currentTime + frameStep, vp.duration || vp.currentTime);
+    }, intervalMs);
+  }
+}
+
+/** Backward-compatible wrapper (rate is a ×-multiplier, not fps). */
+function setPlaybackRate(rate) {
+  setPlaybackFps(rate * VIDEO_FPS);
 }
 
 function _startSegmentPolling() {
@@ -1322,7 +1374,7 @@ function _onVideoEnded() {
     if (vp) {
       vp.src = `/video/${encodeURIComponent(next.filename)}`;
       vp.load();
-      vp.play().catch(() => {});
+      vp.addEventListener("canplay", () => setPlaybackFps(_currentPlayFps), { once: true });
       const si = document.getElementById("historySegInfo");
       if (si) si.textContent = next.filename;
     }

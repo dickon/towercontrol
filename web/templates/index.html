@@ -81,14 +81,23 @@
                      playsinline>
               </video>
               <!-- Playback speed and status -->
-              <div class="d-flex align-items-center gap-3 py-1">
-                <span class="text-muted small">Speed:</span>
-                <div class="btn-group btn-group-sm">
-                  <button class="btn btn-outline-secondary" onclick="setPlaybackRate(0.5)">0.5×</button>
-                  <button class="btn btn-outline-secondary active" id="speedBtn1x" onclick="setPlaybackRate(1)">1×</button>
-                  <button class="btn btn-outline-secondary" onclick="setPlaybackRate(2)">2×</button>
-                  <button class="btn btn-outline-secondary" onclick="setPlaybackRate(4)">4×</button>
-                  <button class="btn btn-outline-secondary" onclick="setPlaybackRate(8)">8×</button>
+              <div class="d-flex align-items-center gap-3 py-1 flex-wrap">
+                <span class="text-muted small">fps:</span>
+                <div class="btn-group btn-group-sm" id="fpsButtonGroup">
+                  <button class="btn btn-outline-secondary" onclick="setPlaybackFps(0.01)">0.01</button>
+                  <button class="btn btn-outline-secondary" onclick="setPlaybackFps(0.05)">0.05</button>
+                  <button class="btn btn-outline-secondary" onclick="setPlaybackFps(0.1)">0.1</button>
+                  <button class="btn btn-outline-secondary" onclick="setPlaybackFps(0.5)">0.5</button>
+                  <button class="btn btn-outline-secondary active" id="speedBtn1fps" onclick="setPlaybackFps(1)">1</button>
+                  <button class="btn btn-outline-secondary" onclick="setPlaybackFps(2)">2</button>
+                  <button class="btn btn-outline-secondary" onclick="setPlaybackFps(5)">5</button>
+                  <button class="btn btn-outline-secondary" onclick="setPlaybackFps(10)">10</button>
+                  <button class="btn btn-outline-secondary" onclick="setPlaybackFps(25)">25</button>
+                </div>
+                <div class="d-flex align-items-center gap-1">
+                  <input id="customFpsInput" type="number" class="form-control form-control-sm bg-dark text-light border-secondary"
+                         style="width:80px" min="0.001" max="60" step="any" placeholder="fps"
+                         onchange="setPlaybackFps(parseFloat(this.value))">
                 </div>
                 <span id="historyTimestamp" class="text-muted small font-monospace"></span>
                 <span id="historySegInfo" class="text-muted small"></span>
