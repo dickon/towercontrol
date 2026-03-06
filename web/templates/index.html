@@ -140,8 +140,73 @@
 
       </div>
 
-      <!-- Right column: perk history + upgrade history + priority + log + controls + state -->
+      <!-- Right column: controls + perk history + upgrade history + priority + log + state -->
       <div class="col-lg-5">
+
+        <!-- Controls -->
+        <div class="card bg-black border-secondary">
+          <div class="card-header">Controls</div>
+          <div class="card-body">
+            <div class="btn-group w-100 mb-2">
+              <button class="btn btn-success btn-sm" onclick="api('start')">&#9654; Start</button>
+              <button class="btn btn-warning btn-sm" onclick="api('pause')">&#10074;&#10074; Pause</button>
+              <button class="btn btn-info btn-sm"    onclick="api('resume')">&#9654; Resume</button>
+              <button class="btn btn-danger btn-sm"  onclick="api('stop')">&#9632; Stop</button>
+            </div>
+            <div class="d-flex gap-2 mb-2">
+              <button class="btn btn-outline-light btn-sm flex-grow-1"
+                      onclick="api('scan')">&#128269; Full Scan</button>
+              <button class="btn btn-outline-warning btn-sm flex-grow-1"
+                      onclick="confirmRestart()">&#8635; Restart Context</button>
+            </div>
+            <div class="row g-2 mb-2">
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="chkWatchdog" checked
+                         onchange="api('watchdog', { watchdog: this.checked })">
+                  <label class="form-check-label small" for="chkWatchdog">&#128065; Watchdog</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="chkGameLaunch" checked
+                         onchange="api('watchdog', { game_launch: this.checked })">
+                  <label class="form-check-label small" for="chkGameLaunch">&#127918; Auto-launch</label>
+                </div>
+              </div>
+              <div class="col-12 d-flex align-items-center gap-2 mt-1 mb-1">
+                <button id="btnPauseInput" class="btn btn-outline-warning btn-sm"
+                        onclick="pauseInput()">&#9208; Pause Input 20m</button>
+                <span id="pauseCountdown" class="small text-muted"></span>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="chkCloudGrab" data-param-key="cloud_grab_enabled"
+                         onchange="api('params', { cloud_grab_enabled: this.checked })">
+                  <label class="form-check-label small" for="chkCloudGrab">Cloud Grab</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="chkClickInject"
+                         onchange="toggleClickInjection(this)">
+                  <label class="form-check-label small" for="chkClickInject">&#128432; Click Injection</label>
+                </div>
+              </div>
+            </div>
+            <div class="d-flex align-items-center gap-2 mb-2">
+              <label class="form-label mb-0 small text-muted" for="inputLoopTick">Loop tick (s)</label>
+              <input type="number" id="inputLoopTick" data-param-key="loop_tick"
+                     class="form-control form-control-sm" style="width:90px;background:#222;color:#eee;border-color:#555"
+                     min="1" max="120" step="0.5"
+                     onchange="api('params', { loop_tick: parseFloat(this.value) })">
+            </div>
+            <div id="watchdogStatus" class="text-muted small mb-2"></div>
+            <div id="clickInjectHint" class="text-muted small mt-1">
+              Click injection OFF. Hover to inspect coordinates.
+            </div>
+          </div>
+        </div>
 
         <!-- Perk history -->
         <div class="card bg-black border-secondary">
@@ -239,71 +304,6 @@
           <div class="card-header">Recent Actions</div>
           <div class="card-body p-1" style="max-height:260px;overflow-y:auto">
             <ul id="actionLog" class="list-unstyled mb-0 small"></ul>
-          </div>
-        </div>
-
-        <!-- Controls -->
-        <div class="card bg-black border-secondary mt-3">
-          <div class="card-header">Controls</div>
-          <div class="card-body">
-            <div class="btn-group w-100 mb-2">
-              <button class="btn btn-success btn-sm" onclick="api('start')">&#9654; Start</button>
-              <button class="btn btn-warning btn-sm" onclick="api('pause')">&#10074;&#10074; Pause</button>
-              <button class="btn btn-info btn-sm"    onclick="api('resume')">&#9654; Resume</button>
-              <button class="btn btn-danger btn-sm"  onclick="api('stop')">&#9632; Stop</button>
-            </div>
-            <div class="d-flex gap-2 mb-2">
-              <button class="btn btn-outline-light btn-sm flex-grow-1"
-                      onclick="api('scan')">&#128269; Full Scan</button>
-              <button class="btn btn-outline-warning btn-sm flex-grow-1"
-                      onclick="confirmRestart()">&#8635; Restart Context</button>
-            </div>
-            <div class="row g-2 mb-2">
-              <div class="col-6">
-                <div class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" id="chkWatchdog" checked
-                         onchange="api('watchdog', { watchdog: this.checked })">
-                  <label class="form-check-label small" for="chkWatchdog">&#128065; Watchdog</label>
-                </div>
-              </div>
-              <div class="col-6">
-                <div class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" id="chkGameLaunch" checked
-                         onchange="api('watchdog', { game_launch: this.checked })">
-                  <label class="form-check-label small" for="chkGameLaunch">&#127918; Auto-launch</label>
-                </div>
-              </div>
-              <div class="col-12 d-flex align-items-center gap-2 mt-1 mb-1">
-                <button id="btnPauseInput" class="btn btn-outline-warning btn-sm"
-                        onclick="pauseInput()">&#9208; Pause Input 20m</button>
-                <span id="pauseCountdown" class="small text-muted"></span>
-              </div>
-              <div class="col-6">
-                <div class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" id="chkCloudGrab" data-param-key="cloud_grab_enabled"
-                         onchange="api('params', { cloud_grab_enabled: this.checked })">
-                  <label class="form-check-label small" for="chkCloudGrab">Cloud Grab</label>
-                </div>
-              </div>
-              <div class="col-6">
-                <div class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" id="chkClickInject"
-                         onchange="toggleClickInjection(this)">
-                  <label class="form-check-label small" for="chkClickInject">&#128432; Click Injection</label>
-                </div>
-              </div>
-            </div>
-            <div class="d-flex align-items-center gap-2 mb-2">
-              <label class="form-label mb-0 small text-muted" for="inputLoopTick">Loop tick (s)</label>
-              <input type="number" id="inputLoopTick" data-param-key="loop_tick"
-                     class="form-control form-control-sm" style="width:90px;background:#222;color:#eee;border-color:#555"
-                     min="1" max="120" step="0.5"
-                     onchange="api('params', { loop_tick: parseFloat(this.value) })">
-            </div>
-            <div id="watchdogStatus" class="text-muted small mb-2"></div>
-            <div id="clickInjectHint" class="text-muted small mt-1">
-              Click injection OFF. Hover to inspect coordinates.
-            </div>
           </div>
         </div>
 
