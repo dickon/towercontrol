@@ -1159,19 +1159,38 @@ function renderTimeline(data) {
 }
 
 function _attachTimelineHover(cvs) {
-  // Click anywhere on the timeline chart → seek video to that timestamp
-  function _seekAt(clientX) {
-    if (!_timelineChart) return;
+  // Resolve the wall-clock ms under clientX on the timeline chart
+  function _tsAtX(clientX) {
+    if (!_timelineChart) return null;
     const rect   = cvs.getBoundingClientRect();
     const xPixel = clientX - rect.left;
     const xScale = _timelineChart.scales.x;
-    const tMs    = xScale.getValueForPixel(xPixel);
+    return xScale.getValueForPixel(xPixel); // ms
+  }
+
+  // Click/touch: seek and switch to history mode
+  function _seekAt(clientX) {
+    const tMs = _tsAtX(clientX);
     if (tMs != null) seekToTimestamp(tMs / 1000);
   }
 
   cvs.addEventListener("click", (e) => _seekAt(e.clientX));
   cvs.addEventListener("touchend", (e) => {
     if (e.changedTouches.length) _seekAt(e.changedTouches[0].clientX);
+  });
+
+  // Hover: scrub video to nearest frame without switching mode
+  let _hoverThrottle = null;
+  cvs.addEventListener("mousemove", (e) => {
+    if (_hoverThrottle) return;
+    _hoverThrottle = requestAnimationFrame(() => {
+      _hoverThrottle = null;
+      const tMs = _tsAtX(e.clientX);
+      if (tMs != null) _scrubToTimestamp(tMs / 1000);
+    });
+  });
+  cvs.addEventListener("mouseleave", () => {
+    if (_hoverThrottle) { cancelAnimationFrame(_hoverThrottle); _hoverThrottle = null; }
   });
 }
 
@@ -1271,6 +1290,50 @@ function _startSegmentPolling() {
   }
   poll();
   _segmentsPollTimer = setInterval(poll, 15000);
+}
+
+/**
+ * Scrub the history video to the given Unix timestamp (seconds) without
+ * switching view mode.  If the target segment is already loaded we only
+ * update currentTime; otherwise we do a full load.  Used for hover scrubbing.
+ */
+function _scrubToTimestamp(targetTs) {
+  const allSegs = [..._videoSegments];
+  if (_activeSegment) allSegs.push(_activeSegment);
+  if (!allSegs.length) return;
+
+  let seg = null;
+  for (const s of allSegs) {
+    if (targetTs >= s.start_ts && targetTs <= s.end_ts + 5) { seg = s; break; }
+  }
+  if (!seg) {
+    seg = allSegs.reduce((best, s) => {
+      const dBest = Math.min(Math.abs(targetTs - best.start_ts), Math.abs(targetTs - best.end_ts));
+      const dCurr = Math.min(Math.abs(targetTs - s.start_ts),    Math.abs(targetTs - s.end_ts));
+      return dCurr < dBest ? s : best;
+    });
+  }
+
+  let videoTime = targetTs - seg.start_ts;
+  if (seg.wall_times && seg.wall_times.length > 0) {
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < seg.wall_times.length; i++) {
+      const d = Math.abs(seg.wall_times[i] - targetTs);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    videoTime = bestIdx;
+  }
+
+  const vp = document.getElementById("historyPlayer");
+  if (!vp) return;
+
+  if (_currentSegFile !== seg.filename) {
+    // Need to load a different segment — switch mode too so the player is visible
+    seekToTimestamp(targetTs);
+    return;
+  }
+  // Same segment already loaded: just scrub
+  vp.currentTime = Math.max(0, videoTime);
 }
 
 /**
@@ -1570,6 +1633,9 @@ function _attachOverviewInteraction(cvs) {
       cvs.style.cursor = (mode === "resizeL" || mode === "resizeR") ? "ew-resize"
                         : mode === "pan"                            ? "grab"
                         :                                            "crosshair";
+      // Hover scrub: update video to the hovered timestamp
+      const hoverMs = _ovToMs(e.clientX);
+      _scrubToTimestamp(hoverMs / 1000);
     }
   });
 
