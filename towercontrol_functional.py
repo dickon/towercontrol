@@ -234,6 +234,7 @@ class Config:
     swipe_pause: float = 1.0
     input_delay: float = 0.15
     loop_tick: float = 3.0
+    capture_fps: float = 1.0           # frames per second for the dedicated capture thread
     work_pace: float = 0.5
     web_host: str = "0.0.0.0"
     web_port: int = 7700
@@ -3386,6 +3387,7 @@ class RuntimeContext:
     _cash_samples: list = field(default_factory=list)  # raw (timestamp, value) for cash rate
     _coin_samples: list = field(default_factory=list)  # raw (timestamp, value) for coin rate
     _hud_toggle_pending: dict = field(default_factory=dict)  # key → consecutive ticks where /min not seen but toggle wanted
+    _latest_capture: Any = None  # (img, img_capture_time) tuple written by capture thread; read by OCR tick
     video_recorder: Any = None  # VideoRecorder instance (set after ctx creation)
 
     def update_window(self):
@@ -3428,42 +3430,80 @@ def click_if_present(name, condition, callback=None):
         log.info(f'No matches for condition "{name}"')
         return False
 
-def do_ocr():
-    """Capture the window and run OCR. Returns (img, img_capture_time, frame) or None on failure."""
+def capture_loop_tick() -> None:
+    """Single tick of the capture thread: grab one frame and feed the video recorder."""
     global ctx
     log = logging.getLogger(__name__)
 
-    # Update window rect
     ctx.update_window()
     if not ctx.window_rect:
-        log.warning("Window not found: '%s'", ctx.config.window_title)
+        log.debug("Capture tick: window not found")
         ctx.status = "no_window"
-        return None
+        return
 
-    # Capture screen and crop ad strip (FIRST ad-strip compensation point)
-    log.debug(f"Capturing window: {ctx.window_rect.width} x {ctx.window_rect.height} at ({ctx.window_rect.left}, {ctx.window_rect.top})")
+    log.debug("Capture tick: %dx%d at (%d,%d)",
+              ctx.window_rect.width, ctx.window_rect.height,
+              ctx.window_rect.left, ctx.window_rect.top)
     raw_img = capture_window(ctx.window_rect)
-    img_capture_time = time.time()  # used for gem dead-reckoning dt
-    log.debug('Capture done')
     if not raw_img:
-        log.warning("Failed to capture window")
-        return None
+        log.debug("Capture tick: capture_window returned None")
+        return
+    img_capture_time = time.time()
+
     img, had_strip = crop_ad_strip(raw_img)
     if had_strip:
-        log.debug('Ad strip detected and cropped: %dx%d → %dx%d', raw_img.width, raw_img.height, img.width, img.height)
+        log.debug('Capture tick: ad strip cropped %dx%d → %dx%d',
+                  raw_img.width, raw_img.height, img.width, img.height)
 
-    # time OCR
-    # Push frame to video recorder (uses full-res image, before OCR)
+    # Store for the OCR thread (single-attribute assignment is atomic under the GIL)
+    ctx._latest_capture = (img, img_capture_time)
+    ctx.latest_image = img  # keep web/debug consumers happy
+
+    # Push to video recorder
     if ctx.video_recorder is not None:
         try:
-            # Lazily start the recorder once we know dimensions
             if not ctx.video_recorder._running:
                 ctx.video_recorder.start(img.width, img.height)
             elif img.width != ctx.video_recorder._width or img.height != ctx.video_recorder._height:
                 ctx.video_recorder.resize(img.width, img.height)
             ctx.video_recorder.push_frame(img, img_capture_time)
         except Exception as e:
-            log.debug("Video recorder push_frame error: %s", e)
+            log.debug("Capture tick: video recorder error: %s", e)
+
+
+def capture_loop_run(ctx: RuntimeContext) -> None:
+    """Capture thread: continuously grab frames at config.capture_fps."""
+    log = logging.getLogger(__name__)
+    log.info("Capture loop started at %.1f FPS", ctx.config.capture_fps)
+    interval = 1.0 / max(ctx.config.capture_fps, 0.1)
+
+    while ctx.running:
+        t0 = time.time()
+        try:
+            capture_loop_tick()
+        except Exception as exc:
+            log.debug("Capture loop error: %s", exc)
+        elapsed = time.time() - t0
+        time.sleep(max(0.0, interval - elapsed))
+
+    log.info("Capture loop stopped")
+
+
+def do_ocr():
+    """Run OCR on the latest frame captured by the capture thread.
+    Returns (img, img_capture_time, frame) or None on failure."""
+    global ctx
+    log = logging.getLogger(__name__)
+
+    capture = getattr(ctx, '_latest_capture', None)
+    if capture is None:
+        log.debug("do_ocr: no frame available yet")
+        return None
+    img, img_capture_time = capture
+
+    age = time.time() - img_capture_time
+    if age > 10.0:
+        log.warning("do_ocr: latest frame is %.1fs old", age)
 
     try:
         ocr_t0 = time.time()
@@ -3477,11 +3517,10 @@ def do_ocr():
         log.error(f"OCR failed: {e}")
         return None
 
-    # Check known markers (inlined from check_known_markers)
-    w,h= frame.image_size
+    w, h = frame.image_size
     if w <= 0 or h <= 0:
         log.warning("Invalid image size from OCR frame: (%d, %d)", w, h)
-        return
+        return None
     return img, img_capture_time, frame
 
 def ensure_window_correct_size():
@@ -4480,6 +4519,12 @@ def automation_loop_run(ctx: RuntimeContext):
     log = logging.getLogger(__name__)
     log.info("Automation loop started")
 
+    # Start the dedicated capture thread
+    capture_thread = threading.Thread(
+        target=capture_loop_run, args=(ctx,), daemon=True, name="capture"
+    )
+    capture_thread.start()
+
     while ctx.running:
         t0 = time.time()
         # Auto-restore input when timed pause expires
@@ -4655,6 +4700,8 @@ def parse_args() -> argparse.Namespace:
                        help="Disable automatic game launch via ADB")
     parser.add_argument("--loop-tick", type=float, default=20.0,
                        help="Seconds between automation loop ticks (default: 20.0)")
+    parser.add_argument("--capture-fps", type=float, default=1.0,
+                       help="Capture frame rate in FPS for the capture thread (default: 1.0)")
     return parser.parse_args()
 
 
@@ -4681,6 +4728,7 @@ def main():
         game_package=args.game_package,
         game_launch_enabled=not args.no_game_launch,
         loop_tick=args.loop_tick,
+        capture_fps=args.capture_fps,
         work_pace=0.5,
     )
 
