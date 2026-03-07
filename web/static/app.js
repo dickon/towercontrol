@@ -864,6 +864,25 @@ function filterOutliersIQR(points, valueKey = 'y') {
   return points.filter(p => p[valueKey] >= min && p[valueKey] <= max);
 }
 
+// Filter rate points by the most prevalent order of magnitude (±1).
+// This handles OCR misreads where e.g. "75M/min" is read as "75" — those
+// values differ by 6 OOM from the real readings and will be excluded while
+// normal variation across adjacent OOMs (e.g. 90M→110M) is preserved.
+function filterByDominantOOM(points, valueKey = 'y') {
+  if (!points.length) return points;
+  const valid = points.filter(p => typeof p[valueKey] === 'number' && p[valueKey] > 0);
+  if (valid.length < 4) return points;
+  const ooms = valid.map(p => Math.floor(Math.log10(p[valueKey])));
+  const counts = {};
+  for (const o of ooms) counts[o] = (counts[o] || 0) + 1;
+  const modalOOM = parseInt(Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0]);
+  return points.filter(p => {
+    const v = p[valueKey];
+    if (typeof v !== 'number' || v <= 0) return false;
+    return Math.abs(Math.floor(Math.log10(v)) - modalOOM) <= 1;
+  });
+}
+
 function renderTimeline(data) {
   const cvs = document.getElementById("timelineChart");
   if (!cvs) return;
@@ -930,12 +949,12 @@ function renderTimeline(data) {
   let cashPts = (data.rate_history || [])
     .filter(p => p.cash_pm != null)
     .map(p => ({ x: p.t * 1000, y: p.cash_pm }));
-  cashPts = filterOutliersIQR(cashPts, 'y');
+  cashPts = filterByDominantOOM(cashPts, 'y');
 
   let coinPts = (data.rate_history || [])
     .filter(p => p.coin_pm != null)
     .map(p => ({ x: p.t * 1000, y: p.coin_pm }));
-  coinPts = filterOutliersIQR(coinPts, 'y');
+  coinPts = filterByDominantOOM(coinPts, 'y');
 
   let spendPts = (data.spend_rate_history || [])
     .filter(p => p.spend_pm != null)

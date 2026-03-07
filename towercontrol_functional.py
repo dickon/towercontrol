@@ -3409,10 +3409,6 @@ def mark_battle_start():
     ctx.upgrade_scroll_direction = 'down'
     ctx.no_perk_until = 0.0
     # Clear rate_history for the new battle (display only).
-    # The raw _cash_samples / _coin_samples buffers are intentionally kept:
-    # they give the rolling-median guard a baseline on the first few ticks of
-    # the new battle and prevent a single bad absolute-mode reading from
-    # poisoning the chart again.
     ctx.rate_history = []
 
 def click_if_present(name, condition, callback=None):
@@ -4127,26 +4123,13 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
     # back to absolute-value mode.
     toggled_this_tick: list = []  # mutable cell shared across _sample calls
 
-    def _rolling_median(samples: list) -> Optional[float]:
-        """Return the median of the last _RATE_SAMPLE_WINDOW valid readings.
-
-        Returns None when fewer than 3 samples are available so the caller
-        can fall back to a simpler single-previous-value check.
-        """
-        recent = [v for _, v in samples[-_RATE_SAMPLE_WINDOW:]]
-        if len(recent) < 3:
-            return None
-        s = sorted(recent)
-        mid = len(s) // 2
-        # Even-length: average of two middle values; odd-length: middle value.
-        return (s[mid] + s[~mid]) / 2
-
-    def _sample(key: str, raw_samples: list) -> Optional[float]:
+    def _sample(key: str) -> Optional[float]:
         """Return a per-minute rate for the given resource key, or None.
 
         If the HUD is in rate-display mode the raw OCR text is parsed and
         returned directly.  Otherwise the HUD label is clicked (once per tick)
         to switch it to /min mode and None is returned so we try again next tick.
+        All valid values are stored; outlier filtering is done at render time.
         """
         raw = resources.get(key)
         if raw is None:
@@ -4160,58 +4143,7 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
             if value is None or value < 0:
                 return None
 
-            # ── Outlier guard ──────────────────────────────────────────────
-            # Compare the new reading against a rolling median of recent valid
-            # samples.  This catches the common failure mode where a single
-            # bad OCR tick (e.g. one digit misread) causes a 50-80 % apparent
-            # drop that would pass the old single-prev-value / 20 threshold.
-            median = _rolling_median(raw_samples)
-            if median is not None:
-                if value < median * 0.25:
-                    log.warning(
-                        f"Outlier {key} rate {value:.6g}/min is >75%% below rolling "
-                        f"median {median:.6g}/min — discarding as likely OCR misread"
-                    )
-                    return None
-                if value > median * 15:
-                    # Distinguish a genuinely bad spike (15–500×) from a
-                    # poisoned-baseline situation (>500×).  The latter arises
-                    # when the buffer was seeded with absolute-mode HUD values
-                    # (e.g. '75' instead of '75M/min') making the median ~1000×
-                    # too small.  In that case, reset and trust the new reading.
-                    ratio = value / median if median > 0 else float('inf')
-                    if ratio > 500:
-                        log.warning(
-                            f"{key} sample buffer appears poisoned "
-                            f"(rolling median {median:.6g}, new reading {value:.6g}, "
-                            f"ratio {ratio:.0f}×) — resetting buffer and accepting new value"
-                        )
-                        raw_samples.clear()
-                        # fall through so the value is accepted and appended below
-                    else:
-                        log.warning(
-                            f"Outlier {key} rate {value:.6g}/min is >15× rolling "
-                            f"median {median:.6g}/min — discarding as likely OCR misread"
-                        )
-                        return None
-            else:
-                # Fewer than 3 confirmed samples yet — use simple prev-value
-                # sanity check as a bootstrap guard.
-                prev_rec = ctx.rate_history[-1] if ctx.rate_history else None
-                if prev_rec:
-                    lkey = 'coin' if key == 'gold' else key
-                    prev_value = prev_rec.get(f"{lkey}_pm")
-                    if prev_value is not None and (value < prev_value / 20 or value > prev_value * 30):
-                        log.warning(
-                            f"Unrealistic {key} rate {value:.6g}/min "
-                            f"(previous {prev_value:.6g}/min) — ignoring this sample"
-                        )
-                        return None
-
             log.info(f"Direct /min rate: {key}={value:.6g}")
-            # Successful /min read — update rolling buffer and reset toggle counter.
-            raw_samples.append((now, value))
-            del raw_samples[:-20]  # cap buffer to last 20 readings
             ctx._hud_toggle_pending.pop(key, None)
             return value
 
@@ -4245,8 +4177,8 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
             log.info(f"HUD '{key}' not in /min mode but skipping toggle — already clicked this tick")
         return None
 
-    cash_pm = _sample("cash", ctx._cash_samples)
-    coin_pm = _sample("gold", ctx._coin_samples)  # "gold" resource covers gold/coins OCR
+    cash_pm = _sample("cash")
+    coin_pm = _sample("gold")  # "gold" resource covers gold/coins OCR
 
     if cash_pm is None and coin_pm is None:
         return
