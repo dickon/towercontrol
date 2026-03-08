@@ -90,6 +90,7 @@ class VideoRecorder:
         self._seg_path:       Optional[Path]  = None
         self._seg_start_ts:   float           = 0.0
         self._seg_wall_times: List[float]     = []
+        self._segment_label:  str             = ""  # e.g. "_t5_w120"; updated by caller
 
         # All completed segments (loaded from disk + recorded this session)
         self._segments: List[SegmentMeta] = []
@@ -117,6 +118,10 @@ class VideoRecorder:
                 )
                 self._worker.start()
                 log.info("VideoRecorder started (%dx%d)", width, height)
+
+    def update_label(self, label: str) -> None:
+        """Update the game-state label embedded in new segment filenames (thread-safe)."""
+        self._segment_label = label
 
     def push_frame(self, img: Image.Image, timestamp: float) -> None:
         """Queue a frame for encoding.  Silently drops the frame if queue is full."""
@@ -253,7 +258,8 @@ class VideoRecorder:
     def _start_segment(self, width: int, height: int) -> None:
         """Spawn a new FFmpeg process writing to a fresh segment file."""
         ts_str = time.strftime("%Y%m%d_%H%M%S")
-        self._seg_path       = self._dir / f"seg_{ts_str}.mp4"
+        label  = self._segment_label
+        self._seg_path       = self._dir / f"seg_{ts_str}{label}.mp4"
         self._seg_start_ts   = time.time()
         self._seg_wall_times = []
 

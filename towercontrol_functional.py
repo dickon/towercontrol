@@ -3462,6 +3462,15 @@ def capture_loop_tick() -> None:
                 ctx.video_recorder.start(img.width, img.height)
             elif img.width != ctx.video_recorder._width or img.height != ctx.video_recorder._height:
                 ctx.video_recorder.resize(img.width, img.height)
+            gs = ctx.game_state
+            _tier = gs.tier
+            _wave = re.sub(r"[^\w]", "", gs.wave) if gs.wave else ""
+            _label_parts = []
+            if _tier is not None:
+                _label_parts.append(f"t{_tier}")
+            if _wave:
+                _label_parts.append(f"w{_wave}")
+            ctx.video_recorder.update_label(("_" + "_".join(_label_parts)) if _label_parts else "")
             ctx.video_recorder.push_frame(img, img_capture_time)
         except Exception as e:
             log.debug("Capture tick: video recorder error: %s", e)
