@@ -730,96 +730,34 @@ async def api_params(request: Request):
     return {"ok": True}
 
 
-# ── Timeline ─────────────────────────────────────────────────────────────────
+# ── Timeline / Overview ──────────────────────────────────────────────────────
 
 
-@fapp.get("/api/timeline")
-async def api_timeline():
-    """Return wave history and rate history for the timeline chart."""
-    import time as _time
+@fapp.get("/api/overview")
+async def api_overview():
+    """Lightweight overview data for the minimap (wave timestamps + action timestamps).
+
+    The heavy timeseries data now lives in PostgreSQL / Grafana.
+    This endpoint returns only the small amount of data the overview minimap
+    needs for video-seek navigation.
+    """
     c = _ctx()
 
-    # ── wave history (bot-recorded)
-    wave_history = []
-    if c is not None:
-        for wave_num, ts in (c.game_state.wave_history if c.game_state else []):
-            wave_history.append({"t": ts, "wave": wave_num})
+    wave_points: list = []
+    action_ts: list = []
 
-    # ── wave progression rate (waves/hour) — rolling 10-minute window
-    wave_rate_history: list = []
-    _RATE_WINDOW = 600  # seconds; look back up to 10 minutes to compute local rate
-    if len(wave_history) >= 2:
-        for i, pt in enumerate(wave_history):
-            t_now    = pt["t"]
-            w_now    = pt["wave"]
-            cutoff_t = t_now - _RATE_WINDOW
-            # Find the furthest-back point within the window
-            anchor = None
-            for j in range(i - 1, -1, -1):
-                if wave_history[j]["t"] >= cutoff_t:
-                    anchor = wave_history[j]
-                else:
-                    break
-            if anchor is None and i > 0:
-                anchor = wave_history[0]
-            if anchor is not None:
-                dt = t_now - anchor["t"]
-                dw = w_now - anchor["wave"]
-                if dt > 0 and dw >= 0:
-                    wave_rate_history.append({"t": t_now, "waves_ph": round(dw / dt * 3600, 2)})
-
-    # ── cash/coin rate history
-    rate_history = list(getattr(c, "rate_history", [])) if c is not None else []
-
-    # ── upgrade cash spend rate (30-minute rolling window)
-    spend_rate_history: list = []
-    _SPEND_WINDOW = 1800  # 30 minutes
     if c is not None and c.game_state:
-        purchases = sorted(
-            (p for p in c.game_state.upgrade_purchase_history
-             if p.get("cost") is not None and p.get("timestamp") is not None),
-            key=lambda p: p["timestamp"]
-        )
-        if purchases:
-            first_t = purchases[0]["timestamp"]
-            for i, p in enumerate(purchases):
-                t_now    = p["timestamp"]
-                cutoff_t = t_now - _SPEND_WINDOW
-                # Sum all purchase costs within the look-back window
-                window_cost = sum(
-                    q["cost"] for q in purchases[:i + 1]
-                    if q["timestamp"] >= cutoff_t
-                )
-                # Denominator: actual history available, capped at 30 min
-                elapsed = min(_SPEND_WINDOW, t_now - first_t)
-                denom_minutes = max(elapsed / 60.0, 1.0 / 60.0)  # at least 1 second
-                spend_rate_history.append({
-                    "t":        t_now,
-                    "spend_pm": window_cost / denom_minutes,
-                })
+        for wave_num, ts in (c.game_state.wave_history or []):
+            wave_points.append({"t": ts, "wave": wave_num})
 
-    # ── action history: clicks with fractional coords
-    action_history = []
-    if c is not None and c.game_state:
         for a in c.game_state.action_history:
-            fx = a.get("fx")
-            fy = a.get("fy")
-            t  = a.get("time")
-            if fx is None or fy is None or t is None:
-                continue
-            action_history.append({
-                "t":      t,
-                "fx":     fx,
-                "fy":     fy,
-                "reason": a.get("reason", ""),
-            })
+            t = a.get("time")
+            if t is not None:
+                action_ts.append(t)
 
     return {
-        "wave_history":       wave_history,
-        "wave_rate_history":  wave_rate_history,
-        "rate_history":       rate_history,
-        "spend_rate_history": spend_rate_history,
-        "action_history":     action_history,
+        "wave_points": wave_points,
+        "action_ts":   action_ts,
     }
 
 

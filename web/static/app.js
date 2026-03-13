@@ -7,9 +7,9 @@ let ws      = null;
 let canvas, ctx, overlay, octx;
 let imgNatW = 0, imgNatH = 0;   // natural size of the last received image
 let _clickCrosshair = null;     // {fx, fy} of pinned action crosshair, or null
-let _timelineChart  = null;     // Chart.js instance for the timeline widget
+let _timelineChart  = null;     // (unused — retained for compat; Grafana replaces Chart.js)
 let _liveImageSrc      = null;     // data-URL of the last live frame (for hover restore)
-let _timelineActions   = [];       // [{t, fx, fy, reason}] from last timeline fetch
+let _timelineActions   = [];       // [{t, fx, fy, reason}] from last overview fetch
 let _timelineSeq       = null;     // last timeline_seq seen via WebSocket
 let _clickInjectionEnabled = false; // toggled by chkClickInject; off by default
 
@@ -54,9 +54,9 @@ document.addEventListener("DOMContentLoaded", () => {
   connectWS();
   connectLog();
   loadParamSchema();
-  fetchTimeline();
+  fetchOverview();
   _startSegmentPolling();
-  setInterval(fetchTimeline, 30000); // fallback poll; real-time updates come via WebSocket
+  setInterval(fetchOverview, 30000); // fallback poll; real-time updates come via WebSocket
 });
 
 // ── WebSocket ───────────────────────────────────────────────────────────
@@ -256,10 +256,10 @@ function handleState(s) {
   renderUpgradePurchaseHistory(s.upgrade_purchase_history || []);
   renderUpgradeAdvanceHistory(s.upgrade_advance_history || []);
 
-  // Refresh timeline whenever the server reports new data (new wave, action, or capture file)
+  // Refresh overview minimap whenever the server reports new data (new wave, action, or capture file)
   if (s.timeline_seq != null && s.timeline_seq !== _timelineSeq) {
     _timelineSeq = s.timeline_seq;
-    fetchTimeline();
+    fetchOverview();
   }
 }
 
@@ -825,222 +825,36 @@ function esc(s) {
   return d.innerHTML;
 }
 
-// ── Timeline chart ─────────────────────────────────────────────────────────────────
+// ── Overview data fetch (replaces Chart.js timeline) ───────────────────────────
 
-async function fetchTimeline() {
+async function fetchOverview() {
   const statusEl = document.getElementById("timelineStatus");
   try {
-    const r = await fetch("/api/timeline");
+    const r = await fetch("/api/overview");
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
-    renderTimeline(d);
+    _updateOverviewData(d);
     if (statusEl) statusEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
-    console.warn("Timeline fetch failed", e);
+    console.warn("Overview fetch failed", e);
     if (statusEl) statusEl.textContent = `Fetch failed: ${e.message}`;
   }
 }
 
-function _fmtRate(n) {
-  if (n == null) return "—";
-  if (n >= 1e12) return (n / 1e12).toPrecision(4) + "T";
-  if (n >= 1e9)  return (n / 1e9 ).toPrecision(4) + "B";
-  if (n >= 1e6)  return (n / 1e6 ).toPrecision(4) + "M";
-  if (n >= 1e3)  return (n / 1e3 ).toPrecision(4) + "K";
-  return String(Math.round(n));
-}
+function _updateOverviewData(data) {
+  const wavePts  = (data.wave_points || []).map(p => ({ x: p.t * 1000, y: p.wave }));
+  const actionTs = (data.action_ts   || []).map(t => t * 1000);
 
-// Utility: Remove outliers using IQR method
-function filterOutliersIQR(points, valueKey = 'y') {
-  if (!points.length) return points;
-  const values = points.map(p => p[valueKey]).filter(v => typeof v === 'number');
-  if (values.length < 4) return points; // Not enough data for IQR
-  const sorted = [...values].sort((a, b) => a - b);
-  const q1 = sorted[Math.floor(sorted.length * 0.25)];
-  const q3 = sorted[Math.floor(sorted.length * 0.75)];
-  const iqr = q3 - q1;
-  const min = q1 - 1.5 * iqr;
-  const max = q3 + 1.5 * iqr;
-  return points.filter(p => p[valueKey] >= min && p[valueKey] <= max);
-}
-
-// Filter rate points by the most prevalent order of magnitude (±1).
-// This handles OCR misreads where e.g. "75M/min" is read as "75" — those
-// values differ by 6 OOM from the real readings and will be excluded while
-// normal variation across adjacent OOMs (e.g. 90M→110M) is preserved.
-function filterByDominantOOM(points, valueKey = 'y') {
-  if (!points.length) return points;
-  const valid = points.filter(p => typeof p[valueKey] === 'number' && p[valueKey] > 0);
-  if (valid.length < 4) return points;
-  const ooms = valid.map(p => Math.floor(Math.log10(p[valueKey])));
-  const counts = {};
-  for (const o of ooms) counts[o] = (counts[o] || 0) + 1;
-  const modalOOM = parseInt(Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0]);
-  return points.filter(p => {
-    const v = p[valueKey];
-    if (typeof v !== 'number' || v <= 0) return false;
-    return Math.abs(Math.floor(Math.log10(v)) - modalOOM) <= 1;
-  });
-}
-
-function renderTimeline(data) {
-  const cvs = document.getElementById("timelineChart");
-  if (!cvs) return;
-
-  // Build dataset arrays
-  const wavePts = (data.wave_history  || []).map(p => ({ x: p.t * 1000, y: p.wave }));
-
-  // Store action history for crosshair overlay during hover
-  _timelineActions = (data.action_history || []);
-
-  // Build hue map: unique reasons → evenly-spaced rainbow hues
-  const _uniqueReasons = [...new Set(_timelineActions.map(a => a.reason || "click"))];
-  _uniqueReasons.sort();
-  const _reasonHue = {};
-  _uniqueReasons.forEach((r, i) => {
-    _reasonHue[r] = Math.round((i / Math.max(_uniqueReasons.length, 1)) * 360);
-  });
-
-  // Inline Chart.js plugin: draw a vertical line for each click action
-  const _clickLinesPlugin = {
-    id: "clickLines",
-    afterDraw(chart) {
-      if (!_timelineActions.length) return;
-      const xScale = chart.scales.x;
-      const { ctx: c2, chartArea: ca } = chart;
-      c2.save();
-      c2.lineWidth = 1;
-      c2.globalAlpha = 0.65;
-      for (const a of _timelineActions) {
-        const xPx = xScale.getPixelForValue(a.t * 1000);
-        if (xPx < ca.left || xPx > ca.right) continue;
-        const hue = _reasonHue[a.reason || "click"] ?? 0;
-        c2.strokeStyle = `hsl(${hue},100%,55%)`;
-        c2.beginPath();
-        c2.moveTo(xPx, ca.top);
-        c2.lineTo(xPx, ca.bottom);
-        c2.stroke();
-      }
-      c2.restore();
-    },
-  };
-
-  const _playheadPlugin = {
-    id: "playhead",
-    afterDraw(chart) {
-      if (_playheadTs == null) return;
-      const xScale = chart.scales.x;
-      const { ctx: c2, chartArea: ca } = chart;
-      const xPx = xScale.getPixelForValue(_playheadTs * 1000);
-      if (xPx < ca.left || xPx > ca.right) return;
-      c2.save();
-      c2.strokeStyle = "rgba(255,255,255,0.85)";
-      c2.lineWidth = 2;
-      c2.setLineDash([4, 3]);
-      c2.beginPath();
-      c2.moveTo(xPx, ca.top);
-      c2.lineTo(xPx, ca.bottom);
-      c2.stroke();
-      c2.restore();
-    },
-  };
-
-
-  let cashPts = (data.rate_history || [])
-    .filter(p => p.cash_pm != null)
-    .map(p => ({ x: p.t * 1000, y: p.cash_pm }));
-  cashPts = filterByDominantOOM(cashPts, 'y');
-
-  let coinPts = (data.rate_history || [])
-    .filter(p => p.coin_pm != null)
-    .map(p => ({ x: p.t * 1000, y: p.coin_pm }));
-  coinPts = filterByDominantOOM(coinPts, 'y');
-
-  let spendPts = (data.spend_rate_history || [])
-    .filter(p => p.spend_pm != null)
-    .map(p => ({ x: p.t * 1000, y: p.spend_pm }));
-  // No IQR filter on spend — each point is already an aggregated rate
-
-  let waveRatePts = (data.wave_rate_history || [])
-    .map(p => ({ x: p.t * 1000, y: p.waves_ph }));
-  waveRatePts = filterOutliersIQR(waveRatePts, 'y');
-
-  const datasets = [
-    {
-      label: "Wave",
-      data: wavePts,
-      borderColor: "#6cf",
-      backgroundColor: "transparent",
-      borderWidth: 1.5,
-      pointRadius: 2,
-      tension: 0.15,
-      yAxisID: "yWave",
-    },
-    {
-      label: "Cash /min",
-      data: cashPts,
-      borderColor: "#8f8",
-      backgroundColor: "transparent",
-      borderWidth: 1.5,
-      borderDash: [5, 3],
-      pointRadius: 1.5,
-      tension: 0.2,
-      yAxisID: "yRate",
-    },
-    {
-      label: "Coin /min",
-      data: coinPts,
-      borderColor: "#f9a",
-      backgroundColor: "transparent",
-      borderWidth: 1.5,
-      borderDash: [5, 3],
-      pointRadius: 1.5,
-      tension: 0.2,
-      yAxisID: "yCoinRate",
-    },
-    {
-      label: "Spend /min",
-      data: spendPts,
-      borderColor: "#fa0",
-      backgroundColor: "transparent",
-      borderWidth: 1.5,
-      borderDash: [4, 2],
-      pointRadius: 2,
-      tension: 0.2,
-      yAxisID: "yRate",
-    },
-    {
-      label: "Wave /h",
-      data: waveRatePts,
-      borderColor: "#c8f",
-      backgroundColor: "transparent",
-      borderWidth: 1.5,
-      borderDash: [3, 3],
-      pointRadius: 1.5,
-      tension: 0.3,
-      yAxisID: "yWaveRate",
-    },
-  ];
-
-  // Determine if session spans multiple calendar days
-  const allTs = [
-    ...wavePts.map(p => p.x),
-    ...cashPts.map(p => p.x),
-    ...coinPts.map(p => p.x),
-    ...spendPts.map(p => p.x),
-    ...waveRatePts.map(p => p.x),
-  ];
-
-  // ── Store overview data ────────────────────────────────────────────────────
   _overviewWavePts = wavePts;
-  _overviewActTs   = _timelineActions.map(a => a.t * 1000);
+  _overviewActTs   = actionTs;
+
+  const allTs = [...wavePts.map(p => p.x), ...actionTs];
   if (allTs.length > 0) {
-    const prevDataMaxT    = _overviewDataMaxT;
-    _overviewDataMinT     = Math.min(...allTs);
-    const newDataMaxT     = Math.max(...allTs);
+    const prevDataMaxT = _overviewDataMaxT;
+    _overviewDataMinT  = Math.min(...allTs);
+    const newDataMaxT  = Math.max(...allTs);
 
     if (!_overviewInitialized) {
-      // First paint: show last hour if possible, else full data extent
       _overviewDataMaxT = newDataMaxT;
       const ONE_HOUR_MS = 60 * 60 * 1000;
       if (_overviewDataMaxT - _overviewDataMinT > ONE_HOUR_MS) {
@@ -1052,8 +866,6 @@ function renderTimeline(data) {
       }
       _overviewInitialized = true;
     } else {
-      // Auto-follow: if the right edge of the window was at (or within 2 s of)
-      // the right edge of the data, slide the window forward with the new data.
       const _AT_RIGHT_EDGE = prevDataMaxT > 0 && (_viewMaxT >= prevDataMaxT - 2000);
       _overviewDataMaxT = newDataMaxT;
       if (_AT_RIGHT_EDGE && newDataMaxT > prevDataMaxT) {
@@ -1064,153 +876,16 @@ function renderTimeline(data) {
     }
   }
 
-  const multiDay = allTs.length >= 2 &&
-    (new Date(Math.max(...allTs)).toLocaleDateString() !==
-     new Date(Math.min(...allTs)).toLocaleDateString());
-
-  const timeUnit      = multiDay ? "hour"   : "minute";
-  const displayFormat = multiDay ? "MM/dd HH:mm" : "HH:mm";
-
-  const chartConfig = {
-    type: "line",
-    data: { datasets },
-    plugins: [_clickLinesPlugin, _playheadPlugin],
-    options: {
-      animation: false,
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: {
-        legend: {
-          labels: { color: "#aaa", boxWidth: 12, font: { size: 11 } },
-        },
-        tooltip: {
-          callbacks: {
-            title(items) {
-              if (!items.length) return "";
-              return new Date(items[0].parsed.x).toLocaleTimeString();
-            },
-            label(ci) {
-              const raw = ci.raw;
-              const v = raw.y;
-              if (v == null) return null;
-              return `${ci.dataset.label}: ${_fmtRate(v)}`;
-            },
-          },
-        },
-      },
-      scales: {
-        x: {
-          type: "time",
-          min: _viewMinT || undefined,
-          max: _viewMaxT || undefined,
-          time: {
-            unit: timeUnit,
-            tooltipFormat: "HH:mm:ss dd/MM",
-            displayFormats: { minute: displayFormat, hour: displayFormat },
-          },
-          ticks: { color: "#999", maxTicksLimit: 12, font: { size: 10 } },
-          grid:  { color: "#1a1a1a" },
-        },
-        yWave: {
-          position: "left",
-          title:    { display: true, text: "Wave", color: "#6cf", font: { size: 10 } },
-          ticks:    { color: "#6cf", font: { size: 10 } },
-          grid:     { color: "#222" },
-        },
-        yRate: {
-          position: "right",
-          title:    { display: true, text: "Cash /min", color: "#8f8", font: { size: 10 } },
-          min: 0,
-          ticks: {
-            color: "#8f8",
-            font:  { size: 10 },
-            callback(v) { return _fmtRate(v); },
-          },
-          grid: { drawOnChartArea: false },
-        },
-        yCoinRate: {
-          position: "right",
-          offset: true,
-          title:    { display: true, text: "Coin /min", color: "#f9a", font: { size: 10 } },
-          min: 0,
-          ticks: {
-            color: "#f9a",
-            font:  { size: 10 },
-            callback(v) { return _fmtRate(v); },
-          },
-          grid: { drawOnChartArea: false },
-        },
-        yWaveRate: {
-          position: "right",
-          offset: true,
-          title:    { display: true, text: "w/h", color: "#c8f", font: { size: 10 } },
-          min: 0,
-          ticks:    { color: "#c8f", font: { size: 10 } },
-          grid:     { drawOnChartArea: false },
-        },
-      },
-    },
-  };
-
-  if (_timelineChart) {
-    // Patch datasets in-place and redraw without animation
-    _timelineChart.data.datasets[0].data = wavePts;
-    _timelineChart.data.datasets[1].data = cashPts;
-    _timelineChart.data.datasets[2].data = coinPts;
-    _timelineChart.data.datasets[3].data = spendPts;
-    _timelineChart.data.datasets[4].data = waveRatePts;
-    _timelineChart.options.scales.x.time.unit           = timeUnit;
-    _timelineChart.options.scales.x.time.displayFormats = { minute: displayFormat, hour: displayFormat };
-    _timelineChart.options.scales.x.min = _viewMinT || undefined;
-    _timelineChart.options.scales.x.max = _viewMaxT || undefined;
-    // Swap in the freshly-built plugin (carries updated _reasonHue closure)
-    _timelineChart.config.plugins = [_clickLinesPlugin, _playheadPlugin];
-    _timelineChart.update("none");
-  } else {
-    _timelineChart = new Chart(cvs, chartConfig);
-    _attachTimelineHover(cvs);
+  // Attach overview interaction handlers on first paint
+  if (!_overviewInitialized || !document.getElementById("timelineOverview")?._ovAttached) {
     const ovCvs = document.getElementById("timelineOverview");
-    if (ovCvs) _attachOverviewInteraction(ovCvs);
+    if (ovCvs && !ovCvs._ovAttached) {
+      _attachOverviewInteraction(ovCvs);
+      ovCvs._ovAttached = true;
+    }
   }
-  // Repaint the overview strip
+
   _renderOverview();
-}
-
-function _attachTimelineHover(cvs) {
-  // Resolve the wall-clock ms under clientX on the timeline chart
-  function _tsAtX(clientX) {
-    if (!_timelineChart) return null;
-    const rect   = cvs.getBoundingClientRect();
-    const xPixel = clientX - rect.left;
-    const xScale = _timelineChart.scales.x;
-    return xScale.getValueForPixel(xPixel); // ms
-  }
-
-  // Click/touch: seek and switch to history mode
-  function _seekAt(clientX) {
-    const tMs = _tsAtX(clientX);
-    if (tMs != null) seekToTimestamp(tMs / 1000);
-  }
-
-  cvs.addEventListener("click", (e) => _seekAt(e.clientX));
-  cvs.addEventListener("touchend", (e) => {
-    if (e.changedTouches.length) _seekAt(e.changedTouches[0].clientX);
-  });
-
-  // Hover: scrub video to nearest frame without switching mode
-  let _hoverThrottle = null;
-  cvs.addEventListener("mousemove", (e) => {
-    if (_hoverThrottle) return;
-    _hoverThrottle = requestAnimationFrame(() => {
-      _hoverThrottle = null;
-      const tMs = _tsAtX(e.clientX);
-      if (tMs != null) _scrubToTimestamp(tMs / 1000);
-    });
-  });
-  cvs.addEventListener("mouseleave", () => {
-    if (_hoverThrottle) { cancelAnimationFrame(_hoverThrottle); _hoverThrottle = null; }
-  });
 }
 
 // ── Video player: mode, segment polling, seeking ───────────────────────────────

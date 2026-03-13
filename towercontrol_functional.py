@@ -37,6 +37,8 @@ from PIL import Image, ImageDraw
 import mss
 import pyautogui
 
+from db import writer as db_writer
+
 # ── Ad-strip layout constants ─────────────────────────────────────────────────
 # BlueStacks can display a left-side advertising strip that widens the window
 # beyond the pure game-content area.  All fractional X coordinates in this
@@ -181,9 +183,9 @@ UPGRADE_PRIORITY = [
     ('DEFENSE', 'Health Regen', None),
     ('UTILITY', 'Enemy Attack Level Skip', 1e9),
     ('UTILITY', 'Enemy Health Level Skip', 1e9),
-    ('DEFENSE', 'Defense Absolute', None),
     ('DEFENSE', 'Wall Health', None),
     ('DEFENSE', 'Wall Rebuild', None),
+    ('DEFENSE', 'Defense Absolute', None),
 ] 
 
 UPGRADE_PRIORITY_HIGH_TIER = [
@@ -1429,7 +1431,12 @@ def record_action_in_state(state: GameState, action: Action, **extra) -> GameSta
     new_history = (*state.action_history, entry)
     if len(new_history) > 200:
         new_history = new_history[-200:]
-    
+
+    fx = extra.get("fx")
+    fy = extra.get("fy")
+    if fx is not None and fy is not None:
+        db_writer.insert_action(entry["time"], fx, fy, action.reason)
+
     return replace(state, action_history=new_history)
 
 
@@ -3294,6 +3301,19 @@ def handle_upgrade_action(seen_page: Optional[str],
         new_purchase_history = new_purchase_history[-500:]
     ctx.game_state = replace(ctx.game_state, upgrade_purchase_history=new_purchase_history)
 
+    # Write spend rate to DB (rolling 30-min window)
+    _SPEND_WINDOW = 1800
+    purchases_sorted = sorted(
+        (p for p in new_purchase_history if p.get("cost") is not None and p.get("timestamp") is not None),
+        key=lambda p: p["timestamp"]
+    )
+    if purchases_sorted:
+        first_t = purchases_sorted[0]["timestamp"]
+        window_cost = sum(p["cost"] for p in purchases_sorted if p["timestamp"] >= now - _SPEND_WINDOW)
+        elapsed = min(_SPEND_WINDOW, now - first_t)
+        denom_minutes = max(elapsed / 60.0, 1.0 / 60.0)
+        db_writer.insert_spend_rate(now, window_cost / denom_minutes)
+
 
 # ============================================================================
 # SIDE-EFFECT FUNCTIONS - INPUT
@@ -3982,6 +4002,7 @@ def automation_loop_tick():
             wave_num = int(wave.replace(',', ''))
             current_time = time.time()
             new_wave_history = (*ctx.game_state.wave_history, (wave_num, current_time))
+            db_writer.insert_wave_event(wave_num, current_time)
 
             # Keep last 2 days of wave history
             _wave_cutoff = current_time - 2 * 86400
@@ -3996,6 +4017,7 @@ def automation_loop_tick():
                 if time_diff_hours > 0:
                     waves_diff = last_wave - first_wave
                     waves_per_hour = waves_diff / time_diff_hours
+                    db_writer.insert_wave_rate(current_time, round(waves_per_hour, 2))
                     rate_suffix = f" | Rate: {waves_per_hour:.1f} waves/hour (based on {len(new_wave_history)} samples over {time_diff_hours*60:.1f} min)"
                 else:
                     rate_suffix = " | (collecting data...)"
@@ -4193,6 +4215,7 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
         return
 
     ctx.rate_history.append({"t": now, "cash_pm": cash_pm, "coin_pm": coin_pm})
+    db_writer.insert_resource_rate(now, cash_pm, coin_pm)
     # Keep last 2 days of rate history
     _rate_cutoff = now - 2 * 86400
     ctx.rate_history = [e for e in ctx.rate_history if e["t"] >= _rate_cutoff]
@@ -4322,6 +4345,9 @@ def watchdog_game_tick():
         return
     if not ctx.window_rect:
         return  # BlueStacks window not present yet; BlueStacks watchdog handles this
+    if not ctx.input_enabled:
+        ctx.last_game_ui_seen = time.time()  # don't count elapsed time while clicks are disabled
+        return
     now = time.time()
     if now - ctx.last_game_ui_seen < ctx.config.game_launch_timeout:
         return  # game UI seen recently
@@ -4434,6 +4460,9 @@ def watchdog_wave_stall_tick():
     if not ctx.config.watchdog_enabled:
         return
     if ctx.hard_restart_running:
+        return
+    if not ctx.input_enabled:
+        ctx.last_wave_advance = time.time()  # don't count elapsed time while clicks are paused
         return
     now = time.time()
     if ctx.last_wave_advance == 0.0:

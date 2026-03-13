@@ -26,6 +26,7 @@ import threading
 
 import pyautogui
 
+from db.connection import init_pool, close_pool
 import towercontrol_functional as mod
 
 
@@ -75,6 +76,9 @@ if __name__ == "__main__":
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE = 0.02
 
+    # Initialise the DB connection pool (no-op if PostgreSQL is unavailable)
+    init_pool()
+
     src = mod.__file__
 
     watcher = threading.Thread(target=_watch_and_reload, args=(src,), daemon=True)
@@ -84,5 +88,8 @@ if __name__ == "__main__":
     web_starter = threading.Thread(target=_start_web_server, daemon=True, name="web-starter")
     web_starter.start()
 
-    # Delegate argv so all existing CLI args still work
-    mod.main()
+    try:
+        # Delegate argv so all existing CLI args still work
+        mod.main()
+    finally:
+        close_pool()

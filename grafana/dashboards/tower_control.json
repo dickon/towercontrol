@@ -1,0 +1,180 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "datasource": { "type": "postgres", "uid": "${DS_TOWERCONTROL}" },
+        "enable": true,
+        "iconColor": "rgba(255, 150, 50, 0.8)",
+        "name": "Bot Actions",
+        "rawQuery": true,
+        "query": "SELECT time as time, reason as text FROM actions WHERE $__timeFilter(time) ORDER BY time",
+        "hide": true,
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Wave Progression",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "${DS_TOWERCONTROL}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "#6cf", "mode": "fixed" },
+          "custom": {
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "pointSize": 3,
+            "fillOpacity": 5
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT time AS \"time\", wave FROM wave_events WHERE $__timeFilter(time) ORDER BY time",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Resource Rates",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "${DS_TOWERCONTROL}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "pointSize": 2,
+            "fillOpacity": 5
+          },
+          "unit": "none"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "cash_pm" },
+            "properties": [
+              { "id": "displayName", "value": "Cash /min" },
+              { "id": "color", "value": { "fixedColor": "#8f8", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "coin_pm" },
+            "properties": [
+              { "id": "displayName", "value": "Coin /min" },
+              { "id": "color", "value": { "fixedColor": "#f9a", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT time AS \"time\", cash_pm, coin_pm FROM resource_rates WHERE $__timeFilter(time) ORDER BY time",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Spend Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "postgres", "uid": "${DS_TOWERCONTROL}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "#fa0", "mode": "fixed" },
+          "custom": {
+            "lineWidth": 2,
+            "pointSize": 2,
+            "fillOpacity": 5
+          },
+          "unit": "none",
+          "displayName": "Spend /min"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT time AS \"time\", spend_pm FROM spend_rates WHERE $__timeFilter(time) ORDER BY time",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Wave Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "postgres", "uid": "${DS_TOWERCONTROL}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "#c8f", "mode": "fixed" },
+          "custom": {
+            "lineWidth": 2,
+            "pointSize": 2,
+            "fillOpacity": 5
+          },
+          "unit": "none",
+          "displayName": "Waves /h"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT time AS \"time\", waves_ph FROM wave_rates WHERE $__timeFilter(time) ORDER BY time",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["towercontrol"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "TowerControl PostgreSQL", "value": "TowerControl PostgreSQL" },
+        "hide": 2,
+        "includeAll": false,
+        "name": "DS_TOWERCONTROL",
+        "options": [],
+        "query": "postgres",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Tower Control",
+  "uid": "towercontrol",
+  "version": 1
+}
