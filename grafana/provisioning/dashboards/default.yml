@@ -8,5 +8,5 @@ providers:
     disableDeletion: false
     editable: true
     options:
-      path: dashboards
+      path: C:\Users\dicko\src\towercontrol\grafana\dashboards
       foldersFromFilesStructure: false
