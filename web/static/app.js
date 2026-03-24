@@ -289,6 +289,8 @@ const CTX_LABELS = {
   window:                  "Window",
   ocr_engine:              "OCR engine",
   loop_tick:               "Loop tick (s)",
+  idle_interval:           "Idle interval (s)",
+  idle_capture_fps:        "Idle capture FPS",
 };
 
 function renderCtxTable(ctx) {

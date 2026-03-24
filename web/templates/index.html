@@ -201,6 +201,52 @@
                      min="1" max="120" step="0.5"
                      onchange="api('params', { loop_tick: parseFloat(this.value) })">
             </div>
+            <hr class="my-2 border-secondary">
+            <div class="small text-muted mb-1">Resource Saving</div>
+            <div class="row g-2 mb-2">
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="chkVideo" data-param-key="video_enabled"
+                         onchange="api('params', { video_enabled: this.checked })">
+                  <label class="form-check-label small" for="chkVideo">&#127909; Video Rec</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="chkFileLog" data-param-key="file_logging_enabled"
+                         onchange="api('params', { file_logging_enabled: this.checked })">
+                  <label class="form-check-label small" for="chkFileLog">&#128196; File Log</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="chkDebugImg" data-param-key="debug_images_enabled"
+                         onchange="api('params', { debug_images_enabled: this.checked })">
+                  <label class="form-check-label small" for="chkDebugImg">&#128248; Debug Img</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="chkDebugJsonl" data-param-key="debug_jsonl_enabled"
+                         onchange="api('params', { debug_jsonl_enabled: this.checked })">
+                  <label class="form-check-label small" for="chkDebugJsonl">&#128203; Debug JSONL</label>
+                </div>
+              </div>
+            </div>
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <label class="form-label mb-0 small text-muted" for="inputIdleInterval">Idle interval (s)</label>
+              <input type="number" id="inputIdleInterval" data-param-key="idle_interval"
+                     class="form-control form-control-sm" style="width:90px;background:#222;color:#eee;border-color:#555"
+                     min="10" max="300" step="5"
+                     onchange="api('params', { idle_interval: parseFloat(this.value) })">
+            </div>
+            <div class="d-flex align-items-center gap-2 mb-2">
+              <label class="form-label mb-0 small text-muted" for="inputIdleFps">Idle FPS</label>
+              <input type="number" id="inputIdleFps" data-param-key="idle_capture_fps"
+                     class="form-control form-control-sm" style="width:90px;background:#222;color:#eee;border-color:#555"
+                     min="0.05" max="5" step="0.05"
+                     onchange="api('params', { idle_capture_fps: parseFloat(this.value) })">
+            </div>
             <div id="watchdogStatus" class="text-muted small mb-2"></div>
             <div id="clickInjectHint" class="text-muted small mt-1">
               Click injection OFF. Hover to inspect coordinates.

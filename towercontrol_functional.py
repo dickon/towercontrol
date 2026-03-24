@@ -277,6 +277,14 @@ class Config:
     # Cloud grab warning auto-click
     cloud_grab_enabled: bool = True          # auto-click Yes on cloud grab warning
 
+    # Resource-saving toggles (off by default to reduce CPU / disk)
+    video_enabled: bool = False              # push frames to video recorder
+    debug_images_enabled: bool = False       # save preprocessed.png etc.
+    debug_jsonl_enabled: bool = False        # append to perks.jsonl / gems.jsonl
+    file_logging_enabled: bool = False       # rotating log file at DEBUG level
+    idle_interval: float = 90.0             # sleep seconds when automation has no work
+    idle_capture_fps: float = 0.2           # capture rate when idle (frames/sec)
+
     @property
     def screenshots_dir(self) -> Path:
         d = self.base_dir / "screenshots"
@@ -1029,11 +1037,12 @@ def process_ocr(img: Image.Image, config: Config, ocr_reader=None) -> OCRFrame:
                 pass
 
     # Save preprocessed debug image (first variant)
-    try:
-        debug_path = config.debug_dir / "preprocessed.png"
-        cv2.imwrite(str(debug_path), variants[0])
-    except Exception:
-        pass
+    if config.debug_images_enabled:
+        try:
+            debug_path = config.debug_dir / "preprocessed.png"
+            cv2.imwrite(str(debug_path), variants[0])
+        except Exception:
+            pass
 
     return OCRFrame(
         results=tuple(scaled_results),
@@ -3411,6 +3420,7 @@ class RuntimeContext:
     _hud_toggle_pending: dict = field(default_factory=dict)  # key → consecutive ticks where /min not seen but toggle wanted
     _latest_capture: Any = None  # (img, img_capture_time) tuple written by capture thread; read by OCR tick
     video_recorder: Any = None  # VideoRecorder instance (set after ctx creation)
+    idle: bool = False  # set by automation loop; used by capture loop for fps throttle
 
     def update_window(self):
         """Update window rect if needed."""
@@ -3477,8 +3487,8 @@ def capture_loop_tick() -> None:
     ctx._latest_capture = (img, img_capture_time)
     ctx.latest_image = img  # keep web/debug consumers happy
 
-    # Push to video recorder
-    if ctx.video_recorder is not None:
+    # Push to video recorder (only when enabled)
+    if ctx.video_recorder is not None and ctx.config.video_enabled:
         try:
             if not ctx.video_recorder._running:
                 ctx.video_recorder.start(img.width, img.height)
@@ -3502,9 +3512,19 @@ def capture_loop_run(ctx: RuntimeContext) -> None:
     """Capture thread: continuously grab frames at config.capture_fps."""
     log = logging.getLogger(__name__)
     log.info("Capture loop started at %.1f FPS", ctx.config.capture_fps)
-    interval = 1.0 / max(ctx.config.capture_fps, 0.1)
 
     while ctx.running:
+        if ctx.idle:
+            if ctx.config.video_enabled:
+                # Video wants frames; use the configured idle capture fps.
+                fps = ctx.config.idle_capture_fps
+            else:
+                # Nothing consumes frames between OCR ticks — match the OCR
+                # cadence so we capture once per idle interval, not 18× between.
+                fps = 1.0 / max(ctx.config.idle_interval, 10.0)
+        else:
+            fps = ctx.config.capture_fps
+        interval = 1.0 / max(fps, 0.001)
         t0 = time.time()
         try:
             capture_loop_tick()
@@ -3834,15 +3854,16 @@ def automation_loop_tick():
         if len(perk_text_join) not in [3,4] or not clean:
             log.warning(f"Unexpected number of meaningful perk rows detected: {len(perk_text_join)}. Expected 3 or 4. Detected rows: {list(perk_text_join.keys())} {perk_text_join}")
         # create/append to perks.log with a jsonl format containing wave, timestamp in epoch seconds, timestamp as iso string, perk_text_join, perk_text_priority
-        with open(ctx.config.debug_dir / "perks.jsonl", "a") as log_file:
-            log_entry = {
-                "timestamp": time.time(),
-                "timestamp_iso": datetime.datetime.now().isoformat(),
-                "wave": wave_num_str,
-                "perk_text_join": perk_text_join,
-                "perk_text_priority": perk_text_priority,
-            }
-            log_file.write(json.dumps(log_entry) + "\n")
+        if ctx.config.debug_jsonl_enabled:
+            with open(ctx.config.debug_dir / "perks.jsonl", "a") as log_file:
+                log_entry = {
+                    "timestamp": time.time(),
+                    "timestamp_iso": datetime.datetime.now().isoformat(),
+                    "wave": wave_num_str,
+                    "perk_text_join": perk_text_join,
+                    "perk_text_priority": perk_text_priority,
+                }
+                log_file.write(json.dumps(log_entry) + "\n")
         # pick the row with the highest priority (lowest index)
         # Always use the best available wave number for perk history
         perk_wave = wave_num_str if wave_num_str else ctx.game_state.wave or "?"
@@ -4239,18 +4260,19 @@ def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
 
         log.info(message)
             # append to debug/gems.jsonl
-        with (ctx.config.debug_dir / "gems.jsonl").open("a") as f:
-            json.dump({
-                    "timestamp": time.time(),
-                    'localtime': datetime.datetime.now().isoformat(),
-                    "message": message,
-                    "gem_position": {"x": gx, "y": gy},
-                    "click_position": {"x": click_x, "y": click_y},
-                    "angle_from_north": angle_from_north,
-                    "advanced_angle": advanced_angle,
-                    "dt": dt
-                }, f)
-            f.write("\n")
+        if ctx.config.debug_jsonl_enabled:
+            with (ctx.config.debug_dir / "gems.jsonl").open("a") as f:
+                json.dump({
+                        "timestamp": time.time(),
+                        'localtime': datetime.datetime.now().isoformat(),
+                        "message": message,
+                        "gem_position": {"x": gx, "y": gy},
+                        "click_position": {"x": click_x, "y": click_y},
+                        "angle_from_north": angle_from_north,
+                        "advanced_angle": advanced_angle,
+                        "dt": dt
+                    }, f)
+                f.write("\n")
         click_frac_x  = click_x / img_w
         click_frac_y = click_y / img_h
         log.info(f"Clicking floating gem at fractional position ({click_frac_x:.3f}, {click_frac_y:.3f}) angle {angle_from_north:.1f}° advanced to {advanced_angle:.1f}°")
@@ -4269,16 +4291,17 @@ def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
                         f"Gem click MISS - gem still at ({post_pos[0]},{post_pos[1]}) "
                         f"angle={post_pos[2]:.1f}°"
                     )
-            with (ctx.config.debug_dir / "gems.jsonl").open("a") as f:
-                json.dump({
-                        "timestamp": time.time(),
-                        'localtime': datetime.datetime.now().isoformat(),
-                        "post_click_verification": True,
-                        "gem_still_present": post_pos is not None,
-                        "post_gem_position": {"x": post_pos[0], "y": post_pos[1]} if post_pos else None,
-                        "post_gem_angle": post_pos[2] if post_pos else None
-                    }, f)
-                f.write("\n")
+            if ctx.config.debug_jsonl_enabled:
+                with (ctx.config.debug_dir / "gems.jsonl").open("a") as f:
+                    json.dump({
+                            "timestamp": time.time(),
+                            'localtime': datetime.datetime.now().isoformat(),
+                            "post_click_verification": True,
+                            "gem_still_present": post_pos is not None,
+                            "post_gem_position": {"x": post_pos[0], "y": post_pos[1]} if post_pos else None,
+                            "post_gem_angle": post_pos[2] if post_pos else None
+                        }, f)
+                    f.write("\n")
 
 
 def _is_bluestacks_running(process_name: str) -> bool:
@@ -4510,6 +4533,7 @@ def automation_loop_run(ctx: RuntimeContext):
             watchdog_game_tick()
             watchdog_wave_stall_tick()
             idle = automation_loop_tick()
+            ctx.idle = idle
         except Exception as exc:
             log.error(f"Loop tick error: {exc}", exc_info=True)
             ctx.game_state = replace(ctx.game_state,
@@ -4518,9 +4542,8 @@ def automation_loop_run(ctx: RuntimeContext):
             time.sleep(2)
 
         elapsed = time.time() - t0
-        sleep_time = max(0.5, (ctx.config.loop_tick if idle else ctx.config.work_pace) - elapsed)
-        log.info('----------------')
-        log.info(f'sleeping for {sleep_time:.2f} seconds since idle={idle} elapsed={elapsed:.2f}s')
+        sleep_time = max(0.5, (ctx.config.idle_interval if idle else ctx.config.work_pace) - elapsed)
+        log.debug(f'sleeping {sleep_time:.1f}s  idle={idle} elapsed={elapsed:.2f}s')
         time.sleep(sleep_time)
 
     log.info("Automation loop stopped")
@@ -4631,12 +4654,13 @@ def setup_logging():
     console_handler.setFormatter(colored_formatter)
     logger.addHandler(console_handler)
 
-    # Rotating file handler — DEBUG and above
+    # Rotating file handler — WARNING by default; set to DEBUG via web UI toggle
     file_handler = logging.handlers.RotatingFileHandler(
         log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.WARNING)
     file_handler.setFormatter(formatter)
+    file_handler.set_name("tc_file")  # so we can find it later to change level
     logger.addHandler(file_handler)
 
     # In-memory buffer for capture.txt — DEBUG and above

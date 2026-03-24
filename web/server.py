@@ -275,6 +275,12 @@ def _build_state() -> dict:
         "input_pause_remaining": _pause_remaining,
         "cloud_grab_enabled":   c.config.cloud_grab_enabled,
         "loop_tick":            c.config.loop_tick,
+        "video_enabled":        c.config.video_enabled,
+        "debug_images_enabled": c.config.debug_images_enabled,
+        "debug_jsonl_enabled":  c.config.debug_jsonl_enabled,
+        "file_logging_enabled": c.config.file_logging_enabled,
+        "idle_interval":        c.config.idle_interval,
+        "idle_capture_fps":     c.config.idle_capture_fps,
     }
 
     # Watchdog state
@@ -323,6 +329,10 @@ def _build_state() -> dict:
                                        if c.window_rect else "—",
             "ocr_engine":              c.config.ocr_engine,
             "loop_tick":               c.config.loop_tick,
+            "idle_interval":           c.config.idle_interval,
+            "idle_capture_fps":        c.config.idle_capture_fps,
+            "video_enabled":           c.config.video_enabled,
+            "file_logging_enabled":    c.config.file_logging_enabled,
         }
     except Exception as exc:
         logging.getLogger(__name__).warning("ctx_full build error: %s", exc)
@@ -693,6 +703,24 @@ async def api_params_schema():
         "loop_tick": {
             "label": "Loop tick (s)", "type": "float", "min": 1.0, "max": 120.0, "step": 0.5,
         },
+        "video_enabled": {
+            "label": "Video Recording", "type": "bool",
+        },
+        "debug_images_enabled": {
+            "label": "Debug Images", "type": "bool",
+        },
+        "debug_jsonl_enabled": {
+            "label": "Debug JSONL", "type": "bool",
+        },
+        "file_logging_enabled": {
+            "label": "File Logging", "type": "bool",
+        },
+        "idle_interval": {
+            "label": "Idle interval (s)", "type": "float", "min": 10.0, "max": 300.0, "step": 5.0,
+        },
+        "idle_capture_fps": {
+            "label": "Idle capture FPS", "type": "float", "min": 0.05, "max": 5.0, "step": 0.05,
+        },
     }
 
 
@@ -727,6 +755,37 @@ async def api_params(request: Request):
         if 1.0 <= val <= 120.0:
             c.config = _mod.replace(c.config, loop_tick=val)
             logging.getLogger(__name__).info("loop_tick set to %.1f via web UI", val)
+    if "video_enabled" in body:
+        enabled = bool(body["video_enabled"])
+        c.config = _mod.replace(c.config, video_enabled=enabled)
+        if not enabled and c.video_recorder is not None and c.video_recorder._running:
+            c.video_recorder.stop()
+            logging.getLogger(__name__).info("Video recording stopped via web UI")
+        elif enabled:
+            logging.getLogger(__name__).info("Video recording enabled via web UI")
+    if "debug_images_enabled" in body:
+        c.config = _mod.replace(c.config, debug_images_enabled=bool(body["debug_images_enabled"]))
+    if "debug_jsonl_enabled" in body:
+        c.config = _mod.replace(c.config, debug_jsonl_enabled=bool(body["debug_jsonl_enabled"]))
+    if "file_logging_enabled" in body:
+        enabled = bool(body["file_logging_enabled"])
+        c.config = _mod.replace(c.config, file_logging_enabled=enabled)
+        # Dynamically adjust file handler level
+        for h in logging.getLogger().handlers:
+            if getattr(h, 'name', None) == 'tc_file':
+                h.setLevel(logging.DEBUG if enabled else logging.WARNING)
+                break
+        logging.getLogger(__name__).info("File logging %s via web UI", "enabled" if enabled else "disabled")
+    if "idle_interval" in body:
+        val = float(body["idle_interval"])
+        if 10.0 <= val <= 300.0:
+            c.config = _mod.replace(c.config, idle_interval=val)
+            logging.getLogger(__name__).info("idle_interval set to %.1f via web UI", val)
+    if "idle_capture_fps" in body:
+        val = float(body["idle_capture_fps"])
+        if 0.05 <= val <= 5.0:
+            c.config = _mod.replace(c.config, idle_capture_fps=val)
+            logging.getLogger(__name__).info("idle_capture_fps set to %.2f via web UI", val)
     return {"ok": True}
 
 
