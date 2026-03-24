@@ -316,10 +316,9 @@ function renderCtxTable(ctx) {
 function pauseInput() {
   const btn = document.getElementById("btnPauseInput");
   if (btn && btn.dataset.paused === "1") {
-    // Cancel: re-enable input immediately
-    api("resume").then(r => {
-      if (r?.ok) updatePauseCountdown(0);
-    });
+    // Cancel: update the UI immediately so the click feels instant, then confirm with server
+    updatePauseCountdown(0);
+    api("resume");
   } else {
     api("pause_input").then(r => {
       if (r?.ok) updatePauseCountdown(r.remaining_s ?? 1200);
@@ -819,10 +818,9 @@ function setText(id, val) {
   if (el) el.textContent = String(val);
 }
 
+const _ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#x27;' };
 function esc(s) {
-  const d = document.createElement("div");
-  d.textContent = s;
-  return d.innerHTML;
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => _ESC_MAP[c]);
 }
 
 // ── Overview data fetch (replaces Chart.js timeline) ───────────────────────────
@@ -848,11 +846,13 @@ function _updateOverviewData(data) {
   _overviewWavePts = wavePts;
   _overviewActTs   = actionTs;
 
-  const allTs = [...wavePts.map(p => p.x), ...actionTs];
-  if (allTs.length > 0) {
+  if (wavePts.length > 0 || actionTs.length > 0) {
+    let _minT = Infinity, _maxT = -Infinity;
+    for (const p of wavePts)  { if (p.x < _minT) _minT = p.x; if (p.x > _maxT) _maxT = p.x; }
+    for (const t of actionTs) { if (t < _minT)   _minT = t;   if (t > _maxT)   _maxT = t;   }
     const prevDataMaxT = _overviewDataMaxT;
-    _overviewDataMinT  = Math.min(...allTs);
-    const newDataMaxT  = Math.max(...allTs);
+    _overviewDataMinT  = _minT;
+    const newDataMaxT  = _maxT;
 
     if (!_overviewInitialized) {
       _overviewDataMaxT = newDataMaxT;
@@ -1169,8 +1169,16 @@ function _setViewRange(minT, maxT) {
   _renderOverview();
 }
 
-/** Draw the full-extent minimap with a highlighted window rect. */
+/** Draw the full-extent minimap with a highlighted window rect.
+ *  Coalesces rapid calls (e.g. from timeupdate) to one requestAnimationFrame. */
+let _renderOverviewPending = false;
 function _renderOverview() {
+  if (_renderOverviewPending) return;
+  _renderOverviewPending = true;
+  requestAnimationFrame(_doRenderOverview);
+}
+function _doRenderOverview() {
+  _renderOverviewPending = false;
   const cvs = document.getElementById("timelineOverview");
   if (!cvs) return;
   const cssRect = cvs.getBoundingClientRect();
@@ -1197,9 +1205,9 @@ function _renderOverview() {
 
   // Mini wave line
   if (_overviewWavePts.length >= 2) {
-    const ys    = _overviewWavePts.map(p => p.y);
-    const wMin  = Math.min(...ys), wMax = Math.max(...ys);
-    const wSpan = wMax - wMin || 1;
+    let wMin = Infinity, wMax = -Infinity;
+    for (const p of _overviewWavePts) { if (p.y < wMin) wMin = p.y; if (p.y > wMax) wMax = p.y; }
+    const wSpan = (wMax - wMin) || 1;
     c.beginPath();
     c.strokeStyle = "rgba(102,204,255,0.55)";
     c.lineWidth   = 1;
