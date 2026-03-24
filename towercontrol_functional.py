@@ -3565,8 +3565,7 @@ def do_ocr():
     img, img_capture_time = capture
 
     age = time.time() - img_capture_time
-    if age > 10.0:
-        log.warning("do_ocr: latest frame is %.1fs old", age)
+    log.debug("do_ocr: latest frame is %.1fs old", age)
 
     try:
         ocr_t0 = time.time()
