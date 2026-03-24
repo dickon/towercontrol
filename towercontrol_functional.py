@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 TowerControl - Functional Style Single File Edition
 
@@ -18,6 +18,22 @@ import os
 import json
 import logging
 import logging.handlers
+
+# ---------------------------------------------------------------------------
+# TRACE level â€” below DEBUG (10).  Used for per-frame / per-tick diagnostic
+# messages that are too noisy for normal DEBUG output.  The console handler
+# stays at INFO by default, so TRACE messages are hidden unless you explicitly
+# lower the handler level (e.g. console_handler.setLevel(logging.TRACE)).
+# ---------------------------------------------------------------------------
+TRACE: int = 5
+logging.addLevelName(TRACE, "TRACE")
+logging.TRACE = TRACE  # type: ignore[attr-defined]
+
+def _trace(self: logging.Logger, msg: object, *args: object, **kwargs: object) -> None:
+    if self.isEnabledFor(TRACE):
+        self._log(TRACE, msg, args, **kwargs)
+
+logging.Logger.trace = _trace  # type: ignore[attr-defined]
 import re
 import subprocess
 import threading
@@ -39,20 +55,20 @@ import pyautogui
 
 from db import writer as db_writer
 
-# ── Ad-strip layout constants ─────────────────────────────────────────────────
+# â”€â”€ Ad-strip layout constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # BlueStacks can display a left-side advertising strip that widens the window
 # beyond the pure game-content area.  All fractional X coordinates in this
 # file are calibrated against the *content-only* (game area) layout.
 #
-#   Strip present : window width ≈ 1523 px  (content starts at ~320 px)
-#   Strip absent  : window width ≈ 1203 px  (game content only)
+#   Strip present : window width â‰ˆ 1523 px  (content starts at ~320 px)
+#   Strip absent  : window width â‰ˆ 1203 px  (game content only)
 #   Common height : 2112 px
 #
 # Ad-strip compensation happens in exactly TWO places:
-#   1. capture_game_image() — crops the ad strip from captured images so all
+#   1. capture_game_image() â€” crops the ad strip from captured images so all
 #      downstream processing (OCR, template matching, gem detection) works in
 #      content-only coordinate space.
-#   2. _content_frac_to_window_px() — converts content-only fractional coords
+#   2. _content_frac_to_window_px() â€” converts content-only fractional coords
 #      back to window-relative pixel coords for clicks and swipes, adding the
 #      strip offset when the strip is present.
 #
@@ -63,20 +79,20 @@ _LAYOUT_GAME_W  = 1203   # window width when ad strip is absent
 _LAYOUT_H       = 2112   # reference height (same in both layouts)
 
 # Fraction of the full-width image taken up by the left ad strip
-STRIP_FRAC   = (_LAYOUT_FULL_W - _LAYOUT_GAME_W) / _LAYOUT_FULL_W   # ≈ 0.2101
+STRIP_FRAC   = (_LAYOUT_FULL_W - _LAYOUT_GAME_W) / _LAYOUT_FULL_W   # â‰ˆ 0.2101
 # Fraction of the full-width image occupied by game content (right of strip)
-CONTENT_FRAC = _LAYOUT_GAME_W / _LAYOUT_FULL_W                       # ≈ 0.7899
+CONTENT_FRAC = _LAYOUT_GAME_W / _LAYOUT_FULL_W                       # â‰ˆ 0.7899
 # Aspect-ratio midpoint used to decide which layout we have captured
 _STRIP_ASPECT_CUT = (
     (_LAYOUT_GAME_W / _LAYOUT_H) + (_LAYOUT_FULL_W / _LAYOUT_H)
-) / 2  # ≈ 0.645
+) / 2  # â‰ˆ 0.645
 
 
 def has_ad_strip(img_width: int, img_height: int) -> bool:
     """Return True when the captured image includes the left advertising strip.
 
     Compares the image aspect ratio against the midpoint between the two known
-    BlueStacks layouts (strip-present ≈ 0.721, strip-absent ≈ 0.570).
+    BlueStacks layouts (strip-present â‰ˆ 0.721, strip-absent â‰ˆ 0.570).
     """
     if img_height == 0:
         return True  # can't tell; assume full layout
@@ -98,7 +114,7 @@ def crop_ad_strip(img: Image.Image) -> Tuple[Image.Image, bool]:
 
 PERK_ROWS = [ (0, 0.273), (1, 0.373), (2, 0.473), (3, 0.573), (4, 0.673) ]
 
-# Upgrade button positions (6 buttons in 3 rows × 2 columns)
+# Upgrade button positions (6 buttons in 3 rows Ã— 2 columns)
 # Format: (index, y_fraction, x_range)
 # X ranges in content-only coordinate frame (ad strip excluded).
 UPGRADE_BUTTON_ROWS = [
@@ -254,13 +270,13 @@ class Config:
     upgrade_scroll_timeout: float = 120.0     # seconds scrolling down before switching to up
     high_tier_threshold: int = 12            # tier >= this uses UPGRADE_PRIORITY_HIGH_TIER
 
-    # Watchdog — BlueStacks process
+    # Watchdog â€” BlueStacks process
     watchdog_enabled: bool = True
     bluestacks_exe: str = r"C:\Program Files\BlueStacks_nxt\HD-Player.exe"
     bluestacks_process: str = "HD-Player.exe"
     watchdog_cooldown: float = 120.0         # min seconds between BlueStacks restart attempts
 
-    # Watchdog — game launch via ADB
+    # Watchdog â€” game launch via ADB
     game_launch_enabled: bool = True
     adb_exe: str = "adb"
     adb_host: str = "localhost"
@@ -269,7 +285,7 @@ class Config:
     game_launch_timeout: float = 600.0        # seconds of no-game-UI before ADB launch
     game_launch_cooldown: float = 90.0       # min seconds between game launch attempts
 
-    # Watchdog — wave stall (hard restart)
+    # Watchdog â€” wave stall (hard restart)
     wave_stall_timeout: float = 600.0        # 10 min: hard-restart if wave hasn't advanced
     wave_stall_cooldown: float = 300.0       # min seconds between hard-restart attempts
     bs_post_start_delay: float = 60.0        # seconds after BS launch before pressing home
@@ -506,7 +522,7 @@ def capture_window(rect: WindowRect) -> Optional[Image.Image]:
         with mss.mss() as sct:
             raw = sct.grab(monitor)
             img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
-        log.info("Captured image size: %dx%d", img.width, img.height)
+        log.trace("Captured image size: %dx%d", img.width, img.height)
         return img
     except Exception:
         return None
@@ -556,7 +572,7 @@ def _rotate_capture_files(config: Config, prefix: str = "capture", keep: int = 1
                 for f in to_delete:
                     f.unlink()
                 if to_delete:
-                    log.debug(f"Rotated {len(to_delete)} old {prefix}{ext} files (>{max_age_hours}h)")
+                    log.trace(f"Rotated {len(to_delete)} old {prefix}{ext} files (>{max_age_hours}h)")
     except Exception as e:
         log.warning(f"Failed to rotate capture files: {e}")
 
@@ -597,7 +613,7 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
 
         # Save original image
         img.save(img_path)
-        log.debug(f"Saved debug image: {img_path}")
+        log.trace(f"Saved debug image: {img_path}")
        
         
         # Drain log buffer *before* writing (the save itself emits debug lines)
@@ -626,7 +642,7 @@ def save_debug_files(img: Image.Image, frame: OCRFrame, config: Config, prefix: 
                 for line in log_lines:
                     f.write(line + "\n")
 
-        log.debug(f"Saved debug text: {txt_path}")
+        log.trace(f"Saved debug text: {txt_path}")
     except Exception as e:
         log.error(f"Failed to save debug files: {e}")
 
@@ -764,7 +780,7 @@ def _ocr_perk_row_recovery(gray_upscaled: np.ndarray, config: Config,
     Standard full-image OCR often fails to detect white/light text on
     dark coloured backgrounds (e.g. dark red, dark green).  This function
     crops each PERK_ROW region, inverts the grayscale and applies OTSU
-    thresholding so that the light text becomes dark-on-white — which
+    thresholding so that the light text becomes dark-on-white â€” which
     Tesseract handles reliably.
 
     Only rows listed in *missing_rows* are processed.  If *missing_rows*
@@ -772,7 +788,7 @@ def _ocr_perk_row_recovery(gray_upscaled: np.ndarray, config: Config,
     attempted.
 
     Args:
-        gray_upscaled: Grayscale image at 1.5× scale
+        gray_upscaled: Grayscale image at 1.5Ã— scale
         config: Application configuration
         scale_factor: The upscale factor used (1.5)
         orig_w: Original image width
@@ -842,8 +858,8 @@ def _ocr_upgrade_header_recovery(arr: np.ndarray, config: Config) -> List[OCRRes
     """Recover the upgrade section header (UTILITY / ATTACK / DEFENSE UPGRADES).
 
     The coloured banner text is frequently garbled by standard OCR (e.g. 'WN'
-    instead of 'UTILITY').  This crops the header band at y≈[0.60, 0.67],
-    upscales 2×, tries both inverted and straight adaptive thresholding, and
+    instead of 'UTILITY').  This crops the header band at yâ‰ˆ[0.60, 0.67],
+    upscales 2Ã—, tries both inverted and straight adaptive thresholding, and
     runs Tesseract in single-line mode.
 
     On success it returns a single synthetic OCRResult with text equal to the
@@ -1133,13 +1149,13 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
         match = re.search(r'(?:wave|w)[:\s]*([0-9,]+)', text, re.IGNORECASE)
         if match:
             if not r.is_near(0.6582, 0.55, 0.08):
-                log.debug(f"Wave ignored (wrong position {r.fx:.3f},{r.fy:.3f}): '{text}'")
+                log.trace(f"Wave ignored (wrong position {r.fx:.3f},{r.fy:.3f}): '{text}'")
                 continue
             wave_num = match.group(1).replace(',', '')
             if len(wave_num) < 2:
-                log.debug(f"Wave ignored (single digit, likely OCR error): '{wave_num}' from text '{text}'")
+                log.trace(f"Wave ignored (single digit, likely OCR error): '{wave_num}' from text '{text}'")
                 continue
-            log.debug(f"Wave detected (strategy 1): '{wave_num}' from text '{text}' at ({r.fx:.3f}, {r.fy:.3f})")
+            log.trace(f"Wave detected (strategy 1): '{wave_num}' from text '{text}' at ({r.fx:.3f}, {r.fy:.3f})")
             return wave_num, (r.fx, r.fy)
 
     # Strategy 2: Find standalone "wave"/"w" label and number to the right
@@ -1167,12 +1183,12 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
 
             if best_num and best_candidate:
                 if not best_candidate.is_near(0.6582, 0.55, 0.06):
-                    log.debug(f"Wave ignored (wrong position {best_candidate.fx:.3f},{best_candidate.fy:.3f}): '{best_num}'")
+                    log.trace(f"Wave ignored (wrong position {best_candidate.fx:.3f},{best_candidate.fy:.3f}): '{best_num}'")
                     continue
                 if len(best_num) < 2:
-                    log.debug(f"Wave ignored (single digit, likely OCR error): '{best_num}'")
+                    log.trace(f"Wave ignored (single digit, likely OCR error): '{best_num}'")
                     continue
-                log.debug(f"Wave detected (strategy 2): '{best_num}' at ({best_candidate.fx:.3f}, {best_candidate.fy:.3f})")
+                log.trace(f"Wave detected (strategy 2): '{best_num}' at ({best_candidate.fx:.3f}, {best_candidate.fy:.3f})")
                 return best_num, (best_candidate.fx, best_candidate.fy)
 
     # Strategy 3: Look for any text starting with "wave" or "w" followed by digits
@@ -1180,23 +1196,23 @@ def extract_wave_from_frame(frame: OCRFrame) -> Tuple[Optional[str], Optional[Tu
         text_lower = r.text.lower().strip()
         if text_lower.startswith(('wave', 'w')):
             if not r.is_near(0.6582, 0.55, 0.08):
-                log.debug(f"Wave ignored (wrong position {r.fx:.3f},{r.fy:.3f}): '{r.text}'")
+                log.trace(f"Wave ignored (wrong position {r.fx:.3f},{r.fy:.3f}): '{r.text}'")
                 continue
             # Extract any digits from the text
             digits = re.findall(r'[0-9]+', r.text)
             if digits:
                 wave_num = digits[0]
                 if len(wave_num) < 2:
-                    log.debug(f"Wave ignored (single digit, likely OCR error): '{wave_num}' from text '{r.text}'")
+                    log.trace(f"Wave ignored (single digit, likely OCR error): '{wave_num}' from text '{r.text}'")
                     continue
-                log.debug(f"Wave detected (strategy 3): '{wave_num}' from text '{r.text}' at ({r.fx:.3f}, {r.fy:.3f})")
+                log.trace(f"Wave detected (strategy 3): '{wave_num}' from text '{r.text}' at ({r.fx:.3f}, {r.fy:.3f})")
                 return wave_num, (r.fx, r.fy)
 
     # Debug: log all OCR results if wave not found (but only occasionally to avoid spam)
     if len(frame.results) > 0:
         import random
         if random.random() < 0.05:  # 5% of the time
-            log.debug(f"Wave not found. OCR results: {[r.text for r in frame.results]}")
+            log.trace(f"Wave not found. OCR results: {[r.text for r in frame.results]}")
 
     return None, None
 
@@ -1253,7 +1269,7 @@ def do_click(message, click_x_frac, click_y_frac):
                 reason_slug = ("_" + re.sub(r"[^\w]+", "_", message).strip("_")) if message else ""
                 debug_path = config.debug_dir / f"click_debug_{timestamp}{reason_slug}.png"
                 debug_img.save(debug_path)
-                log.debug(f"Debug screenshot saved: {debug_path}")
+                log.trace(f"Debug screenshot saved: {debug_path}")
                 cleanup_old_click_debug_files(config)
         except Exception as e:
             log.warning(f"Could not create debug screenshot: {e}")
@@ -1262,7 +1278,7 @@ def do_click(message, click_x_frac, click_y_frac):
         # assert not bring_to_front, "Bringing to front is currently disabled to avoid issues. Set bring_to_front=True to enable (use with caution)."
 
         ax, ay = to_absolute_coords(click_x, click_y, rect)
-        log.debug(f"click({click_x}, {click_y}) → abs({ax}, {ay})")
+        log.trace(f"click({click_x}, {click_y}) â†’ abs({ax}, {ay})")
 
         prev_foreground = None
         prev_mouse_pos = None
@@ -1271,7 +1287,7 @@ def do_click(message, click_x_frac, click_y_frac):
                 prev_foreground = win32gui.GetForegroundWindow()
             prev_mouse_pos = pyautogui.position()
         except Exception as e:
-            log.debug(f"Could not snapshot focus/cursor: {e}")
+            log.trace(f"Could not snapshot focus/cursor: {e}")
 
         pyautogui.click(ax, ay, interval=config.click_pause)
         log.info(f"Clicked at ({ax}, {ay}); sleep for {config.click_pause:.2f} seconds" + (f"  [{message}]" if message else ""))
@@ -1280,16 +1296,16 @@ def do_click(message, click_x_frac, click_y_frac):
         if prev_mouse_pos is not None:
             try:
                 pyautogui.moveTo(prev_mouse_pos.x, prev_mouse_pos.y)
-                log.debug(f"Restored mouse to ({prev_mouse_pos.x}, {prev_mouse_pos.y})")
+                log.trace(f"Restored mouse to ({prev_mouse_pos.x}, {prev_mouse_pos.y})")
             except Exception as e:
-                log.debug(f"Could not restore mouse position: {e}")
+                log.trace(f"Could not restore mouse position: {e}")
 
         if prev_foreground and win32gui and prev_foreground != rect.hwnd:
             try:
                 win32gui.SetForegroundWindow(prev_foreground)
-                log.debug(f"Restored foreground window (hwnd={prev_foreground})")
+                log.trace(f"Restored foreground window (hwnd={prev_foreground})")
             except Exception as e:
-                log.debug(f"Could not restore foreground window: {e}")
+                log.trace(f"Could not restore foreground window: {e}")
 
         if ctx is not None:
             fx = round(click_x / rect.width,  4) if rect.width  else 0.0
@@ -1390,7 +1406,7 @@ def match_perk_priorities(perk_text_join: dict) -> Tuple[list, bool]:
                 hit = True
                 break
         if not hit:
-            log.debug(f"No perk choice pattern matched for row {row} with text '{text}'")
+            log.trace(f"No perk choice pattern matched for row {row} with text '{text}'")
             all_matched = False
     
     perk_text_priority.sort(key=lambda x: x[2])
@@ -1672,7 +1688,7 @@ def _find_upgrade_boxes(img: Image.Image) -> List[Tuple[int, int, int, int]]:
     bgr = arr[:, :, ::-1].copy()
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-    # The upgrade panel occupies roughly y=0.58–0.98 and x=0.15–1.0
+    # The upgrade panel occupies roughly y=0.58â€“0.98 and x=0.15â€“1.0
     y_top = int(h_img * 0.59)
     x_left = int(w_img * 0.05)
     panel = gray[y_top:, x_left:]
@@ -1706,23 +1722,23 @@ def _find_upgrade_boxes(img: Image.Image) -> List[Tuple[int, int, int, int]]:
     v_peaks = cluster_peaks([x for x, d in enumerate(v_density) if d > 0.35], gap=25)
 
     log = logging.getLogger(__name__)
-    log.debug(
+    log.trace(
         f"_find_upgrade_boxes: h_peaks={[p + y_top for p in h_peaks]}, "
         f"v_peaks={[p + x_left for p in v_peaks]}"
     )
 
     # Anchor v_peaks at both panel edges so that boxes are formed even when
     # the leftmost or rightmost border line is absent or faint.
-    # • Left edge (x=0 in panel coords): if the first detected peak is more
+    # â€¢ Left edge (x=0 in panel coords): if the first detected peak is more
     #   than 15 % of panel width from the left, the left column's outer
-    #   border is missing — prepend a synthetic anchor at x=0.
-    # • Right edge (x=pw): always append so the rightmost column closes.
+    #   border is missing â€” prepend a synthetic anchor at x=0.
+    # â€¢ Right edge (x=pw): always append so the rightmost column closes.
     if not v_peaks or v_peaks[0] > pw * 0.15:
         v_peaks = [0] + v_peaks
-        log.debug("_find_upgrade_boxes: prepended synthetic left-edge v_peak at x=0")
+        log.trace("_find_upgrade_boxes: prepended synthetic left-edge v_peak at x=0")
     if not v_peaks or v_peaks[-1] < pw * 0.85:
         v_peaks = v_peaks + [pw]
-        log.debug(f"_find_upgrade_boxes: appended synthetic right-edge v_peak at x={pw}")
+        log.trace(f"_find_upgrade_boxes: appended synthetic right-edge v_peak at x={pw}")
 
     # Build boxes from consecutive pairs of separator lines.
     # Append the panel bottom as a fallback "last separator" so that the
@@ -1761,17 +1777,17 @@ def _find_upgrade_boxes(img: Image.Image) -> List[Tuple[int, int, int, int]]:
     before = len(boxes)
     for box in boxes:
         x, y, w, h = box
-        log.debug(
+        log.trace(
             f"_find_upgrade_boxes: candidate box at (x={x}, y={y}, w={w}, h={h}) "
-            f"→ y_frac=[{y/h_img:.3f}, {(y+h)/h_img:.3f}] top okay if >= {_PANEL_Y_MIN}, bottom okay if <= {_PANEL_Y_MAX}"
+            f"â†’ y_frac=[{y/h_img:.3f}, {(y+h)/h_img:.3f}] top okay if >= {_PANEL_Y_MIN}, bottom okay if <= {_PANEL_Y_MAX}"
         )
     boxes = [
         (x, y, w, h) for x, y, w, h in boxes
         if y / h_img >= _PANEL_Y_MIN and (y + h/2) / h_img <= _PANEL_Y_MAX
     ]
-    log.debug(f"_find_upgrade_boxes: {len(boxes)} of {before} boxes after filtering partly-obscured boxes")
+    log.trace(f"_find_upgrade_boxes: {len(boxes)} of {before} boxes after filtering partly-obscured boxes")
     if len(boxes) < before:
-        log.debug(
+        log.trace(
             f"_find_upgrade_boxes: dropped {before - len(boxes)} partly-obscured "
             f"box(es) outside y_frac=[{_PANEL_Y_MIN},{_PANEL_Y_MAX}]"
         )
@@ -1785,22 +1801,22 @@ def classify_inner_box_state(
     fx_mid: float, fx_max: float,
     label: str = ""
 ) -> str:
-    """Classify inner-box border colour → 'max' | 'affordable' | 'unaffordable' | 'unknown'.
+    """Classify inner-box border colour â†’ 'max' | 'affordable' | 'unaffordable' | 'unknown'.
 
     Scans the entire right sub-panel region for pixels whose hue falls in the
     target ranges.  This is more robust than perimeter-strip sampling because:
-      • The outer white box border sits at the very edge of the region and would
-        dominate thin strips, but white pixels have S≈0 and are filtered out.
-      • The dark navy background (#212053) has H≈120 (S>80 so it passes a
+      â€¢ The outer white box border sits at the very edge of the region and would
+        dominate thin strips, but white pixels have Sâ‰ˆ0 and are filtered out.
+      â€¢ The dark navy background (#212053) has Hâ‰ˆ120 (S>80 so it passes a
         saturation-only filter), but H=120 is outside [90,115] so a hue-gated
         scan excludes it entirely.
-      • The coloured inner-box border (H≈100-104) is the *only* source of pixels
+      â€¢ The coloured inner-box border (Hâ‰ˆ100-104) is the *only* source of pixels
         in [90,115] with high saturation, regardless of how far it is inset.
 
     OpenCV HSV reference colours (H 0-180, S/V 0-255):
-      max (#73732a):          H≈30, S≈162, V≈115  → H in [20,45],  S>80
-      affordable (#0d78b1):   H≈100, S≈236, V≈177 → H in [90,115], S>80, V>135
-      unaffordable (#144b7e): H≈104, S≈214, V≈126 → H in [90,115], S>80, V≤135
+      max (#73732a):          Hâ‰ˆ30, Sâ‰ˆ162, Vâ‰ˆ115  â†’ H in [20,45],  S>80
+      affordable (#0d78b1):   Hâ‰ˆ100, Sâ‰ˆ236, Vâ‰ˆ177 â†’ H in [90,115], S>80, V>135
+      unaffordable (#144b7e): Hâ‰ˆ104, Sâ‰ˆ214, Vâ‰ˆ126 â†’ H in [90,115], S>80, Vâ‰¤135
     """
     if img is None:
         return 'unknown'
@@ -1816,7 +1832,7 @@ def classify_inner_box_state(
         if rh < 6 or rw < 6:
             return 'unknown'
 
-        # Convert entire region RGB → BGR → HSV
+        # Convert entire region RGB â†’ BGR â†’ HSV
         bgr = region[:, :, ::-1].reshape(-1, 1, 3).astype(np.uint8)
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).reshape(-1, 3)
         h_vals = hsv[:, 0]
@@ -1830,20 +1846,20 @@ def classify_inner_box_state(
         # Max state: olive/yellow-green border (H in [20,45])
         max_v = v_vals[sat & (h_vals >= 20) & (h_vals <= 45)]
         if len(max_v) >= 1000:
-            log.debug(f"classify_inner_box_state: {label} max ({len(max_v)} olive px)")
+            log.trace(f"classify_inner_box_state: {label} max ({len(max_v)} olive px)")
             return 'max'
 
         # Affordable/unaffordable: blue border (H in [90,115])
-        # Background #212053 has H≈120 → excluded by this hue gate
+        # Background #212053 has Hâ‰ˆ120 â†’ excluded by this hue gate
         blue_v = v_vals[sat & (h_vals >= 90) & (h_vals <= 115)]
         if len(blue_v) < 10:
             return 'unknown'
 
         med_v = int(np.median(blue_v))
         result = 'affordable' if med_v > 95 else 'unaffordable'
-        log.debug(
+        log.trace(
             f"label {label} classify_inner_box_state: med_v={med_v} "
-            f"(from {len(blue_v)} blue px) → {result}"
+            f"(from {len(blue_v)} blue px) â†’ {result}"
         )
         return result
     except Exception:
@@ -1866,7 +1882,7 @@ def _ocr_box_purchase_count(img: Image.Image, box_x: int, box_y: int,
         arr = image_to_bgr_array(img)
         h_arr, w_arr = arr.shape[:2]
 
-        # Top-right ~25 % width × ~35 % height of the box.
+        # Top-right ~25 % width Ã— ~35 % height of the box.
         # x_frac=0.75 keeps the crop narrow so that the "x" prefix and digits
         # fit on one line without neighbouring text.  h_frac=0.35 is tall
         # enough to capture the xNNN count even when it sits lower in the box.
@@ -1949,7 +1965,7 @@ def _ocr_box_label(img: Image.Image, box_x: int, box_y: int,
 
 def _ocr_box_cost(img: Image.Image, box_x: int, box_y: int,
                   box_w: int, box_h: int, config: Config) -> Optional[str]:
-    """Run targeted OCR on the cost-button area (right ~55 % × lower ~45 %) of a box.
+    """Run targeted OCR on the cost-button area (right ~55 % Ã— lower ~45 %) of a box.
 
     The cost button sits in the lower-right of each upgrade box. On dark
     backgrounds the text (e.g. "$7.86B" or "Max") is light-on-dark and can be
@@ -2011,7 +2027,7 @@ def _ocr_box_value(img: Image.Image, box_x: int, box_y: int,
     The current stat value (e.g. "2.65T", "95.90%", "107.30B/sec") lives
     inside a bordered sub-widget in the upper-right of each upgrade box.
     Strategy:
-    1. Crop the right ~60 % × full height of the box.
+    1. Crop the right ~60 % Ã— full height of the box.
     2. Detect the golden/orange inner-border sub-widget by HSV masking.
        If found, crop to just the upper ~55 % of its interior (skipping the
        cost/Max button that lives in the lower half of the same sub-widget).
@@ -2032,7 +2048,7 @@ def _ocr_box_value(img: Image.Image, box_x: int, box_y: int,
         if full_roi.size == 0:
             return None
 
-        # ── Step 1: find the golden/orange inner sub-widget border ─────────
+        # â”€â”€ Step 1: find the golden/orange inner sub-widget border â”€â”€â”€â”€â”€â”€â”€â”€â”€
         hsv = cv2.cvtColor(full_roi, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(
             hsv,
@@ -2067,10 +2083,10 @@ def _ocr_box_value(img: Image.Image, box_x: int, box_y: int,
         _, thresh = cv2.threshold(upscaled, 0, 255,
                                    cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-        # ── Step 2: Prepare black-on-white image for Tesseract ─────────────
+        # â”€â”€ Step 2: Prepare black-on-white image for Tesseract â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if gray.mean() > 120:
             # Bright background with dark text: OTSU already gives
-            # white background + black text — no inversion needed.
+            # white background + black text â€” no inversion needed.
             padded = cv2.copyMakeBorder(thresh, 20, 20, 20, 20,
                                         cv2.BORDER_CONSTANT, value=255)
         else:
@@ -2204,14 +2220,14 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
     2. For each box, collect the OCR results from ``frame.results`` that fall
        within its pixel bounds.
     3. Split the box into sub-regions and classify results:
-       - Left ~45 %      → label (upgrade name)
-       - Right-upper     → current stat value / upgrade level
-       - Right-lower     → cost button ("Max" or "$NNN.NNX")
-       - Top-right corner → purchase count ("xNNN", small text)
+       - Left ~45 %      â†’ label (upgrade name)
+       - Right-upper     â†’ current stat value / upgrade level
+       - Right-lower     â†’ cost button ("Max" or "$NNN.NNX")
+       - Top-right corner â†’ purchase count ("xNNN", small text)
     4. Match the label against the known upgrade list; fall back to targeted
        Tesseract OCR for any field that the global pass missed.
 
-    Returns a dict mapping label → ``UpgradeInfo``.  Every detected box is
+    Returns a dict mapping label â†’ ``UpgradeInfo``.  Every detected box is
     logged at INFO level with all four fields::
 
         Upgrade box 'Health': level=2650000000000.0, cost=MAX, x_count=1
@@ -2226,9 +2242,9 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
 
     img_w, img_h = img.size
 
-    # ── Step 1: Locate the white-bordered boxes ────────────────────────────
+    # â”€â”€ Step 1: Locate the white-bordered boxes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     boxes_px = _find_upgrade_boxes(img)
-    log.debug(f"detect_upgrade_buttons: found {len(boxes_px)} candidate boxes")
+    log.trace(f"detect_upgrade_buttons: found {len(boxes_px)} candidate boxes")
 
     # save out a debug image with the box corners marked in yellow
     debug_img = img.copy()
@@ -2244,7 +2260,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
         )
         return upgrades
 
-    # ── Step 2: Process each box ────────────────────────────────────────────
+    # â”€â”€ Step 2: Process each box â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for box_x, box_y, box_w, box_h in boxes_px:
         fx_min = box_x / img_w
         fx_max = (box_x + box_w) / img_w
@@ -2261,21 +2277,21 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
             r for r in frame.results
             if fx_min <= r.fx <= fx_max and fy_min <= r.fy <= fy_max
         ]
-        # ── Label (left portion of box) ────────────────────────────────────
+        # â”€â”€ Label (left portion of box) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         label_texts = [
             r.text.strip() for r in box_results
             if r.fx < fx_mid and len(r.text.strip()) >= 2
         ]
         label = _match_upgrade_label(label_texts)
 
-        # ── Current value (upper-right portion) ────────────────────────────
+        # â”€â”€ Current value (upper-right portion) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         value_texts = [
             r.text.strip() for r in box_results
             if r.fx >= fx_mid and r.fy < fy_mid
         ]
         current_value = _parse_upgrade_value(value_texts)
 
-        # ── Cost (lower-right / button portion) ────────────────────────────
+        # â”€â”€ Cost (lower-right / button portion) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Use 50% (not 55%) as the vertical divider so that Max-button OCR results
         # that land just above the midpoint are still captured as cost texts.
         fy_cost_mid = fy_min + (fy_max - fy_min) * 0.50
@@ -2285,12 +2301,12 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
         ]
         is_max, cost_value = _parse_upgrade_cost(cost_texts)
 
-        # Color-based MAX check (dark-red button → MAX even if text was missed)
+        # Color-based MAX check (dark-red button â†’ MAX even if text was missed)
         if not is_max and is_button_red(img, fy_center, fx_min, fx_max):
             is_max = True
             cost_value = None
 
-        # Inner-box border colour → affordability state
+        # Inner-box border colour â†’ affordability state
         _box_state = classify_inner_box_state(img, fy_min, fy_max, fx_mid, fx_max, label)
         if _box_state == 'max' and not is_max:
             is_max = True       # olive border = additional MAX fallback
@@ -2304,25 +2320,25 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
         else:
             is_affordable = None
 
-        # ── Purchase count (xNNN to right of box)
+        # â”€â”€ Purchase count (xNNN to right of box)
         purchase_count = None
         for r in box_results:            
             m = re.match(r'^x(\d+)$', r.text.strip(), re.IGNORECASE)
 
             if m and r.fx > 0.5:
-                log.info(f'purhcase count match: "{r.text.strip()}" at fx={r.fx:.3f}, fy={r.fy:.3f}')
+                log.trace(f'purhcase count match: "{r.text.strip()}" at fx={r.fx:.3f}, fy={r.fy:.3f}')
                 n = int(m.group(1))
                 if n > 1:
                     purchase_count = n
                     break
 
-        # ── Targeted OCR fallbacks ─────────────────────────────────────────
+        # â”€â”€ Targeted OCR fallbacks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if config is not None:
             # Label fallback: if global OCR missed the label text (common for
             # white-on-dark labels like "Damage"), run Tesseract on the label
             # region and try matching again.
             # Also retry when the matched label is already claimed by another
-            # box in this frame — two buttons can share most of their words
+            # box in this frame â€” two buttons can share most of their words
             # (e.g. "Enemy Attack Level Skip" vs "Enemy Health Level Skip") and
             # OCR dropping one distinguishing word forces both to resolve to the
             # same label.
@@ -2337,13 +2353,13 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
                     recovered = _match_upgrade_label(words, exclude=exclude_set)
                     if recovered:
                         if already_taken:
-                            log.info(
-                                f"Label collision on '{label}' — targeted OCR resolved "
+                            log.trace(
+                                f"Label collision on '{label}' â€” targeted OCR resolved "
                                 f"duplicate box as '{recovered}' (OCR: {ocr_text!r})"
                             )
                         else:
-                            log.debug(
-                                f"Recovered label via targeted OCR: {ocr_text!r} → '{recovered}'"
+                            log.trace(
+                                f"Recovered label via targeted OCR: {ocr_text!r} â†’ '{recovered}'"
                             )
                         label = recovered
 
@@ -2353,9 +2369,9 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
                     recovered = _parse_upgrade_value([ocr_text])
                     if recovered is not None:
                         current_value = recovered
-                        log.debug(
+                        log.trace(
                             f"Recovered value for '{label}' via targeted OCR: "
-                            f"'{ocr_text}' → {current_value}"
+                            f"'{ocr_text}' â†’ {current_value}"
                         )
 
             if not is_max and cost_value is None and label is not None:
@@ -2363,13 +2379,13 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
                 if ocr_text:
                     # Use _parse_upgrade_cost so that OCR misreads of "Max"
                     # (e.g. "[tax |", "(ME", "oe") are caught by its second pass
-                    # (short non-digit/non-$ strings → Max), not just exact "max".
+                    # (short non-digit/non-$ strings â†’ Max), not just exact "max".
                     targeted_is_max, _ = _parse_upgrade_cost([ocr_text])
                     if targeted_is_max:
                         is_max = True
                         cost_value = None
                         is_affordable = None   # MAX overrides any earlier affordability guess
-                        log.debug(
+                        log.trace(
                             f"Recovered MAX for '{label}' via targeted OCR: '{ocr_text}'"
                         )
                     else:
@@ -2381,26 +2397,26 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
                             parsed = parse_number_with_suffix(cost_m.group(1).strip())
                             if parsed is not None:
                                 cost_value = parsed
-                                log.debug(
+                                log.trace(
                                     f"Recovered cost for '{label}' via targeted OCR: "
-                                    f"'{ocr_text}' → {parsed}"
+                                    f"'{ocr_text}' â†’ {parsed}"
                                 )
 
             if purchase_count is None:
                 count = _ocr_box_purchase_count(img, box_x, box_y, box_w, box_h, config)
                 if count is not None:
                     purchase_count = count
-                    log.debug(f"Recovered purchase count x{count} via targeted OCR")
+                    log.trace(f"Recovered purchase count x{count} via targeted OCR")
 
-        # ── Skip boxes with no matched label ───────────────────────────────
+        # â”€â”€ Skip boxes with no matched label â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if label is None:
-            log.debug(
+            log.trace(
                 f"Box ({box_x},{box_y},{box_w},{box_h}): no known label matched "
                 f"from texts {label_texts!r}"
             )
             continue
 
-        # ── Assemble UpgradeInfo ────────────────────────────────────────────
+        # â”€â”€ Assemble UpgradeInfo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         cell_color = get_cell_color(img, fy_center, fx_min, fx_max)
         label_r = next(
             (r for r in box_results
@@ -2424,7 +2440,7 @@ def detect_upgrade_buttons(frame: OCRFrame, img: Optional[Image.Image] = None,
         }
         upgrades[label] = info
 
-        log.debug(
+        log.trace(
             f"Upgrade box '{label}': "
             f"level={current_value!r}, "
             f"cost={'MAX' if is_max else repr(cost_value)}, "
@@ -2508,7 +2524,7 @@ def detect_floating_gem(
     template rotations in 10-degree steps.
 
     Returns (x, y, angle_from_north_deg) where *angle_from_north_deg* is the
-    clockwise angle of the vector (orbit_centre → gem) measured from straight
+    clockwise angle of the vector (orbit_centre â†’ gem) measured from straight
     up (0 = gem directly above centre, 90 = gem to the right, etc.).  Returns
     None when no gem is found above the confidence threshold.
     """
@@ -2554,15 +2570,15 @@ def detect_floating_gem(
                 best_val = max_val
                 best_match_cx = sx1 + max_loc[0] + tw // 2
                 best_match_cy = sy1 + max_loc[1] + th // 2
-        log.info(f'Floating gem detection: best_val={best_val:.3f} at ({best_match_cx}, {best_match_cy})')
+        log.trace(f'Floating gem detection: best_val={best_val:.3f} at ({best_match_cx}, {best_match_cy})')
         if best_val >= threshold and best_match_cx is not None:
             dx = best_match_cx - cx
             dy = best_match_cy - cy
-            # Clockwise angle from north: 0° = above centre, 90° = right, etc.
+            # Clockwise angle from north: 0Â° = above centre, 90Â° = right, etc.
             angle_from_north = math.degrees(math.atan2(dx, -dy))
-            log.info(
+            log.trace(
                 f"Floating gem at ({best_match_cx}, {best_match_cy}) "
-                f"angle={angle_from_north:.1f}° confidence={best_val:.3f}"
+                f"angle={angle_from_north:.1f}Â° confidence={best_val:.3f}"
             )
             return (int(best_match_cx), int(best_match_cy), angle_from_north)
 
@@ -2615,7 +2631,7 @@ def process_claim_button(img: Optional[Image.Image], claim_template: Optional[np
                 max_loc[0] + x_start + claim_template.shape[1] // 2,
                 max_loc[1] + y_start + claim_template.shape[0] // 2,
             )
-            log.info(f"CLAIM button detected at {claim_pos} with confidence {max_val:.2f}")
+            log.trace(f"CLAIM button detected at {claim_pos} with confidence {max_val:.2f}")
             # Add cooldown to avoid clicking too frequently
             last_claim_time = get_last_action_time(ctx.game_state, ActionType.CLICK)
             if time.time() - last_claim_time > 2.0:
@@ -2623,7 +2639,7 @@ def process_claim_button(img: Optional[Image.Image], claim_template: Optional[np
                 do_click('Clicking claim button', claim_pos[0]/img.width, claim_pos[1]/img.height)
 
     except Exception as e:
-        log.debug(f"CLAIM button detection failed: {e}")
+        log.trace(f"CLAIM button detection failed: {e}")
 
 
 def process_battle_button(img: Optional[Image.Image]) -> None:
@@ -2681,20 +2697,20 @@ def detect_template_in_region(
 
         result = cv2.matchTemplate(search_region, template, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
-        log.info('%s template check: max_val=%.3f at location %s', label, max_val, max_loc)
+        log.trace('%s template check: max_val=%.3f at location %s', label, max_val, max_loc)
         if max_val >= threshold:
             match_x = max_loc[0] + x_start + template.shape[1] // 2
             match_y = max_loc[1] + y_start + template.shape[0] // 2
             fx, fy = match_x / w, match_y / h
             # Image is always content-only (cropped at capture time), so
             # fx/fy are already in the content-only coordinate frame.
-            log.info(f"{label} detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f}")
+            log.trace(f"{label} detected at ({fx:.4f}, {fy:.4f}) with confidence {max_val:.2f}")
             return (fx, fy)
 
         return None
 
     except Exception as e:
-        log.debug(f"{label} detection failed: {e}")
+        log.trace(f"{label} detection failed: {e}")
         return None
 
 
@@ -2711,7 +2727,7 @@ def update_tier_from_frame(frame: OCRFrame) -> None:
 
     tier_num: Optional[int] = None
 
-    # Common OCR letter→digit substitutions (e.g. 5→S, 0→O, 1→I/l)
+    # Common OCR letterâ†’digit substitutions (e.g. 5â†’S, 0â†’O, 1â†’I/l)
     _OCR_DIGIT_MAP = str.maketrans('SOILBZG', '5011826')
 
     for r in frame.results:
@@ -2758,7 +2774,7 @@ def find_claimable_buttons(state: GameState) -> List[UIElement]:
     # Log all buttons found for debugging
     all_buttons = [elem for elem in state.current_screen.elements if elem.element_type == "button"]
     if all_buttons:
-        log.debug(f"Found {len(all_buttons)} buttons: {[b.text for b in all_buttons]}")
+        log.trace(f"Found {len(all_buttons)} buttons: {[b.text for b in all_buttons]}")
     
     for elem in state.current_screen.elements:
         if elem.element_type == "button":
@@ -2766,10 +2782,10 @@ def find_claimable_buttons(state: GameState) -> List[UIElement]:
             # Match claim, collect, gather, etc.
             if any(word in text_lower for word in ["claim", "collect", "gather"]):
                 claimable.append(elem)
-                log.info('Claimable button found: "%s" at (%d, %d)', elem.text, elem.center[0], elem.center[1])
+                log.trace('Claimable button found: "%s" at (%d, %d)', elem.text, elem.center[0], elem.center[1])
     
     if not claimable and all_buttons:
-        log.debug('No claimable buttons found among: %s', [b.text for b in all_buttons])
+        log.trace('No claimable buttons found among: %s', [b.text for b in all_buttons])
     
 
 
@@ -2792,12 +2808,12 @@ UPGRADE_TAB_CLICK = {
 
 
 # Default row-to-row spacing as a fraction of image height (derived from
-# UPGRADE_BUTTON_ROWS centre y values: 0.69, 0.80, 0.90 → mean gap ≈ 0.105).
+# UPGRADE_BUTTON_ROWS centre y values: 0.69, 0.80, 0.90 â†’ mean gap â‰ˆ 0.105).
 _UPGRADE_ROW_HEIGHT_FRAC: float = 0.105
 
 # Sentinel tuple returned by _compute_upgrade_scroll_vector when the target
 # row is already within the visible viewport.  Callers must NOT scroll when
-# they receive this value — the label is present but OCR failed to match it.
+# they receive this value â€” the label is present but OCR failed to match it.
 _UPGRADE_SCROLL_IN_VIEWPORT: Tuple[str, int] = ('in_viewport', 0)
 
 # Number of upgrade rows simultaneously visible in the scroll viewport.
@@ -2828,7 +2844,7 @@ def _upgrade_row_index(category: str, label: str) -> Optional[int]:
     """Return the 0-based row index for *label* within its *category*.
 
     The upgrade list stores items left-to-right, row-by-row (2 columns per
-    row), so list index 0,1 → row 0; index 2,3 → row 1; etc.
+    row), so list index 0,1 â†’ row 0; index 2,3 â†’ row 1; etc.
     """
     upgrades = _get_category_upgrades_list(category)
     for i, name in enumerate(upgrades):
@@ -2935,26 +2951,26 @@ def _compute_upgrade_scroll_vector(
     # rather than centering it.  This avoids overshooting when the target is
     # only 1 row outside the visible window.
     #
-    # Bottom-edge note: the panel's lower clipping boundary (y_frac≈0.9464)
+    # Bottom-edge note: the panel's lower clipping boundary (y_fracâ‰ˆ0.9464)
     # partially obscures the very last visible row when it is at position
     # VISIBLE_ROWS-1 (the bottom slot of the 3-row window).  To keep the
     # target away from that edge, we scroll down whenever the target is at
-    # the bottom slot OR below — placing it at position VISIBLE_ROWS-2
+    # the bottom slot OR below â€” placing it at position VISIBLE_ROWS-2
     # (second from bottom) instead.
     if target_row < visible_top:
-        # Target is above the window — scroll up to align target at top
+        # Target is above the window â€” scroll up to align target at top
         row_delta = target_row - visible_top  # negative
     elif target_row >= visible_top + _UPGRADE_VISIBLE_ROWS - 1:
-        # Target is at the bottom slot or below — scroll down so target lands
+        # Target is at the bottom slot or below â€” scroll down so target lands
         # at second-from-bottom (VISIBLE_ROWS-2) to avoid bottom clipping.
         row_delta = target_row - (visible_top + _UPGRADE_VISIBLE_ROWS - 2)  # positive
     else:
         row_delta = 0
 
     if row_delta == 0:
-        log.info(
+        log.trace(
             f"Target row {target_row} is within viewport (visible_top={visible_top}, "
-            f"rows {visible_top}–{visible_top + _UPGRADE_VISIBLE_ROWS - 1} visible) — "
+            f"rows {visible_top}â€“{visible_top + _UPGRADE_VISIBLE_ROWS - 1} visible) â€” "
             f"'{want_label}' not detected by OCR this tick"
         )
         return _UPGRADE_SCROLL_IN_VIEWPORT
@@ -2974,10 +2990,10 @@ def _compute_upgrade_scroll_vector(
     pixel_distance = int(abs(capped_delta) * row_height_px)
 
     direction = 'down' if capped_delta > 0 else 'up'
-    log.info(
+    log.trace(
         f"Scroll vector: target_row={target_row}, visible_top={visible_top}, "
         f"desired_top={desired_top}, delta={row_delta} rows (capped={capped_delta}), "
-        f"row_height={row_height_px:.0f}px → {direction} {pixel_distance}px"
+        f"row_height={row_height_px:.0f}px â†’ {direction} {pixel_distance}px"
     )
     return (direction, pixel_distance)
 
@@ -2990,7 +3006,7 @@ def _do_upgrade_jump_scroll(direction: str, pixels: int,
     if not ctx.window_rect:
         return
     scroll_x, scroll_y = _content_frac_to_window_px(0.4873, 0.8325)
-    log.info(f"Jump scroll {direction} by {pixels}px — {message}")
+    log.info(f"Jump scroll {direction} by {pixels}px â€” {message}")
     execute_swipe(scroll_x, scroll_y, pixels, direction,
                   ctx.window_rect, ctx.config, ctx.input_enabled)
 
@@ -3024,7 +3040,7 @@ def _reopen_upgrade_panel(category: str) -> None:
     log = logging.getLogger(__name__)
     if category in _UPGRADE_PANEL_REOPEN_COORDS:
         fx, fy = _UPGRADE_PANEL_REOPEN_COORDS[category]
-        log.info(f"Upgrade panel collapsed — clicking to reopen for {category} at ({fx}, {fy})")
+        log.info(f"Upgrade panel collapsed â€” clicking to reopen for {category} at ({fx}, {fy})")
         do_click(f"Reopening collapsed upgrade panel for {category}", fx, fy)
 
 
@@ -3069,7 +3085,7 @@ def _advance_upgrade_state(from_label: str = "", reason: str = "") -> None:
     ctx.upgrade_scroll_start = 0.0
     ctx.upgrade_scroll_direction = 'down'
     prio = _active_upgrade_priority()
-    to_label = prio[ctx.upgrade_state][1] if ctx.upgrade_state < len(prio) else "—"
+    to_label = prio[ctx.upgrade_state][1] if ctx.upgrade_state < len(prio) else "â€”"
     if ctx.upgrade_state < len(prio):
         log.info(f"Advanced to upgrade state {ctx.upgrade_state}: "
                  f"'{to_label}'")
@@ -3114,11 +3130,11 @@ def handle_upgrade_action(seen_page: Optional[str],
     Steps:
       1. Ensure the correct upgrade sub-tab (ATTACK/DEFENSE/UTILITY) is open.
       2. Look for the target upgrade label among visible buttons.
-         - Not found → compute jump-scroll from known list position.
-         - After 15 min of failed jumps → fall back to slow sequential scroll.
-         - Found, cost is None (MAX) → advance to next priority item.
-         - Found, cost exceeds threshold → advance to next priority item.
-         - Found, affordable → click to purchase.
+         - Not found â†’ compute jump-scroll from known list position.
+         - After 15 min of failed jumps â†’ fall back to slow sequential scroll.
+         - Found, cost is None (MAX) â†’ advance to next priority item.
+         - Found, cost exceeds threshold â†’ advance to next priority item.
+         - Found, affordable â†’ click to purchase.
     """
     global ctx
     log = logging.getLogger(__name__)
@@ -3138,7 +3154,7 @@ def handle_upgrade_action(seen_page: Optional[str],
         return
 
     want_page, want_label, cost_threshold = prio[ctx.upgrade_state]
-    log.info(f"Upgrade state {ctx.upgrade_state}: targeting '{want_label}' on {want_page} tab "
+    log.trace(f"Upgrade state {ctx.upgrade_state}: targeting '{want_label}' on {want_page} tab "
              f"(threshold={cost_threshold})")
 
     if seen_page is None:
@@ -3157,15 +3173,15 @@ def handle_upgrade_action(seen_page: Optional[str],
             best_cat = max(votes, key=lambda c: votes[c])
             if votes[best_cat] > 0:
                 seen_page = best_cat
-                log.info(
-                    f"Tab header not detected by OCR — inferred '{seen_page}' "
+                log.trace(
+                    f"Tab header not detected by OCR â€” inferred '{seen_page}' "
                     f"from {votes[best_cat]} matching button label(s)"
                 )
             else:
-                log.info("No upgrade tab visible and buttons don't match any category - skipping")
+                log.trace("No upgrade tab visible and buttons don't match any category - skipping")
                 return
         else:
-            log.info("No upgrade tab visible - skipping upgrade action this tick")
+            log.trace("No upgrade tab visible - skipping upgrade action this tick")
             return
 
     if seen_page != want_page:
@@ -3182,18 +3198,18 @@ def handle_upgrade_action(seen_page: Optional[str],
             break
 
     if target_info is None:
-        # Not visible — try to jump-scroll based on list-position calculation
+        # Not visible â€” try to jump-scroll based on list-position calculation
         if ctx.upgrade_scroll_attempt_start == 0.0:
             ctx.upgrade_scroll_attempt_start = now
         attempt_elapsed = now - ctx.upgrade_scroll_attempt_start
 
         if attempt_elapsed > _UPGRADE_JUMP_FALLBACK_SECS:
-            # ── Fallback: slow sequential scrolling after 15 min ──────────
+            # â”€â”€ Fallback: slow sequential scrolling after 15 min â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if ctx.upgrade_scroll_start == 0.0:
                 ctx.upgrade_scroll_start = now
                 ctx.upgrade_scroll_direction = 'down'
-                log.info(f"'{want_label}' jump-scroll failed for {attempt_elapsed:.0f}s "
-                         f"— falling back to slow scroll {ctx.upgrade_scroll_direction}")
+                log.trace(f"'{want_label}' jump-scroll failed for {attempt_elapsed:.0f}s "
+                         f"â€” falling back to slow scroll {ctx.upgrade_scroll_direction}")
             scroll_elapsed = now - ctx.upgrade_scroll_start
             if scroll_elapsed > ctx.config.upgrade_scroll_timeout:
                 ctx.upgrade_scroll_direction = (
@@ -3207,15 +3223,15 @@ def handle_upgrade_action(seen_page: Optional[str],
                 f'elapsed {scroll_elapsed:.1f}s'
             )
         else:
-            # ── Primary: computed jump-scroll ──────────────────────────────
+            # â”€â”€ Primary: computed jump-scroll â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             scroll_result = _compute_upgrade_scroll_vector(
                 want_page, want_label, upgrade_buttons, h
             )
             if scroll_result is _UPGRADE_SCROLL_IN_VIEWPORT:
                 # Target row is in viewport but OCR didn't match the label
-                # this tick — do nothing and let the next tick retry OCR.
-                log.info(
-                    f"'{want_label}' is in viewport but OCR missed it — "
+                # this tick â€” do nothing and let the next tick retry OCR.
+                log.trace(
+                    f"'{want_label}' is in viewport but OCR missed it â€” "
                     f"waiting for next tick"
                 )
             elif scroll_result is not None:
@@ -3226,7 +3242,7 @@ def handle_upgrade_action(seen_page: Optional[str],
                 )
             else:
                 # Cannot determine scroll position (no visible labels from
-                # this category) — do a small blind scroll down
+                # this category) â€” do a small blind scroll down
                 _do_upgrade_scroll(
                     'down', w, h,
                     f"blind scroll for '{want_label}' (no position reference)"
@@ -3234,7 +3250,7 @@ def handle_upgrade_action(seen_page: Optional[str],
         ctx.last_upgrade_action = now
         return
 
-    # Found — reset scroll tracking
+    # Found â€” reset scroll tracking
     ctx.upgrade_scroll_attempt_start = 0.0
     ctx.upgrade_scroll_start = 0.0
 
@@ -3250,10 +3266,10 @@ def handle_upgrade_action(seen_page: Optional[str],
         cost = target_info['cost']
         if cost_threshold is not None and cost is not None and cost > cost_threshold:
             reason = f"unaffordable {cost} and cost exceeds threshold {cost_threshold}"
-            log.info(f"'{want_label}' unaffordable (cost={cost}) > threshold {cost_threshold} - advancing")
+            log.trace(f"'{want_label}' unaffordable (cost={cost}) > threshold {cost_threshold} - advancing")
             _advance_upgrade_state(from_label=want_label, reason=reason)
         else:
-            log.info(f"'{want_label}' unaffordable (cost={cost}) - skipping tick")
+            log.trace(f"'{want_label}' unaffordable (cost={cost}) - skipping tick")
         ctx.last_upgrade_action = now
         return
 
@@ -3345,7 +3361,7 @@ def cleanup_old_click_debug_files(config: Config, keep_count: int = 20, max_age_
         for f in to_delete:
             f.unlink()
         if to_delete:
-            log.debug(f"Cleaned up {len(to_delete)} old click_debug files (>{max_age_hours}h)")
+            log.trace(f"Cleaned up {len(to_delete)} old click_debug files (>{max_age_hours}h)")
     except Exception as e:
         log.warning(f"Failed to cleanup old click_debug files: {e}")
 
@@ -3406,7 +3422,7 @@ class RuntimeContext:
     upgrades_finished_time: Optional[int] = None
     ocr_time: float = 0.0
     upgrade_mode_seen: str = None
-    upgrade_seen: dict = field(default_factory=dict)  # label → {timestamp, current_value, cost, is_max, crop_b64, …}
+    upgrade_seen: dict = field(default_factory=dict)  # label â†’ {timestamp, current_value, cost, is_max, crop_b64, â€¦}
     upgrade_button_history: list = field(default_factory=list)  # List of last 5000 button states (dicts)
     # Watchdog state
     last_bs_restart: float = 0.0      # timestamp of last BlueStacks launch attempt
@@ -3417,7 +3433,7 @@ class RuntimeContext:
     rate_history: list = field(default_factory=list)  # [{t, cash_pm, coin_pm}] for timeline chart
     _cash_samples: list = field(default_factory=list)  # raw (timestamp, value) for cash rate
     _coin_samples: list = field(default_factory=list)  # raw (timestamp, value) for coin rate
-    _hud_toggle_pending: dict = field(default_factory=dict)  # key → consecutive ticks where /min not seen but toggle wanted
+    _hud_toggle_pending: dict = field(default_factory=dict)  # key â†’ consecutive ticks where /min not seen but toggle wanted
     _latest_capture: Any = None  # (img, img_capture_time) tuple written by capture thread; read by OCR tick
     video_recorder: Any = None  # VideoRecorder instance (set after ctx creation)
     idle: bool = False  # set by automation loop; used by capture loop for fps throttle
@@ -3427,7 +3443,7 @@ class RuntimeContext:
         if time.time() - self.last_window_check > 2.0:
             self.window_rect = find_window(self.config.window_title)
             log = logging.getLogger(__name__)
-            log.debug('Window check: %s', self.window_rect)
+            log.trace('Window check: %s', self.window_rect)
             self.last_window_check = time.time()
 
 def mark_battle_start():
@@ -3447,7 +3463,7 @@ def click_if_present(name, condition, callback=None):
     global ctx
     log = logging.getLogger(__name__)
     marks = [r for r in ctx.frame.results if condition(r)]
-    log.debug(f'Marks found for condition "{name}"   : {marks}')
+    log.trace(f'Marks found for condition "{name}"   : {marks}')
     if marks:
         log.info(f"Condition met for '{marks[0].text}' at ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking!")
         do_click(name, marks[0].fx, marks[0].fy)
@@ -3455,7 +3471,7 @@ def click_if_present(name, condition, callback=None):
             callback()
             return True
     else:
-        log.info(f'No matches for condition "{name}"')
+        log.trace(f'No matches for condition "{name}"')
         return False
 
 def capture_loop_tick() -> None:
@@ -3465,22 +3481,22 @@ def capture_loop_tick() -> None:
 
     ctx.update_window()
     if not ctx.window_rect:
-        log.debug("Capture tick: window not found")
+        log.trace("Capture tick: window not found")
         ctx.status = "no_window"
         return
 
-    log.debug("Capture tick: %dx%d at (%d,%d)",
+    log.trace("Capture tick: %dx%d at (%d,%d)",
               ctx.window_rect.width, ctx.window_rect.height,
               ctx.window_rect.left, ctx.window_rect.top)
     raw_img = capture_window(ctx.window_rect)
     if not raw_img:
-        log.debug("Capture tick: capture_window returned None")
+        log.trace("Capture tick: capture_window returned None")
         return
     img_capture_time = time.time()
 
     img, had_strip = crop_ad_strip(raw_img)
     if had_strip:
-        log.debug('Capture tick: ad strip cropped %dx%d → %dx%d',
+        log.trace('Capture tick: ad strip cropped %dx%d â†’ %dx%d',
                   raw_img.width, raw_img.height, img.width, img.height)
 
     # Store for the OCR thread (single-attribute assignment is atomic under the GIL)
@@ -3505,7 +3521,7 @@ def capture_loop_tick() -> None:
             ctx.video_recorder.update_label(("_" + "_".join(_label_parts)) if _label_parts else "")
             ctx.video_recorder.push_frame(img, img_capture_time)
         except Exception as e:
-            log.debug("Capture tick: video recorder error: %s", e)
+            log.trace("Capture tick: video recorder error: %s", e)
 
 
 def capture_loop_run(ctx: RuntimeContext) -> None:
@@ -3519,8 +3535,8 @@ def capture_loop_run(ctx: RuntimeContext) -> None:
                 # Video wants frames; use the configured idle capture fps.
                 fps = ctx.config.idle_capture_fps
             else:
-                # Nothing consumes frames between OCR ticks — match the OCR
-                # cadence so we capture once per idle interval, not 18× between.
+                # Nothing consumes frames between OCR ticks â€” match the OCR
+                # cadence so we capture once per idle interval, not 18Ã— between.
                 fps = 1.0 / max(ctx.config.idle_interval, 10.0)
         else:
             fps = ctx.config.capture_fps
@@ -3529,7 +3545,7 @@ def capture_loop_run(ctx: RuntimeContext) -> None:
         try:
             capture_loop_tick()
         except Exception as exc:
-            log.debug("Capture loop error: %s", exc)
+            log.trace("Capture loop error: %s", exc)
         elapsed = time.time() - t0
         time.sleep(max(0.0, interval - elapsed))
 
@@ -3544,7 +3560,7 @@ def do_ocr():
 
     capture = getattr(ctx, '_latest_capture', None)
     if capture is None:
-        log.debug("do_ocr: no frame available yet")
+        log.trace("do_ocr: no frame available yet")
         return None
     img, img_capture_time = capture
 
@@ -3615,11 +3631,11 @@ def _priority_click(frame, filter_fn, log_message, reason, wait_time):
     if marks:
         log.info(f"{log_message} ({marks[0].fx:.4f}, {marks[0].fy:.4f}) - clicking and exiting tick at ({marks[0].center[0]}, {marks[0].center[1]})")
         do_click(reason, marks[0].fx, marks[0].fy)
-        log.info(f'waiting {wait_time} seconds for progress')
+        log.trace(f'waiting {wait_time} seconds for progress')
         time.sleep(wait_time)
         return True
     else:
-        log.info(f'no matches for {reason}, skipping that check')
+        log.trace(f'no matches for {reason}, skipping that check')
     return False
 
 # PRIORITY: Check for template-matched buttons ("My games" and "RESUME BATTLE")
@@ -3633,7 +3649,7 @@ def check_template_and_click(img, template, label, region, threshold, click_reas
             do_click(click_reason, pos[0], pos[1])
             return True
     else:
-        log.info(f'no {label.lower()} template loaded, skipping that check')
+        log.trace(f'no {label.lower()} template loaded, skipping that check')
     return False
 
 def check_cloud_grab_warning(frame) -> bool:
@@ -3647,7 +3663,7 @@ def check_cloud_grab_warning(frame) -> bool:
         return False
     warning_marks = [r for r in frame.results if r.text.lower() == "warning" and r.is_near(0.3835, 0.261, 0.15)]
     yes_marks = [r for r in frame.results if r.text.lower() == "yes" and r.is_near(0.3683, 0.541, 0.05)]
-    log.info(f'Cloud grab warning check: found {len(warning_marks)} warning marks and {len(yes_marks)} yes marks')
+    log.trace(f'Cloud grab warning check: found {len(warning_marks)} warning marks and {len(yes_marks)} yes marks')
     if warning_marks and yes_marks:
         log.info(f"PRIORITY: Cloud grab warning detected - clicking Yes at ({yes_marks[0].fx:.4f}, {yes_marks[0].fy:.4f})")
         do_click("Cloud grab warning Yes button", 0.6708, 0.71)
@@ -3670,13 +3686,13 @@ def automation_loop_tick():
     ctx.frame = frame
     update_tier_from_frame(frame)
 
-    log.info(f'{[r for r in frame.results if r.text == "TOURNAMENT"]}')
+    log.trace(f'{[r for r in frame.results if r.text == "TOURNAMENT"]}' )
     # PRIORITY: Check for "TOURNAMENT" at (0.353, 0.196) and exit killed by screen
     tournament_detected = any(
         r.text.strip().upper() == "TOURNAMENT" and abs(r.fx - 0.386) < 0.025 and abs(r.fy - 0.208) < 0.02
         for r in frame.results
     )
-    log.info(f'Tournament check: {"detected" if tournament_detected else "not detected"}')
+    log.trace(f'Tournament check: {"detected" if tournament_detected else "not detected"}')
     if tournament_detected:
         log.info("TOURNAMENT detected - clicking to exit killed by screen")
         do_click("TOURNAMENT exit killed by screen", 0.4789, 0.7704)
@@ -3751,7 +3767,7 @@ def automation_loop_tick():
     if click_if_present('slashmin', lambda r: r.text == 'Slashmin' and r.is_near(0.2151, 0.937)):
         return False
 
-    log.info(f'return text: {[r for r in frame.results if r.text == "Return"]}')
+    log.trace(f'return text: {[r for r in frame.results if r.text == "Return"]}')
     if click_if_present('return', lambda r: r.text == 'Return' and r.is_near(0.3138, 0.937, 0.2)):
         return False
     
@@ -3761,20 +3777,20 @@ def automation_loop_tick():
     if wave_num_str:
         try:
             wave_num = int(wave_num_str.replace(',', ''))
-            ctx.last_game_ui_seen = time.time()  # wave visible → game is running
+            ctx.last_game_ui_seen = time.time()  # wave visible â†’ game is running
         except ValueError:
             pass
     
     texts: tuple[str, float, float] = [(r.text, r.fx, r.fy) for r in frame.results]
     perks_mode = [t for t in texts if t[0] == 'Perks' and abs(t[1]-0.5089) < 0.1 and abs(t[2]-0.098) < 0.1]
     choose = [t for t in texts if t[0] == 'Choose' and abs(t[1]-0.3949) < 0.05 and abs(t[2]-0.206) < 0.05]
-    log.debug('perks_mode: %s, choose: %s', perks_mode, choose)
+    log.trace('perks_mode: %s, choose: %s', perks_mode, choose)
     if perks_mode and choose:
-        log.info("Perks mode found")
+        log.trace("Perks mode found")
         mode = 'perks'        
     else:
         mode = 'main'
-    log.info(f"Detected mode: {mode}")
+    log.trace(f"Detected mode: {mode}")
     perk_just_clicked = False  # True when we clicked the perk icon this tick (overlay not open yet)
     perk_text = {}
 
@@ -3794,12 +3810,12 @@ def automation_loop_tick():
         upgrade_mode = 'DEFENSE' if defense_marks else 'ATTACK' if attack_marks else 'UTILITY' if utility_marks else None
         ctx.upgrade_mode_seen = upgrade_mode
         prio = _active_upgrade_priority()
-        log.info(f'Seen upgrade mode selector: {upgrade_mode} at {ctx.upgrade_state} {prio[ctx.upgrade_state] if ctx.upgrade_state < len(prio) else None}')
+        log.trace(f'Seen upgrade mode selector: {upgrade_mode} at {ctx.upgrade_state} {prio[ctx.upgrade_state] if ctx.upgrade_state < len(prio) else None}')
         want_upgrades = prio[ctx.upgrade_state][0] if ctx.upgrade_state < len(prio) else None   
 
         if upgrade_mode:
             ctx.last_seen_upgrades = time.time()
-            ctx.last_game_ui_seen = time.time()  # upgrade tabs visible → game is running
+            ctx.last_game_ui_seen = time.time()  # upgrade tabs visible â†’ game is running
         else:
             delay = time.time() - ctx.last_seen_upgrades
             if want_upgrades and delay > 5.0:
@@ -3809,23 +3825,23 @@ def automation_loop_tick():
                 # already open would collapse it instead of expanding it.
                 live_buttons = detect_upgrade_buttons(frame, img, ctx.config)
                 if live_buttons:
-                    # Panel IS open — tab headers were just missed by OCR this
+                    # Panel IS open â€” tab headers were just missed by OCR this
                     # tick (animation, partial render, etc.).  Update the
                     # timestamp so we don't fire again on the very next tick.
-                    log.info(
+                    log.trace(
                         f"Tab headers not detected for {delay:.1f}s but "
-                        f"{len(live_buttons)} upgrade button(s) still visible — "
+                        f"{len(live_buttons)} upgrade button(s) still visible â€” "
                         f"panel is open, skipping reopen toggle"
                     )
                     ctx.last_seen_upgrades = time.time()
                 else:
-                    log.info(f"Upgrade display closed for {delay:.1f}s — reopening {want_upgrades} panel")
+                    log.info(f"Upgrade display closed for {delay:.1f}s â€” reopening {want_upgrades} panel")
                     _reopen_upgrade_panel(want_upgrades)
                     ctx.last_seen_upgrades = time.time()  # reset so we don't immediately fire again
                     return False
             
         if time.time() < ctx.no_perk_until:
-            log.info(f"Perk cooldown active - skipping perk check for {ctx.no_perk_until - time.time():.0f}s more")
+            log.trace(f"Perk cooldown active - skipping perk check for {ctx.no_perk_until - time.time():.0f}s more")
         else:
             newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.2657, 0.00, 0.7468, 0.10, threshold=0.75)
             if newperk_pos:
@@ -3840,16 +3856,16 @@ def automation_loop_tick():
     clean = perk_result['all_matched']
     # Use refactored perk detection
     if mode == 'perks' and perk_just_clicked and not clean:
-        log.info("Just clicked perk icon this tick - overlay not yet cleanly visible, deferring perk detection to next tick")
+        log.trace("Just clicked perk icon this tick - overlay not yet cleanly visible, deferring perk detection to next tick")
         return False
 
-    log.debug('perk text: %s', perk_text)
+    log.trace('perk text: %s', perk_text)
     if mode == 'perks' and not perk_text:
         log.info("Perks mode active but no selectable perks detected - closing window and suppressing perk checks for 1200s")
         close_perks()
         ctx.no_perk_until = time.time() + 1200.0
     elif perk_text and mode == 'perks':
-        log.debug(f"Perk text by row: {perk_text_join}")
+        log.trace(f"Perk text by row: {perk_text_join}")
 
         if len(perk_text_join) not in [3,4] or not clean:
             log.warning(f"Unexpected number of meaningful perk rows detected: {len(perk_text_join)}. Expected 3 or 4. Detected rows: {list(perk_text_join.keys())} {perk_text_join}")
@@ -3899,7 +3915,7 @@ def automation_loop_tick():
             new_perk_history = new_perk_history[-100:]
         
         ctx.game_state = replace(ctx.game_state, perk_selection_history=new_perk_history)
-        log.info(f'Perk history now {ctx.game_state.perk_selection_history}')
+        log.trace(f'Perk history now {ctx.game_state.perk_selection_history}')
         if perk_clicked:
             return False # exit tick immediately and we get rerun fast
     if perks_mode and not choose:
@@ -3909,7 +3925,7 @@ def automation_loop_tick():
     upgrade_buttons = detect_upgrade_buttons(frame, img, ctx.config)
     if upgrade_buttons:
         text = [ f'{k} ({"MAX" if v["is_max"] else v["cost"]}) ({"AFFORDABLE" if v.get("is_affordable") else "UNAFFORDABLE" if v.get("is_affordable") is False else "UNKNOWN"})' for k,v in upgrade_buttons.items()]
-        log.info(f'upgrades detected : {", ".join(text)}')
+        log.trace(f'upgrades detected : {", ".join(text)}')
         ctx.last_seen_upgrades = time.time()
         ctx.recover_stage = 0
         _now = time.time()
@@ -3966,7 +3982,7 @@ def automation_loop_tick():
     if mode == 'main':
         handle_upgrade_action(upgrade_mode, upgrade_buttons, w, h)
     
-    # Extract wave first — resource numbers are only meaningful when the HUD
+    # Extract wave first â€” resource numbers are only meaningful when the HUD
     # is visible (i.e. when the wave number is detectable).
     wave, wave_pos = extract_wave_from_frame(frame)
 
@@ -3983,11 +3999,11 @@ def automation_loop_tick():
         if elem:
             elements.append(elem)
             if wave and elem.element_type == "resource":
-                # Only collect resource values when the wave number is visible —
+                # Only collect resource values when the wave number is visible â€”
                 # otherwise we are not on the main HUD and any numbers are noise.
                 resources[elem.name] = elem.text
             elif elem.element_type == "button":
-                log.debug(f"Button classified: '{elem.text}' at {elem.center}")
+                log.trace(f"Button classified: '{elem.text}' at {elem.center}")
 
         # Position-based cash / coin detection.
         # In the game HUD the cash value sits at ~(0.35, 0.048) and the
@@ -3997,13 +4013,13 @@ def automation_loop_tick():
         # Skip entirely when the wave number was not found.
         if wave and _HUD_VAL_RE.match(ocr.text.strip()):
             # Use separate x/y bounds so the two closely-spaced HUD rows
-            # (cash at y≈0.048, coin at y≈0.083) don't cross-match.
+            # (cash at yâ‰ˆ0.048, coin at yâ‰ˆ0.083) don't cross-match.
             if "cash" not in resources and 0.040 <= ocr.fx <= 0.354 and abs(ocr.fy - 0.048) < 0.018:
                 resources["cash"] = ocr.text
-                log.debug(f"Position-based cash: '{ocr.text}' at ({ocr.fx:.3f}, {ocr.fy:.3f})")
+                log.trace(f"Position-based cash: '{ocr.text}' at ({ocr.fx:.3f}, {ocr.fy:.3f})")
             elif "gold" not in resources and 0.068 <= ocr.fx <= 0.354 and abs(ocr.fy - 0.083) < 0.018:
                 resources["gold"] = ocr.text
-                log.debug(f"Position-based gold/coin: '{ocr.text}' at ({ocr.fx:.3f}, {ocr.fy:.3f})")
+                log.trace(f"Position-based gold/coin: '{ocr.text}' at ({ocr.fx:.3f}, {ocr.fy:.3f})")
 
     screen_state = ScreenState(
         elements=tuple(elements),
@@ -4073,7 +4089,7 @@ def automation_loop_tick():
         ctx.status = "running"
 
     if wave_num:
-        # ── Rate history: sample cash/coin resources and compute per-minute rates ──
+        # â”€â”€ Rate history: sample cash/coin resources and compute per-minute rates â”€â”€
         _update_rate_history(new_resources, img)
 
     return True
@@ -4095,8 +4111,8 @@ def _parse_resource_value(text: str) -> Optional[float]:
 
     Also corrects frequent Tesseract digit misreads before parsing:
 
-    * ``O`` / ``o`` → ``0``  (letter O confused with zero)
-    * ``I`` / ``l`` / ``i`` → ``1``  (letter I / lowercase-L confused with one)
+    * ``O`` / ``o`` â†’ ``0``  (letter O confused with zero)
+    * ``I`` / ``l`` / ``i`` â†’ ``1``  (letter I / lowercase-L confused with one)
 
     Only the numeric portion (before any K/M/B/T scale suffix) is touched so
     that valid suffix letters are never mangled.
@@ -4154,14 +4170,14 @@ def _detect_slashmin(img: Optional[Image.Image]) -> Optional[bool]:
         img, ctx.slashmin_template, "/min HUD", x0, y0, x1, y1, threshold=0.35
     )
     if match is not None:
-        log.info("/min template matched at %s — HUD is in rate mode", match)
+        log.trace("/min template matched at %s â€” HUD is in rate mode", match)
         return True
-    log.info("/min template not found — HUD is in absolute-value mode")
+    log.trace("/min template not found â€” HUD is in absolute-value mode")
     return False
 
 
 # Number of valid samples to keep in the rolling-median buffers.
-# 7 samples ≈ ~2 minutes of history at a 20-second tick interval.
+# 7 samples â‰ˆ ~2 minutes of history at a 20-second tick interval.
 _RATE_SAMPLE_WINDOW = 7
 
 
@@ -4173,7 +4189,7 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
     # Detect /min display mode once for the whole tick (covers both HUD rows).
     slashmin_present: Optional[bool] = _detect_slashmin(img)
 
-    # Only one toggle click per tick — a second click would flip the same HUD
+    # Only one toggle click per tick â€” a second click would flip the same HUD
     # back to absolute-value mode.
     toggled_this_tick: list = []  # mutable cell shared across _sample calls
 
@@ -4197,38 +4213,38 @@ def _update_rate_history(resources: dict, img: Optional[Image.Image] = None) -> 
             if value is None or value < 0:
                 return None
 
-            log.info(f"Direct /min rate: {key}={value:.6g}")
+            log.trace(f"Direct /min rate: {key}={value:.6g}")
             ctx._hud_toggle_pending.pop(key, None)
             return value
 
-        # Not in /min mode — require 3 consecutive ticks of "wanted to toggle"
+        # Not in /min mode â€” require 3 consecutive ticks of "wanted to toggle"
         # before actually clicking, to cope with fuzzy OCR occasionally
         # misreading a /min suffix as an absolute value.
         pending = ctx._hud_toggle_pending.get(key, 0) + 1
         ctx._hud_toggle_pending[key] = pending
         _TOGGLE_REQUIRED_TICKS = 3
         if pending < _TOGGLE_REQUIRED_TICKS:
-            log.info(
-                f"HUD '{key}' not in /min mode ('{raw}') — waiting for "
+            log.trace(
+                f"HUD '{key}' not in /min mode ('{raw}') â€” waiting for "
                 f"{_TOGGLE_REQUIRED_TICKS - pending} more consecutive tick(s) before toggling "
                 f"(pending={pending})"
             )
             return None
 
-        # 3 consecutive ticks confirmed — click the HUD value to toggle the
+        # 3 consecutive ticks confirmed â€” click the HUD value to toggle the
         # display, but only if nothing else has been clicked this tick.
         if not toggled_this_tick:
             fx, fy = _HUD_TOGGLE_POS.get(key, (0.0, 0.0))
             if fx:
                 if key == 'cash':
                     ctx._hud_toggle_pending[key] = 0  # reset so next failure starts fresh
-                    log.info(f"HUD '{key}' not in /min mode ('{raw}') after {_TOGGLE_REQUIRED_TICKS} ticks — clicking ({fx}, {fy}) to toggle")
+                    log.info(f"HUD '{key}' not in /min mode ('{raw}') after {_TOGGLE_REQUIRED_TICKS} ticks â€” clicking ({fx}, {fy}) to toggle")
                     do_click(f"Toggle {key} HUD to /min", fx, fy)
                     toggled_this_tick.append(key)
                 else:
-                    log.info(f"Not toggling on {key} to prevent multi-toggles")
+                    log.trace(f"Not toggling on {key} to prevent multi-toggles")
         else:
-            log.info(f"HUD '{key}' not in /min mode but skipping toggle — already clicked this tick")
+            log.trace(f"HUD '{key}' not in /min mode but skipping toggle â€” already clicked this tick")
         return None
 
     cash_pm = _sample("cash")
@@ -4250,15 +4266,15 @@ def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
         cx_px = _GEM_ORBIT_CENTER_FX * img_w
         cy_px = _GEM_ORBIT_CENTER_FY * img_h
         orbit_r_px = math.hypot(gx - cx_px, gy - cy_px)
-            # Advance angle by elapsed time × 30°/s (clockwise)
+            # Advance angle by elapsed time Ã— 30Â°/s (clockwise)
         dt = time.time() - img_capture_time
         advanced_angle = angle_from_north + 30.0 * dt
         adv_rad = math.radians(advanced_angle)
         click_x = int(cx_px + orbit_r_px * math.sin(adv_rad))
         click_y = int(cy_px - orbit_r_px * math.cos(adv_rad))
-        message = f"Floating gem at ({gx},{gy}) angle={angle_from_north:.1f}° dt={dt:.3f}s → clicking ({click_x},{click_y}) adv_angle={advanced_angle:.1f}°"
+        message = f"Floating gem at ({gx},{gy}) angle={angle_from_north:.1f}Â° dt={dt:.3f}s â†’ clicking ({click_x},{click_y}) adv_angle={advanced_angle:.1f}Â°"
 
-        log.info(message)
+        log.trace(message)
             # append to debug/gems.jsonl
         if ctx.config.debug_jsonl_enabled:
             with (ctx.config.debug_dir / "gems.jsonl").open("a") as f:
@@ -4275,7 +4291,7 @@ def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
                 f.write("\n")
         click_frac_x  = click_x / img_w
         click_frac_y = click_y / img_h
-        log.info(f"Clicking floating gem at fractional position ({click_frac_x:.3f}, {click_frac_y:.3f}) angle {angle_from_north:.1f}° advanced to {advanced_angle:.1f}°")
+        log.trace(f"Clicking floating gem at fractional position ({click_frac_x:.3f}, {click_frac_y:.3f}) angle {angle_from_north:.1f}Â° advanced to {advanced_angle:.1f}Â°")
         do_click("floating gem", click_frac_x, click_frac_y)
         
         # Post-click verification: re-capture, crop ad strip, and re-detect
@@ -4289,7 +4305,7 @@ def attempt_floating_gem_click(log, img, img_capture_time, gem_pos):
             else:
                 log.info(
                         f"Gem click MISS - gem still at ({post_pos[0]},{post_pos[1]}) "
-                        f"angle={post_pos[2]:.1f}°"
+                        f"angle={post_pos[2]:.1f}Â°"
                     )
             if ctx.config.debug_jsonl_enabled:
                 with (ctx.config.debug_dir / "gems.jsonl").open("a") as f:
@@ -4329,7 +4345,7 @@ def watchdog_bluestacks_tick():
         log.warning("BlueStacks not found but cooldown active (%.0fs remaining)",
                     ctx.config.watchdog_cooldown - (now - ctx.last_bs_restart))
         return
-    log.warning("BlueStacks process not found — launching: %s", ctx.config.bluestacks_exe)
+    log.warning("BlueStacks process not found â€” launching: %s", ctx.config.bluestacks_exe)
     ctx.status = "restarting_bluestacks"
     ctx.last_bs_restart = now
     ctx.hard_restart_running = True
@@ -4357,7 +4373,7 @@ def launch_game():
             [ctx.config.bluestacks_exe],
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         )
-        log.info("BlueStacks launched — OCR will handle game navigation")
+        log.info("BlueStacks launched â€” OCR will handle game navigation")
     except Exception as exc:
         log.error("Failed to launch BlueStacks: %s", exc)
 
@@ -4377,10 +4393,10 @@ def watchdog_game_tick():
     if now - ctx.last_game_ui_seen < ctx.config.game_launch_timeout:
         return  # game UI seen recently
     if now - ctx.last_game_launch < ctx.config.game_launch_cooldown:
-        log.debug("Game launch cooldown active (%.0fs remaining)",
+        log.trace("Game launch cooldown active (%.0fs remaining)",
                   ctx.config.game_launch_cooldown - (now - ctx.last_game_launch))
         return
-    log.warning("Game UI not seen for %.0fs — relaunching BlueStacks",
+    log.warning("Game UI not seen for %.0fs â€” relaunching BlueStacks",
                 now - ctx.last_game_ui_seen)
     ctx.last_game_launch = now
     ctx.last_game_ui_seen = now
@@ -4399,7 +4415,7 @@ def _kill_bluestacks() -> bool:
             ["taskkill", "/F", "/IM", ctx.config.bluestacks_process],
             capture_output=True, text=True, timeout=10,
         )
-        log.info("taskkill: %s", (result.stdout or result.stderr).strip())
+        log.trace("taskkill: %s", (result.stdout or result.stderr).strip())
         return result.returncode == 0
     except Exception as exc:
         log.error("Failed to kill BlueStacks: %s", exc)
@@ -4418,11 +4434,11 @@ def _adb_press_home():
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
-            log.info("ADB HOME keyevent sent")
+            log.trace("ADB HOME keyevent sent")
         else:
             log.warning("ADB HOME keyevent failed: %s", result.stderr.strip())
     except FileNotFoundError:
-        log.error("adb not found (%r) — use --adb-exe to specify the full path", adb)
+        log.error("adb not found (%r) â€” use --adb-exe to specify the full path", adb)
     except Exception as exc:
         log.error("ADB HOME keyevent error: %s", exc)
 
@@ -4433,11 +4449,11 @@ def _post_bluestacks_start_sequence():
     log = logging.getLogger(__name__)
     try:
         delay = ctx.config.bs_post_start_delay
-        log.info("Post-start sequence: waiting %.0fs for BlueStacks to be ready", delay)
+        log.trace("Post-start sequence: waiting %.0fs for BlueStacks to be ready", delay)
         time.sleep(delay)
-        log.info("Post-start sequence: pressing HOME")
+        log.trace("Post-start sequence: pressing HOME")
         _adb_press_home()
-        log.info("Post-start sequence: complete — OCR will handle game navigation")
+        log.info("Post-start sequence: complete â€” OCR will handle game navigation")
     finally:
         ctx.hard_restart_running = False
 
@@ -4450,7 +4466,7 @@ def do_hard_restart():
     global ctx
     log = logging.getLogger(__name__)
     if ctx.hard_restart_running:
-        log.warning("Hard restart already in progress — ignoring duplicate request")
+        log.warning("Hard restart already in progress â€” ignoring duplicate request")
         return
     ctx.hard_restart_running = True
     ctx.status = "hard_restart"
@@ -4463,7 +4479,7 @@ def do_hard_restart():
     _kill_bluestacks()
     time.sleep(3)
 
-    log.warning("Hard restart: launching BlueStacks — %s", ctx.config.bluestacks_exe)
+    log.warning("Hard restart: launching BlueStacks â€” %s", ctx.config.bluestacks_exe)
     try:
         subprocess.Popen(
             [ctx.config.bluestacks_exe],
@@ -4503,7 +4519,7 @@ def watchdog_wave_stall_tick():
         )
         return
     log.warning(
-        "No wave advance for %.0fs (threshold %.0fs) — triggering hard restart",
+        "No wave advance for %.0fs (threshold %.0fs) â€” triggering hard restart",
         stall_seconds, ctx.config.wave_stall_timeout,
     )
     do_hard_restart()
@@ -4527,7 +4543,7 @@ def automation_loop_run(ctx: RuntimeContext):
             ctx.input_paused_until = 0.0
             ctx.input_enabled = True
             ctx.status = "running"
-            log.info("Input pause expired – re-enabling input")
+            log.info("Input pause expired â€“ re-enabling input")
         try:
             watchdog_bluestacks_tick()
             watchdog_game_tick()
@@ -4538,12 +4554,12 @@ def automation_loop_run(ctx: RuntimeContext):
             log.error(f"Loop tick error: {exc}", exc_info=True)
             ctx.game_state = replace(ctx.game_state,
                                     error_count=ctx.game_state.error_count + 1)
-            log.info('sleeping for 2 seconds after error')
+            log.trace('sleeping for 2 seconds after error')
             time.sleep(2)
 
         elapsed = time.time() - t0
         sleep_time = max(0.5, (ctx.config.idle_interval if idle else ctx.config.work_pace) - elapsed)
-        log.debug(f'sleeping {sleep_time:.1f}s  idle={idle} elapsed={elapsed:.2f}s')
+        log.trace(f'sleeping {sleep_time:.1f}s  idle={idle} elapsed={elapsed:.2f}s')
         time.sleep(sleep_time)
 
     log.info("Automation loop stopped")
@@ -4592,8 +4608,9 @@ class _ColoredFormatter(logging.Formatter):
     _BOLD    = "\033[1m"
     _DIM     = "\033[2m"
 
-    # Mapping: level → (prefix applied to the whole line, level-label colour)
+    # Mapping: level â†’ (prefix applied to the whole line, level-label colour)
     _LEVEL_STYLES: Dict[int, Tuple[str, str]] = {
+        TRACE:            ("\033[2m",          "\033[2;90m"),   # dim dark-grey (trace)
         logging.DEBUG:    ("\033[2m",          "\033[2;37m"),   # dim grey
         logging.INFO:     ("",                 "\033[36m"),     # cyan label
         logging.WARNING:  ("\033[33m",         "\033[1;33m"),   # yellow
@@ -4648,13 +4665,13 @@ def setup_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
 
-    # Console handler — INFO and above
+    # Console handler â€” INFO and above
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(colored_formatter)
     logger.addHandler(console_handler)
 
-    # Rotating file handler — WARNING by default; set to DEBUG via web UI toggle
+    # Rotating file handler â€” WARNING by default; set to DEBUG via web UI toggle
     file_handler = logging.handlers.RotatingFileHandler(
         log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
@@ -4663,7 +4680,7 @@ def setup_logging():
     file_handler.set_name("tc_file")  # so we can find it later to change level
     logger.addHandler(file_handler)
 
-    # In-memory buffer for capture.txt — DEBUG and above
+    # In-memory buffer for capture.txt â€” DEBUG and above
     _capture_log_buffer.setLevel(logging.DEBUG)
     _capture_log_buffer.setFormatter(formatter)
     logger.addHandler(_capture_log_buffer)
@@ -4673,7 +4690,7 @@ def setup_logging():
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="TowerControl – Functional Edition")
+    parser = argparse.ArgumentParser(description="TowerControl â€“ Functional Edition")
     parser.add_argument("--window-title", default="BlueStacks",
                        help="Window title pattern (default: BlueStacks)")
     parser.add_argument("--ocr", default="pytesseract",
@@ -4685,7 +4702,7 @@ def parse_args() -> argparse.Namespace:
                        default=r"C:\Program Files\BlueStacks_nxt\HD-Player.exe",
                        help="Path to BlueStacks executable for watchdog restart")
     parser.add_argument("--adb-exe", default="adb",
-                       help="Path to adb executable (default: 'adb' — must be on PATH)")
+                       help="Path to adb executable (default: 'adb' â€” must be on PATH)")
     parser.add_argument("--no-watchdog", action="store_true",
                        help="Disable BlueStacks process watchdog")
     parser.add_argument("--adb-port", type=int, default=5555,
@@ -4736,51 +4753,51 @@ def main():
     # Load gem template for floating gem detection
     gem_template = load_gem_template(config)
     if gem_template is not None:
-        log.info(f"Loaded gem template: {gem_template.shape}")
+        log.trace(f"Loaded gem template: {gem_template.shape}")
     else:
         log.warning("Gem template not loaded - floating gem detection disabled")
 
     # Load CLAIM button template for improved recognition
     claim_template = load_claim_template(config)
     if claim_template is not None:
-        log.info(f"Loaded CLAIM template: {claim_template.shape}")
+        log.trace(f"Loaded CLAIM template: {claim_template.shape}")
     else:
-        log.info("CLAIM template not found - using OCR-only detection")
+        log.trace("CLAIM template not found - using OCR-only detection")
 
     # Load BATTLE button template
     battle_template = load_battle_template(config)
     if battle_template is not None:
-        log.info(f"Loaded BATTLE template: {battle_template.shape}")
+        log.trace(f"Loaded BATTLE template: {battle_template.shape}")
     else:
-        log.info("BATTLE template not found - battle button detection disabled")
+        log.trace("BATTLE template not found - battle button detection disabled")
 
     # Load new perk template
     newperk_template = load_template(config, "newperk.png", "newperk")
     if newperk_template is not None:
-        log.info(f"Loaded newperk template: {newperk_template.shape}")
+        log.trace(f"Loaded newperk template: {newperk_template.shape}")
     else:
-        log.info("newperk template not found - image-based perk detection disabled")
+        log.trace("newperk template not found - image-based perk detection disabled")
 
     # Load RESUME BATTLE button template
     resume_battle_template = load_resume_battle_template(config)
     if resume_battle_template is not None:
-        log.info(f"Loaded RESUME BATTLE template: {resume_battle_template.shape}")
+        log.trace(f"Loaded RESUME BATTLE template: {resume_battle_template.shape}")
     else:
-        log.info("RESUME BATTLE template not found - resume battle detection disabled")
+        log.trace("RESUME BATTLE template not found - resume battle detection disabled")
 
     # Load My games button template
     my_games_template = load_my_games_template(config)
     if my_games_template is not None:
-        log.info(f"Loaded My games template: {my_games_template.shape}")
+        log.trace(f"Loaded My games template: {my_games_template.shape}")
     else:
-        log.info("My games template not found - my games detection disabled")
+        log.trace("My games template not found - my games detection disabled")
 
     # Load /min HUD suffix template for rate-mode detection
     slashmin_template = load_slashmin_template(config)
     if slashmin_template is not None:
-        log.info(f"Loaded /min template: {slashmin_template.shape}")
+        log.trace(f"Loaded /min template: {slashmin_template.shape}")
     else:
-        log.info("/min template not found (slashmin.png) - falling back to OCR regex for rate detection")
+        log.trace("/min template not found (slashmin.png) - falling back to OCR regex for rate detection")
 
     # Create runtime context
     ctx = RuntimeContext(
