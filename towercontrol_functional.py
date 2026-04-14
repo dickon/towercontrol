@@ -178,11 +178,11 @@ PERK_CHOICES = [
     r'Swamp Radius( x[\d\.]+)?',
     r'Extra Set Of Inner Mines',
     r'Orbs( \+\d+)?',
+    r'.*coins, but tower max health.*',
     r'Land Mine Damage( x[\d\.]+)?',
     r'Unlock Spotlight',
     r'Interest( x[\d\.]+)?',    
     r'(x[\d\.]*\s*)?Defense Absolute',
-    #r'x1.89 coins, but',
     ]
 
 UPGRADE_PRIORITY = [
@@ -2649,7 +2649,7 @@ def process_battle_button(img: Optional[Image.Image]) -> None:
 
     battle_button_pos = None
     if ctx.battle_template is not None:
-        battle_button_pos = detect_template_in_region(img, ctx.battle_template, "BATTLE button", 0.0885, 0.71, 0.8481, 0.91, threshold=0.95)
+        battle_button_pos = detect_template_in_region(img, ctx.battle_template, "BATTLE button", 0.0885, 0.60, 0.8481, 0.93, threshold=0.80)
     else:
         log.error('no battle button template')
     if battle_button_pos:
@@ -3756,8 +3756,17 @@ def automation_loop_tick():
 
     if click_if_present('claim', lambda r: r.text.lower() == "claim"):
         return False
-    
-    if click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.4874,   0.8168)):
+
+    if click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.4874,   0.86, 0.1)):
+        return False
+
+    # Dissonant Run button is unique to the battle selection screen — use it as a
+    # reliable indicator that we're on that screen and need to click BATTLE above it.
+    dissonant_marks = [r for r in frame.results if 'dissonant' in r.text.lower()]
+    if dissonant_marks:
+        log.info(f"Battle selection screen detected via 'Dissonant' text — clicking BATTLE at fixed position")
+        do_click("Clicking BATTLE button (dissonant screen)", 0.4640, 0.835)
+        mark_battle_start()
         return False
 
     if click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7017,   0.7429)):
