@@ -3721,21 +3721,21 @@ def automation_loop_tick():
 
     if check_template_and_click(
         img,
-        ctx.my_games_template,
-        "My games",
-        (0.0, 0.0, 0.8734, 0.3),
-        0.8,
-        "My games button (priority, template match)"
-    ):
-        return False  # Exit the tick function immediately
-
-    if check_template_and_click(
-        img,
         ctx.resume_battle_template,
         "RESUME BATTLE",
         (0.0, 0.6, 0.8734, 0.99),
         0.75,
         "Resume Battle button (priority, template match)"
+    ):
+        return False  # Exit the tick function immediately
+
+    if check_template_and_click(
+        img,
+        ctx.my_games_template,
+        "My games",
+        (0.0, 0.0, 0.8734, 0.3),
+        0.8,
+        "My games button (priority, template match)"
     ):
         return False  # Exit the tick function immediately
 
