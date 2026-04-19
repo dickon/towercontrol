@@ -4392,6 +4392,8 @@ def watchdog_game_tick():
     log = logging.getLogger(__name__)
     if not ctx.config.game_launch_enabled:
         return
+    if ctx.hard_restart_running:
+        return  # hard restart already in progress; don't interfere
     if not ctx.window_rect:
         return  # BlueStacks window not present yet; BlueStacks watchdog handles this
     if not ctx.input_enabled:
@@ -4482,6 +4484,8 @@ def do_hard_restart():
     ctx.last_bs_restart = now
     # Reset stall clock so we don't immediately retrigger
     ctx.last_wave_advance = now
+    # Reset game-UI clock so watchdog_game_tick doesn't fire again during startup
+    ctx.last_game_ui_seen = now
 
     log.warning("Hard restart: killing BlueStacks")
     _kill_bluestacks()
