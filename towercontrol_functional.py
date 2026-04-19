@@ -3103,10 +3103,7 @@ def _advance_upgrade_state(from_label: str = "", reason: str = "") -> None:
     ctx.upgrade_scroll_direction = 'down'
     prio = _active_upgrade_priority()
     to_label = prio[ctx.upgrade_state][1] if ctx.upgrade_state < len(prio) else "â€”"
-    if ctx.upgrade_state < len(prio):
-        log.info(f"Advanced to upgrade state {ctx.upgrade_state}: "
-                 f"'{to_label}'")
-    else:
+    if ctx.upgrade_state >= len(prio):
         log.info("All priority upgrades complete")
     # Attempt to get the button image (base64) for the 'from' upgrade if available
     from_button_img = None
@@ -3293,7 +3290,7 @@ def handle_upgrade_action(seen_page: Optional[str],
     # Batch-advance: skip all visible maxed/over-threshold upgrades in a single tick
     while target_info['is_max'] or (cost_threshold is not None and target_info['cost'] is not None and target_info['cost'] > cost_threshold) and target_info['is_affordable'] == False:
         reason = "cost exceeds threshold" if not target_info['is_max'] else "upgrade is maxed"
-        log.info(f"'{want_label}' {reason} - advancing to next priority upgrade")
+        prev_label = want_label
         _advance_upgrade_state(from_label=want_label, reason=reason)
         ctx.last_upgrade_action = now
 
@@ -3301,6 +3298,7 @@ def handle_upgrade_action(seen_page: Optional[str],
             return
 
         want_page, want_label, cost_threshold = prio[ctx.upgrade_state]
+        log.info(f"'{prev_label}' {reason} - advanced to state {ctx.upgrade_state}: '{want_label}'")
 
         # Stop batch if the next upgrade is on a different tab or not currently visible
         if want_page != seen_page:
@@ -3455,6 +3453,7 @@ class RuntimeContext:
     video_recorder: Any = None  # VideoRecorder instance (set after ctx creation)
     idle: bool = False  # set by automation loop; used by capture loop for fps throttle
     emulator_start_time: Optional[float] = None  # epoch time when BlueStacks was last started (or first seen running)
+    rate_suffix: str = ""  # last computed rate suffix, included in every summary line
 
     def update_window(self):
         """Update window rect if needed."""
@@ -3687,6 +3686,29 @@ def check_cloud_grab_warning(frame) -> bool:
         return True
     return False
 
+def _summary_line(wave=None, sleep_secs: float = None, sleep_reason: str = None) -> str:
+    """Build the per-tick summary log line from current ctx state."""
+    global ctx
+    pri_list = _active_upgrade_priority()
+    _wave = wave if wave is not None else ctx.game_state.wave
+    time_emulator_running = time.time() - ctx.emulator_start_time if ctx.emulator_start_time else 0
+    time_game_running = (time.time() - ctx.game_state.battle_start_time) if ctx.game_state.battle_start_time else 0
+    line = (
+        f'Tier {ctx.game_state.tier} | Wave progress: {_wave} | '
+        f'Upgrade state: {ctx.upgrade_state} ({pri_list[ctx.upgrade_state][1] if ctx.upgrade_state < len(pri_list) else "N/A"}) '
+        f'OCR time {ctx.ocr_time:.2f}s upgrade mode {ctx.upgrade_mode_seen} | '
+        f'Emulator running: {_fmt_duration(time_emulator_running)} | '
+        f'Game running: {_fmt_duration(time_game_running)}'
+    )
+    if ctx.rate_suffix:
+        line += ctx.rate_suffix
+    if sleep_secs is not None:
+        line += f' | sleeping {sleep_secs:.1f}s'
+        if sleep_reason:
+            line += f' ({sleep_reason})'
+    return line
+
+
 def automation_loop_tick():
     """Single tick of automation loop."""
     global ctx
@@ -3696,6 +3718,7 @@ def automation_loop_tick():
 
     result = do_ocr()
     if result is None:
+        log.info(_summary_line())
         return False
     img, img_capture_time, frame = result
     w, h = frame.image_size
@@ -3713,6 +3736,7 @@ def automation_loop_tick():
     if tournament_detected:
         log.info("TOURNAMENT detected - clicking to exit killed by screen")
         do_click("TOURNAMENT exit killed by screen", 0.4789, 0.7704)
+        log.info(_summary_line())
         return False
 
 
@@ -3724,6 +3748,7 @@ def automation_loop_tick():
         reason="Go Back button (priority)",
         wait_time=2,
     ):
+        log.info(_summary_line())
         return False # Exit the tick function immediately
 
     # PRIORITY: Check for "The Tower" app icon/text and click it immediately
@@ -3734,6 +3759,7 @@ def automation_loop_tick():
         reason="The Tower app icon (priority)",
         wait_time=10,
     ):
+        log.info(_summary_line())
         return False  # Exit the tick function immediately
 
 
@@ -3745,6 +3771,7 @@ def automation_loop_tick():
         0.75,
         "Resume Battle button (priority, template match)"
     ):
+        log.info(_summary_line())
         return False  # Exit the tick function immediately
 
     if check_template_and_click(
@@ -3755,10 +3782,12 @@ def automation_loop_tick():
         0.8,
         "My games button (priority, template match)"
     ):
+        log.info(_summary_line())
         return False  # Exit the tick function immediately
 
     # PRIORITY: Check for cloud grab warning dialog ("Warning" + "Yes" button)
     if check_cloud_grab_warning(frame):
+        log.info(_summary_line())
         return False  # Exit the tick function immediately
 
     # Check for floating gem and click it with dead reckoning
@@ -3773,9 +3802,11 @@ def automation_loop_tick():
     process_battle_button(img)
 
     if click_if_present('claim', lambda r: r.text.lower() == "claim"):
+        log.info(_summary_line())
         return False
 
     if click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.4874,   0.86, 0.1)):
+        log.info(_summary_line())
         return False
 
     # Dissonant Run button is unique to the battle selection screen — use it as a
@@ -3785,16 +3816,20 @@ def automation_loop_tick():
         log.info(f"Battle selection screen detected via 'Dissonant' text — clicking BATTLE at fixed position")
         do_click("Clicking BATTLE button (dissonant screen)", 0.4640, 0.835)
         mark_battle_start()
+        log.info(_summary_line())
         return False
 
     if click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7017,   0.7429)):
+        log.info(_summary_line())
         return False
     
     if click_if_present('slashmin', lambda r: r.text == 'Slashmin' and r.is_near(0.2151, 0.937)):
+        log.info(_summary_line())
         return False
 
     log.trace(f'return text: {[r for r in frame.results if r.text == "Return"]}')
     if click_if_present('return', lambda r: r.text == 'Return' and r.is_near(0.3138, 0.937, 0.2)):
+        log.info(_summary_line())
         return False
     
     # Extract wave number for comparison
@@ -3864,6 +3899,7 @@ def automation_loop_tick():
                     log.info(f"Upgrade display closed for {delay:.1f}s â€” reopening {want_upgrades} panel")
                     _reopen_upgrade_panel(want_upgrades)
                     ctx.last_seen_upgrades = time.time()  # reset so we don't immediately fire again
+                    log.info(_summary_line())
                     return False
             
         if time.time() < ctx.no_perk_until:
@@ -3883,6 +3919,7 @@ def automation_loop_tick():
     # Use refactored perk detection
     if mode == 'perks' and perk_just_clicked and not clean:
         log.trace("Just clicked perk icon this tick - overlay not yet cleanly visible, deferring perk detection to next tick")
+        log.info(_summary_line())
         return False
 
     log.trace('perk text: %s', perk_text)
@@ -3943,6 +3980,7 @@ def automation_loop_tick():
         ctx.game_state = replace(ctx.game_state, perk_selection_history=new_perk_history)
         log.trace(f'Perk history now {ctx.game_state.perk_selection_history}')
         if perk_clicked:
+            log.info(_summary_line())
             return False # exit tick immediately and we get rerun fast
     if perks_mode and not choose:
         close_perks()
@@ -4058,12 +4096,8 @@ def automation_loop_tick():
     
     # Track wave progress and calculate rate
     new_wave_history = ctx.game_state.wave_history
-    pri_list = _active_upgrade_priority()
-    time_emulator_running = time.time() - ctx.emulator_start_time if ctx.emulator_start_time else 0
     if not ctx.game_state.battle_start_time:
         ctx.game_state = replace(ctx.game_state, battle_start_time=time.time())
-    time_game_running = time.time() - ctx.game_state.battle_start_time
-    base_message = f'***** Tier {ctx.game_state.tier} | Wave progress: {wave} | Upgrade state: {ctx.upgrade_state} ({pri_list[ctx.upgrade_state][1] if ctx.upgrade_state < len(pri_list) else "N/A"}) OCR time {ctx.ocr_time:.2f}s upgrade mode {ctx.upgrade_mode_seen} | Emulator running: {_fmt_duration(time_emulator_running)} | Game running: {_fmt_duration(time_game_running)}'
 
     rate_suffix = ""
     if wave and wave != ctx.game_state.wave:
@@ -4092,6 +4126,7 @@ def automation_loop_tick():
                     rate_suffix = " | (collecting data...)"
             else:
                 rate_suffix = " | (collecting data...)"
+            ctx.rate_suffix = rate_suffix
 
             # Track wave advance for stall watchdog (update when wave number increases)
             prev_wave_str = ctx.game_state.wave
@@ -4105,7 +4140,6 @@ def automation_loop_tick():
                 ctx.last_wave_advance = current_time  # first wave seen since startup
         except (ValueError, TypeError):
             pass
-    log.info(f"{base_message}{rate_suffix}")
     
     ctx.game_state = replace(
         ctx.game_state,
@@ -4571,12 +4605,12 @@ def automation_loop_run(ctx: RuntimeContext):
             log.error(f"Loop tick error: {exc}", exc_info=True)
             ctx.game_state = replace(ctx.game_state,
                                     error_count=ctx.game_state.error_count + 1)
-            log.trace('sleeping for 2 seconds after error')
+            log.info(_summary_line(sleep_secs=2.0, sleep_reason='error recovery'))
             time.sleep(2)
 
         elapsed = time.time() - t0
         sleep_time = max(0.5, (ctx.config.idle_interval if idle else ctx.config.work_pace) - elapsed)
-        log.info(f'sleeping {sleep_time:.1f}s  idle={idle} elapsed={elapsed:.2f}s')
+        log.info(_summary_line(sleep_secs=sleep_time, sleep_reason=f'{"idle" if idle else "work pace"}, elapsed {elapsed:.2f}s'))
         time.sleep(sleep_time)
 
     log.info("Automation loop stopped")
