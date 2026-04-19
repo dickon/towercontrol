@@ -298,7 +298,7 @@ class Config:
     debug_images_enabled: bool = False       # save preprocessed.png etc.
     debug_jsonl_enabled: bool = False        # append to perks.jsonl / gems.jsonl
     file_logging_enabled: bool = False       # rotating log file at DEBUG level
-    idle_interval: float = 90.0             # sleep seconds when automation has no work
+    idle_interval: float = 30.0             # sleep seconds when automation has no work
     idle_capture_fps: float = 0.2           # capture rate when idle (frames/sec)
 
     @property
@@ -3851,7 +3851,7 @@ def automation_loop_tick():
         if time.time() < ctx.no_perk_until:
             log.trace(f"Perk cooldown active - skipping perk check for {ctx.no_perk_until - time.time():.0f}s more")
         else:
-            newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.2657, 0.00, 0.7468, 0.10, threshold=0.75)
+            newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.2657, 0.00, 0.7468, 0.10, threshold=0.95)
             if newperk_pos:
                 do_click("Clicking new perk icon (template match)", newperk_pos[0], newperk_pos[1])
                 mode = 'perks'
@@ -4574,7 +4574,7 @@ def automation_loop_run(ctx: RuntimeContext):
 
         elapsed = time.time() - t0
         sleep_time = max(0.5, (ctx.config.idle_interval if idle else ctx.config.work_pace) - elapsed)
-        log.trace(f'sleeping {sleep_time:.1f}s  idle={idle} elapsed={elapsed:.2f}s')
+        log.info(f'sleeping {sleep_time:.1f}s  idle={idle} elapsed={elapsed:.2f}s')
         time.sleep(sleep_time)
 
     log.info("Automation loop stopped")
