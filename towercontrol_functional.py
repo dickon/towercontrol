@@ -3718,7 +3718,6 @@ def automation_loop_tick():
 
     result = do_ocr()
     if result is None:
-        log.info(_summary_line())
         return False
     img, img_capture_time, frame = result
     w, h = frame.image_size
@@ -3736,7 +3735,6 @@ def automation_loop_tick():
     if tournament_detected:
         log.info("TOURNAMENT detected - clicking to exit killed by screen")
         do_click("TOURNAMENT exit killed by screen", 0.4789, 0.7704)
-        log.info(_summary_line())
         return False
 
 
@@ -3748,7 +3746,6 @@ def automation_loop_tick():
         reason="Go Back button (priority)",
         wait_time=2,
     ):
-        log.info(_summary_line())
         return False # Exit the tick function immediately
 
     # PRIORITY: Check for "The Tower" app icon/text and click it immediately
@@ -3759,7 +3756,6 @@ def automation_loop_tick():
         reason="The Tower app icon (priority)",
         wait_time=10,
     ):
-        log.info(_summary_line())
         return False  # Exit the tick function immediately
 
 
@@ -3771,7 +3767,6 @@ def automation_loop_tick():
         0.75,
         "Resume Battle button (priority, template match)"
     ):
-        log.info(_summary_line())
         return False  # Exit the tick function immediately
 
     if check_template_and_click(
@@ -3782,12 +3777,10 @@ def automation_loop_tick():
         0.8,
         "My games button (priority, template match)"
     ):
-        log.info(_summary_line())
         return False  # Exit the tick function immediately
 
     # PRIORITY: Check for cloud grab warning dialog ("Warning" + "Yes" button)
     if check_cloud_grab_warning(frame):
-        log.info(_summary_line())
         return False  # Exit the tick function immediately
 
     # Check for floating gem and click it with dead reckoning
@@ -3802,11 +3795,9 @@ def automation_loop_tick():
     process_battle_button(img)
 
     if click_if_present('claim', lambda r: r.text.lower() == "claim"):
-        log.info(_summary_line())
         return False
 
     if click_if_present('battle', lambda r: r.text == 'BATTLE' and r.is_near(  0.4874,   0.86, 0.1)):
-        log.info(_summary_line())
         return False
 
     # Dissonant Run button is unique to the battle selection screen — use it as a
@@ -3816,20 +3807,16 @@ def automation_loop_tick():
         log.info(f"Battle selection screen detected via 'Dissonant' text — clicking BATTLE at fixed position")
         do_click("Clicking BATTLE button (dissonant screen)", 0.4640, 0.835)
         mark_battle_start()
-        log.info(_summary_line())
         return False
 
     if click_if_present('home', lambda r: r.text == 'HOME' and r.is_near(  0.7017,   0.7429)):
-        log.info(_summary_line())
         return False
     
     if click_if_present('slashmin', lambda r: r.text == 'Slashmin' and r.is_near(0.2151, 0.937)):
-        log.info(_summary_line())
         return False
 
     log.trace(f'return text: {[r for r in frame.results if r.text == "Return"]}')
     if click_if_present('return', lambda r: r.text == 'Return' and r.is_near(0.3138, 0.937, 0.2)):
-        log.info(_summary_line())
         return False
     
     # Extract wave number for comparison
@@ -3899,7 +3886,6 @@ def automation_loop_tick():
                     log.info(f"Upgrade display closed for {delay:.1f}s â€” reopening {want_upgrades} panel")
                     _reopen_upgrade_panel(want_upgrades)
                     ctx.last_seen_upgrades = time.time()  # reset so we don't immediately fire again
-                    log.info(_summary_line())
                     return False
             
         if time.time() < ctx.no_perk_until:
@@ -3919,7 +3905,6 @@ def automation_loop_tick():
     # Use refactored perk detection
     if mode == 'perks' and perk_just_clicked and not clean:
         log.trace("Just clicked perk icon this tick - overlay not yet cleanly visible, deferring perk detection to next tick")
-        log.info(_summary_line())
         return False
 
     log.trace('perk text: %s', perk_text)
@@ -3980,7 +3965,6 @@ def automation_loop_tick():
         ctx.game_state = replace(ctx.game_state, perk_selection_history=new_perk_history)
         log.trace(f'Perk history now {ctx.game_state.perk_selection_history}')
         if perk_clicked:
-            log.info(_summary_line())
             return False # exit tick immediately and we get rerun fast
     if perks_mode and not choose:
         close_perks()
