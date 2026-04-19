@@ -3321,7 +3321,9 @@ def handle_upgrade_action(seen_page: Optional[str],
     # Purchase the first affordable upgrade found
     fx, fy = target_info['button_position']
     fx = fx + 0.1
-    do_click(f"Buying upgrade '{want_label}'", fx, fy)
+    _cost_str = str(target_info['cost']) if target_info['cost'] is not None else '?'
+    _levels_str = str(target_info.get('upgrades_to_purchase') or 1)
+    do_click(f"Buying upgrade '{want_label}' cost={_cost_str} levels={_levels_str}", fx, fy)
     ctx.last_upgrade_action = now
     # Find the most recent button snapshot before or at this purchase
     button_snapshot_idx = None
