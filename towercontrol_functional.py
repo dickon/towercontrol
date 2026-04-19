@@ -276,13 +276,9 @@ class Config:
     bluestacks_process: str = "HD-Player.exe"
     watchdog_cooldown: float = 120.0         # min seconds between BlueStacks restart attempts
 
-    # Watchdog â€” game launch via ADB
+    # Watchdog â€” game launch
     game_launch_enabled: bool = True
-    adb_exe: str = "adb"
-    adb_host: str = "localhost"
-    adb_port: int = 5555
-    game_package: str = "com.supersolid.thetower"
-    game_launch_timeout: float = 600.0        # seconds of no-game-UI before ADB launch
+    game_launch_timeout: float = 600.0        # seconds of no-game-UI before relaunching BlueStacks
     game_launch_cooldown: float = 90.0       # min seconds between game launch attempts
 
     # Watchdog â€” wave stall (hard restart)
@@ -3426,7 +3422,7 @@ class RuntimeContext:
     upgrade_button_history: list = field(default_factory=list)  # List of last 5000 button states (dicts)
     # Watchdog state
     last_bs_restart: float = 0.0      # timestamp of last BlueStacks launch attempt
-    last_game_launch: float = 0.0     # timestamp of last ADB game launch attempt
+    last_game_launch: float = 0.0     # timestamp of last game launch attempt
     last_game_ui_seen: float = 0.0    # timestamp game UI (wave/upgrades) was last visible
     last_wave_advance: float = 0.0    # timestamp when wave number last increased
     hard_restart_running: bool = False  # True while post-start sequence is running
@@ -4431,38 +4427,14 @@ def _kill_bluestacks() -> bool:
         log.error("Failed to kill BlueStacks: %s", exc)
         return False
 
-
-def _adb_press_home():
-    """Send KEYCODE_HOME to the Android device via ADB."""
-    log = logging.getLogger(__name__)
-    adb = ctx.config.adb_exe
-    adb_target = f"{ctx.config.adb_host}:{ctx.config.adb_port}"
-    try:
-        subprocess.run([adb, "connect", adb_target], capture_output=True, timeout=5)
-        result = subprocess.run(
-            [adb, "-s", adb_target, "shell", "input", "keyevent", "KEYCODE_HOME"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0:
-            log.trace("ADB HOME keyevent sent")
-        else:
-            log.warning("ADB HOME keyevent failed: %s", result.stderr.strip())
-    except FileNotFoundError:
-        log.error("adb not found (%r) â€” use --adb-exe to specify the full path", adb)
-    except Exception as exc:
-        log.error("ADB HOME keyevent error: %s", exc)
-
-
 def _post_bluestacks_start_sequence():
-    """Background thread: wait for BlueStacks to be ready, press Home, then launch The Tower."""
+    """Background thread: wait for BlueStacks to be ready, then let OCR handle navigation."""
     global ctx
     log = logging.getLogger(__name__)
     try:
         delay = ctx.config.bs_post_start_delay
         log.trace("Post-start sequence: waiting %.0fs for BlueStacks to be ready", delay)
         time.sleep(delay)
-        log.trace("Post-start sequence: pressing HOME")
-        _adb_press_home()
         log.info("Post-start sequence: complete â€” OCR will handle game navigation")
     finally:
         ctx.hard_restart_running = False
@@ -4716,16 +4688,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bluestacks-exe",
                        default=r"C:\Program Files\BlueStacks_nxt\HD-Player.exe",
                        help="Path to BlueStacks executable for watchdog restart")
-    parser.add_argument("--adb-exe", default="adb",
-                       help="Path to adb executable (default: 'adb' â€” must be on PATH)")
     parser.add_argument("--no-watchdog", action="store_true",
                        help="Disable BlueStacks process watchdog")
-    parser.add_argument("--adb-port", type=int, default=5555,
-                       help="ADB port for BlueStacks (default: 5555)")
-    parser.add_argument("--game-package", default="com.supersolid.thetower",
-                       help="Android package name for game launch (default: com.supersolid.thetower)")
     parser.add_argument("--no-game-launch", action="store_true",
-                       help="Disable automatic game launch via ADB")
+                       help="Disable automatic BlueStacks relaunch when game UI is not seen")
     parser.add_argument("--loop-tick", type=float, default=20.0,
                        help="Seconds between automation loop ticks (default: 20.0)")
     parser.add_argument("--capture-fps", type=float, default=1.0,
@@ -4751,9 +4717,6 @@ def main():
         ocr_lang=args.lang,
         bluestacks_exe=args.bluestacks_exe,
         watchdog_enabled=not args.no_watchdog,
-        adb_exe=args.adb_exe,
-        adb_port=args.adb_port,
-        game_package=args.game_package,
         game_launch_enabled=not args.no_game_launch,
         loop_tick=args.loop_tick,
         capture_fps=args.capture_fps,
