@@ -3436,6 +3436,7 @@ class RuntimeContext:
     _latest_capture: Any = None  # (img, img_capture_time) tuple written by capture thread; read by OCR tick
     video_recorder: Any = None  # VideoRecorder instance (set after ctx creation)
     idle: bool = False  # set by automation loop; used by capture loop for fps throttle
+    emulator_start_time: Optional[float] = None  # epoch time when BlueStacks was last started (or first seen running)
 
     def update_window(self):
         """Update window rect if needed."""
@@ -4040,7 +4041,11 @@ def automation_loop_tick():
     # Track wave progress and calculate rate
     new_wave_history = ctx.game_state.wave_history
     pri_list = _active_upgrade_priority()
-    base_message = f'***** Tier {ctx.game_state.tier} | Wave progress: {wave} | Upgrade state: {ctx.upgrade_state} ({pri_list[ctx.upgrade_state][1] if ctx.upgrade_state < len(pri_list) else "N/A"}) OCR time {ctx.ocr_time:.2f}s upgrade mode {ctx.upgrade_mode_seen}'
+    time_emulator_running = time.time() - ctx.emulator_start_time if ctx.emulator_start_time else 0
+    if not ctx.game_state.battle_start_time:
+        ctx.game_state = replace(ctx.game_state, battle_start_time=time.time())
+    time_game_running = time.time() - ctx.game_state.battle_start_time
+    base_message = f'***** Tier {ctx.game_state.tier} | Wave progress: {wave} | Upgrade state: {ctx.upgrade_state} ({pri_list[ctx.upgrade_state][1] if ctx.upgrade_state < len(pri_list) else "N/A"}) OCR time {ctx.ocr_time:.2f}s upgrade mode {ctx.upgrade_mode_seen} | Emulator running: {time_emulator_running:.2f}s | Game running: {time_game_running:.2f}s'
 
     rate_suffix = ""
     if wave and wave != ctx.game_state.wave:
@@ -4361,6 +4366,7 @@ def watchdog_bluestacks_tick():
             [ctx.config.bluestacks_exe],
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         )
+        ctx.emulator_start_time = now
     except Exception as exc:
         log.error("Failed to launch BlueStacks: %s", exc)
         ctx.hard_restart_running = False
@@ -4380,6 +4386,7 @@ def launch_game():
             [ctx.config.bluestacks_exe],
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         )
+        ctx.emulator_start_time = time.time()
         log.info("BlueStacks launched â€” OCR will handle game navigation")
     except Exception as exc:
         log.error("Failed to launch BlueStacks: %s", exc)
@@ -4472,6 +4479,7 @@ def do_hard_restart():
             [ctx.config.bluestacks_exe],
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         )
+        ctx.emulator_start_time = time.time()
     except Exception as exc:
         log.error("Failed to launch BlueStacks: %s", exc)
         ctx.hard_restart_running = False
@@ -4799,6 +4807,9 @@ def main():
     )
     ctx.last_seen_upgrades = time.time()
     ctx.last_game_ui_seen = time.time()   # don't trigger game launch immediately on startup
+    if _is_bluestacks_running(config.bluestacks_process):
+        ctx.emulator_start_time = time.time()
+        log.info("BlueStacks already running at startup — recording emulator_start_time")
 
     # Initialize video recorder
     try:
