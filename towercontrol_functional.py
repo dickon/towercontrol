@@ -4521,7 +4521,10 @@ def watchdog_wave_stall_tick():
     if ctx.last_wave_advance == 0.0:
         ctx.last_wave_advance = now
     stall_seconds = now - ctx.last_wave_advance
+    
     if stall_seconds < ctx.config.wave_stall_timeout:
+        log.warning("Wave stall detected for %.0fs but below threshold of %.0fs",
+                    stall_seconds, ctx.config.wave_stall_timeout)
         return
     if now - ctx.last_bs_restart < ctx.config.wave_stall_cooldown:
         log.warning(
