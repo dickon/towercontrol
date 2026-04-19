@@ -1463,6 +1463,24 @@ def record_action_in_state(state: GameState, action: Action, **extra) -> GameSta
     return replace(state, action_history=new_history)
 
 
+def _fmt_duration(seconds: float) -> str:
+    """Format a duration in seconds as a compact human-readable string.
+
+    Examples: 25 -> '25s', 3*3600+20*60+35 -> '3h20m35s', 1*86400+2*3600+... -> '1d2h10m5s'
+    """
+    s = int(seconds)
+    d, s = divmod(s, 86400)
+    h, s = divmod(s, 3600)
+    m, s = divmod(s, 60)
+    if d:
+        return f"{d}d{h}h{m}m{s}s"
+    if h:
+        return f"{h}h{m}m{s}s"
+    if m:
+        return f"{m}m{s}s"
+    return f"{s}s"
+
+
 def parse_number_with_suffix(text: str) -> Optional[float]:
     """Parse a number string with optional K/M/B/T suffix into a float.
 
@@ -3851,7 +3869,7 @@ def automation_loop_tick():
         if time.time() < ctx.no_perk_until:
             log.trace(f"Perk cooldown active - skipping perk check for {ctx.no_perk_until - time.time():.0f}s more")
         else:
-            newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.2657, 0.00, 0.7468, 0.10, threshold=0.92, verbose=True)
+            newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.2657, 0.00, 0.7468, 0.10, threshold=0.92, verbose=False)
             if newperk_pos:
                 do_click("Clicking new perk icon (template match)", newperk_pos[0], newperk_pos[1])
                 mode = 'perks'
@@ -4045,7 +4063,7 @@ def automation_loop_tick():
     if not ctx.game_state.battle_start_time:
         ctx.game_state = replace(ctx.game_state, battle_start_time=time.time())
     time_game_running = time.time() - ctx.game_state.battle_start_time
-    base_message = f'***** Tier {ctx.game_state.tier} | Wave progress: {wave} | Upgrade state: {ctx.upgrade_state} ({pri_list[ctx.upgrade_state][1] if ctx.upgrade_state < len(pri_list) else "N/A"}) OCR time {ctx.ocr_time:.2f}s upgrade mode {ctx.upgrade_mode_seen} | Emulator running: {time_emulator_running:.2f}s | Game running: {time_game_running:.2f}s'
+    base_message = f'***** Tier {ctx.game_state.tier} | Wave progress: {wave} | Upgrade state: {ctx.upgrade_state} ({pri_list[ctx.upgrade_state][1] if ctx.upgrade_state < len(pri_list) else "N/A"}) OCR time {ctx.ocr_time:.2f}s upgrade mode {ctx.upgrade_mode_seen} | Emulator running: {_fmt_duration(time_emulator_running)} | Game running: {_fmt_duration(time_game_running)}'
 
     rate_suffix = ""
     if wave and wave != ctx.game_state.wave:
