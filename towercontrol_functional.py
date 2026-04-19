@@ -278,7 +278,7 @@ class Config:
 
     # Watchdog â€” game launch
     game_launch_enabled: bool = True
-    game_launch_timeout: float = 600.0        # seconds of no-game-UI before relaunching BlueStacks
+    game_launch_timeout: float = 900.0        # seconds of no-game-UI before relaunching BlueStacks
     game_launch_cooldown: float = 90.0       # min seconds between game launch attempts
 
     # Watchdog â€” wave stall (hard restart)
@@ -2660,6 +2660,7 @@ def detect_template_in_region(
     label: str,
     x0: float, y0: float, x1: float, y1: float,
     threshold: float,
+    verbose: bool = False
 ) -> Optional[Tuple[float, float]]:
     """Match *template* inside the normalised sub-region [x0,x1] x [y0,y1] of *img*.
 
@@ -2693,7 +2694,9 @@ def detect_template_in_region(
 
         result = cv2.matchTemplate(search_region, template, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
-        log.trace('%s template check: max_val=%.3f at location %s', label, max_val, max_loc)
+        logfn = log.info if verbose else log.debug
+        if verbose:
+            logfn('%s template check: max_val=%.3f at location %s', label, max_val, max_loc)
         if max_val >= threshold:
             match_x = max_loc[0] + x_start + template.shape[1] // 2
             match_y = max_loc[1] + y_start + template.shape[0] // 2
@@ -3847,7 +3850,7 @@ def automation_loop_tick():
         if time.time() < ctx.no_perk_until:
             log.trace(f"Perk cooldown active - skipping perk check for {ctx.no_perk_until - time.time():.0f}s more")
         else:
-            newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.2657, 0.00, 0.7468, 0.10, threshold=0.95)
+            newperk_pos = detect_template_in_region(img, ctx.newperk_template, "new perk icon", 0.2657, 0.00, 0.7468, 0.10, threshold=0.92, verbose=True)
             if newperk_pos:
                 do_click("Clicking new perk icon (template match)", newperk_pos[0], newperk_pos[1])
                 mode = 'perks'
@@ -4495,8 +4498,9 @@ def watchdog_wave_stall_tick():
     stall_seconds = now - ctx.last_wave_advance
     
     if stall_seconds < ctx.config.wave_stall_timeout:
-        log.warning("Wave stall detected for %.0fs but below threshold of %.0fs",
-                    stall_seconds, ctx.config.wave_stall_timeout)
+        if stall_seconds> 60:
+            log.warning("Wave stall detected for %.0fs but below threshold of %.0fs",
+                        stall_seconds, ctx.config.wave_stall_timeout)
         return
     if now - ctx.last_bs_restart < ctx.config.wave_stall_cooldown:
         log.warning(
