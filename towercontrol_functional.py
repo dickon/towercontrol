@@ -2570,7 +2570,7 @@ def detect_floating_gem(
         best_val = 0.0
         best_match_cx: Optional[int] = None
         best_match_cy: Optional[int] = None
-        threshold = 0.85
+        threshold = 0.6
 
         center_pt = (tw // 2, th // 2)
         for rot_deg in range(0, 360, 10):
@@ -2584,7 +2584,10 @@ def detect_floating_gem(
                 best_val = max_val
                 best_match_cx = sx1 + max_loc[0] + tw // 2
                 best_match_cy = sy1 + max_loc[1] + th // 2
-        log.trace(f'Floating gem detection: best_val={best_val:.3f} at ({best_match_cx}, {best_match_cy})')
+        # best match as a fraction
+        best_match_fx = best_match_cx / w if best_match_cx is not None else None
+        best_match_fy = best_match_cy / h if best_match_cy is not None else None
+        log.info(f'Floating gem detection: best_val={best_val:.3f} threshold={threshold} at ({best_match_fx}, {best_match_fy}) cx={best_match_cx} cy={best_match_cy}')
         if best_val >= threshold and best_match_cx is not None:
             dx = best_match_cx - cx
             dy = best_match_cy - cy
@@ -4481,7 +4484,7 @@ def _post_bluestacks_start_sequence():
     log = logging.getLogger(__name__)
     try:
         delay = ctx.config.bs_post_start_delay
-        log.trace("Post-start sequence: waiting %.0fs for BlueStacks to be ready", delay)
+        log.info("Post-start sequence: waiting %.0fs for BlueStacks to be ready", delay)
         time.sleep(delay)
         log.info("Post-start sequence: complete â€” OCR will handle game navigation")
     finally:
