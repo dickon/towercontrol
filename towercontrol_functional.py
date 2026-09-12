@@ -162,7 +162,7 @@ PERK_CHOICES = [
     r'^(x?[\d\.]+ )?Damage\b',
     r'Chain Lightning Damage( x[\d\.]+)?',
     r'Golden Tower Bonus( x[\d\.]+)?',
-   # r'(\d*\s*)?More Smart Missiles',
+    r'(\d*\s*)?More Smart Missiles',
     r'(\d*\s*)?(Wave )?On Death Wave',
     r'Defense percent( \+[\d\.]+%)?',
     r'Bounce Shot( \+\d+)?',
@@ -185,38 +185,34 @@ PERK_CHOICES = [
     r'(x[\d\.]*\s*)?Defense Absolute',
     ]
 
-DISABLE_UPGRADES = True
+DISABLE_UPGRADES = False
 UPGRADE_PRIORITY = [
-    ('UTILITY', 'Enemy Attack Level Skip', 1e6),
-    ('UTILITY', 'Enemy Health Level Skip', 1e6),
-    ('ATTACK', 'Damage', 3e5),
-    ('DEFENSE', 'Health', 1e6),
-    ('DEFENSE', 'Shockwave Size', None),
-    ('DEFENSE', 'Shockwave Frequency', None),
-   # ('DEFENSE', 'Land Mine Chance', None),
-  #  ('DEFENSE', 'Land Mine Damage', None),
- #   ('DEFENSE', 'Land Mine Radius', None),
-    ('DEFENSE', 'Death Defy', None),
-    ('DEFENSE', 'Health Regen', None),
-    ('UTILITY', 'Enemy Attack Level Skip', 1e9),
-    ('UTILITY', 'Enemy Health Level Skip', 1e9),
-    ('ATTACK', 'Damage', None),
-    ('DEFENSE', 'Health', None),
-    ('DEFENSE', 'Wall Health', None),
-    ('DEFENSE', 'Wall Rebuild', None),
-    ('DEFENSE', 'Defense Absolute', None),
+    ('UTILITY', 'Enemy Attack Level Skip', 1e7, 0),
+    ('UTILITY', 'Enemy Health Level Skip', 1e7,0),
+    ('ATTACK', 'Damage', 3e5, 6000),
+    ('DEFENSE', 'Health', 1e6, 0),
+    ('DEFENSE', 'Shockwave Size', None, 2000),
+    ('DEFENSE', 'Shockwave Frequency', None, 2000),
+    ('DEFENSE', 'Land Mine Chance', None, 9000),
+    ('DEFENSE', 'Land Mine Damage', None, 9000),
+    ('DEFENSE', 'Land Mine Radius', None, 9090),
+    ('DEFENSE', 'Death Defy', None, 0),
+    ('DEFENSE', 'Health Regen', None, 0),
+    ('UTILITY', 'Enemy Attack Level Skip', 1e9, 0),
+    ('UTILITY', 'Enemy Health Level Skip', 1e9, 0),
+    ('ATTACK', 'Damage', None, 6000),
+    ('DEFENSE', 'Health', None, 0),
+    ('DEFENSE', 'Wall Health', None, 0),
+    ('DEFENSE', 'Wall Rebuild', None, 0),
+    ('DEFENSE', 'Defense Absolute', None, 5000),
+    ('ATTACK', 'Damage', 1e6, 7000),
+    ('ATTACK', 'Damage Per Meter', None, 7000),
+    ('ATTACK', 'Damage', None, 8000),
+    ('DEFENSE', 'Health', 1e6, 5000),
+    ('DEFENSE', 'Wall Health', 1e6, 0),
+    ('DEFENSE', 'Health Regen', 1e6, 0),
+    ('DEFENSE', 'Health', None, 0),
 ] 
-
-UPGRADE_PRIORITY_HIGH_TIER = [
-    #('ATTACK', 'Damage', 1e6),
-    ('ATTACK', 'Damage Per Meter', None),
-    #('ATTACK', 'Damage', None),
-    ('DEFENSE', 'Health', 1e6),
-    ('DEFENSE', 'Wall Health', 1e6),
-    ('DEFENSE', 'Health Regen', 1e6),
-    ('DEFENSE', 'Health', None),
-] + UPGRADE_PRIORITY
-
 FLOATER_POSITIONS = [
     (0.5815, 0.3016)
 ]
@@ -3093,8 +3089,6 @@ def _active_upgrade_priority() -> list:
     """Return the upgrade priority list appropriate for the current tier."""
     tier = ctx.game_state.tier
     if DISABLE_UPGRADES: return []
-    if tier is not None and tier >= ctx.config.high_tier_threshold:
-        return UPGRADE_PRIORITY_HIGH_TIER
     return UPGRADE_PRIORITY
 
 
@@ -3107,6 +3101,12 @@ def _advance_upgrade_state(from_label: str = "", reason: str = "") -> None:
     ctx.upgrade_scroll_start = 0.0
     ctx.upgrade_scroll_direction = 'down'
     prio = _active_upgrade_priority()
+    # filter prio to exclude any ugprads where field 3 is less than the current wave
+    print('raw prios')
+    pprint.pprint(prio)
+    prio = [upgrade for upgrade in prio if upgrade[3] < int(ctx.game_state.wave)]
+    print('filetered prios')
+    pprint.pprint(prio)
     to_label = prio[ctx.upgrade_state][1] if ctx.upgrade_state < len(prio) else "â€”"
     if ctx.upgrade_state >= len(prio):
         log.info("All priority upgrades complete")
@@ -3166,6 +3166,7 @@ def handle_upgrade_action(seen_page: Optional[str],
     if prio == []:
         log.info('upgrades disabled')
         return
+    prio = [upgrade for upgrade in prio if upgrade[3] < int(ctx.game_state.wave)]
     if ctx.upgrade_state >= len(prio):
         if ctx.upgrades_finished_time is None:
             ctx.upgrades_finished_time = now
@@ -3175,7 +3176,7 @@ def handle_upgrade_action(seen_page: Optional[str],
             log.info("Upgrade priority reset after 30 minutes")
         return
 
-    want_page, want_label, cost_threshold = prio[ctx.upgrade_state]
+    want_page, want_label, cost_threshold, wave_threshold = prio[ctx.upgrade_state]
     log.trace(f"Upgrade state {ctx.upgrade_state}: targeting '{want_label}' on {want_page} tab "
              f"(threshold={cost_threshold})")
 
@@ -3305,7 +3306,7 @@ def handle_upgrade_action(seen_page: Optional[str],
         if ctx.upgrade_state >= len(prio):
             return
 
-        want_page, want_label, cost_threshold = prio[ctx.upgrade_state]
+        want_page, want_label, cost_threshold, wave_threshold = prio[ctx.upgrade_state]
         log.info(f"'{prev_label}' {reason} - advanced to state {ctx.upgrade_state}: '{want_label}'")
 
         # Stop batch if the next upgrade is on a different tab or not currently visible
@@ -3700,6 +3701,7 @@ def _summary_line(wave=None, sleep_secs: float = None, sleep_reason: str = None)
     """Build the per-tick summary log line from current ctx state."""
     global ctx
     pri_list = _active_upgrade_priority()
+    pri_list = [upgrade for upgrade in pri_list if upgrade[3] < int(ctx.game_state.wave)]
     _wave = wave if wave is not None else ctx.game_state.wave
     time_emulator_running = time.time() - ctx.emulator_start_time if ctx.emulator_start_time else 0
     time_game_running = (time.time() - ctx.game_state.battle_start_time) if ctx.game_state.battle_start_time else 0
