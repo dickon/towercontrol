@@ -162,7 +162,7 @@ PERK_CHOICES = [
     r'^(x?[\d\.]+ )?Damage\b',
     r'Chain Lightning Damage( x[\d\.]+)?',
     r'Golden Tower Bonus( x[\d\.]+)?',
-    r'(\d*\s*)?More Smart Missiles',
+   # r'(\d*\s*)?More Smart Missiles',
     r'(\d*\s*)?(Wave )?On Death Wave',
     r'Defense percent( \+[\d\.]+%)?',
     r'Bounce Shot( \+\d+)?',
@@ -185,6 +185,7 @@ PERK_CHOICES = [
     r'(x[\d\.]*\s*)?Defense Absolute',
     ]
 
+DISABLE_UPGRADES = True
 UPGRADE_PRIORITY = [
     ('UTILITY', 'Enemy Attack Level Skip', 1e6),
     ('UTILITY', 'Enemy Health Level Skip', 1e6),
@@ -192,9 +193,9 @@ UPGRADE_PRIORITY = [
     ('DEFENSE', 'Health', 1e6),
     ('DEFENSE', 'Shockwave Size', None),
     ('DEFENSE', 'Shockwave Frequency', None),
-    ('DEFENSE', 'Land Mine Chance', None),
-    ('DEFENSE', 'Land Mine Damage', None),
-    ('DEFENSE', 'Land Mine Radius', None),
+   # ('DEFENSE', 'Land Mine Chance', None),
+  #  ('DEFENSE', 'Land Mine Damage', None),
+ #   ('DEFENSE', 'Land Mine Radius', None),
     ('DEFENSE', 'Death Defy', None),
     ('DEFENSE', 'Health Regen', None),
     ('UTILITY', 'Enemy Attack Level Skip', 1e9),
@@ -207,9 +208,9 @@ UPGRADE_PRIORITY = [
 ] 
 
 UPGRADE_PRIORITY_HIGH_TIER = [
-    ('ATTACK', 'Damage', 1e6),
+    #('ATTACK', 'Damage', 1e6),
     ('ATTACK', 'Damage Per Meter', None),
-    ('ATTACK', 'Damage', None),
+    #('ATTACK', 'Damage', None),
     ('DEFENSE', 'Health', 1e6),
     ('DEFENSE', 'Wall Health', 1e6),
     ('DEFENSE', 'Health Regen', 1e6),
@@ -2570,7 +2571,7 @@ def detect_floating_gem(
         best_val = 0.0
         best_match_cx: Optional[int] = None
         best_match_cy: Optional[int] = None
-        threshold = 0.6
+        threshold = 0.45
 
         center_pt = (tw // 2, th // 2)
         for rot_deg in range(0, 360, 10):
@@ -2858,7 +2859,7 @@ def _get_category_upgrades_list(category: str) -> List[str]:
     elif category == 'UTILITY':
         return UTILITY_UPGRADES
     return []
-
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
 
 def _upgrade_row_index(category: str, label: str) -> Optional[int]:
     """Return the 0-based row index for *label* within its *category*.
@@ -3091,6 +3092,7 @@ def _do_upgrade_scroll(direction: str, w: int, h: int, message) -> None:
 def _active_upgrade_priority() -> list:
     """Return the upgrade priority list appropriate for the current tier."""
     tier = ctx.game_state.tier
+    if DISABLE_UPGRADES: return []
     if tier is not None and tier >= ctx.config.high_tier_threshold:
         return UPGRADE_PRIORITY_HIGH_TIER
     return UPGRADE_PRIORITY
@@ -3161,6 +3163,9 @@ def handle_upgrade_action(seen_page: Optional[str],
         return
 
     prio = _active_upgrade_priority()
+    if prio == []:
+        log.info('upgrades disabled')
+        return
     if ctx.upgrade_state >= len(prio):
         if ctx.upgrades_finished_time is None:
             ctx.upgrades_finished_time = now
