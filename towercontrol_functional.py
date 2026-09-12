@@ -287,7 +287,7 @@ class Config:
     cloud_grab_enabled: bool = True          # auto-click Yes on cloud grab warning
 
     # Resource-saving toggles (off by default to reduce CPU / disk)
-    video_enabled: bool = False              # push frames to video recorder
+    video_enabled: bool = True           # push frames to video recorder
     debug_images_enabled: bool = False       # save preprocessed.png etc.
     debug_jsonl_enabled: bool = False        # append to perks.jsonl / gems.jsonl
     file_logging_enabled: bool = False       # rotating log file at DEBUG level
@@ -2567,7 +2567,7 @@ def detect_floating_gem(
         best_val = 0.0
         best_match_cx: Optional[int] = None
         best_match_cy: Optional[int] = None
-        threshold = 0.45
+        threshold = 0.6
 
         center_pt = (tw // 2, th // 2)
         for rot_deg in range(0, 360, 10):
@@ -3166,7 +3166,10 @@ def handle_upgrade_action(seen_page: Optional[str],
     if prio == []:
         log.info('upgrades disabled')
         return
-    prio = [upgrade for upgrade in prio if upgrade[3] < int(ctx.game_state.wave)]
+    if ctx.game_state.wave is None:
+        prio = []
+    else:
+        prio = [upgrade for upgrade in prio if upgrade[3] < int(ctx.game_state.wave)]
     if ctx.upgrade_state >= len(prio):
         if ctx.upgrades_finished_time is None:
             ctx.upgrades_finished_time = now
@@ -3701,7 +3704,10 @@ def _summary_line(wave=None, sleep_secs: float = None, sleep_reason: str = None)
     """Build the per-tick summary log line from current ctx state."""
     global ctx
     pri_list = _active_upgrade_priority()
-    pri_list = [upgrade for upgrade in pri_list if upgrade[3] < int(ctx.game_state.wave)]
+    if ctx.game_state.wave is not None:
+        pri_list = [upgrade for upgrade in pri_list if upgrade[3] < int(ctx.game_state.wave)]
+    else:
+        pri_list = []
     _wave = wave if wave is not None else ctx.game_state.wave
     time_emulator_running = time.time() - ctx.emulator_start_time if ctx.emulator_start_time else 0
     time_game_running = (time.time() - ctx.game_state.battle_start_time) if ctx.game_state.battle_start_time else 0
