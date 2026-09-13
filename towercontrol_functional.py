@@ -199,6 +199,8 @@ UPGRADE_PRIORITY = [
     ('DEFENSE', 'Land Mine Radius', None, 9090),
     ('DEFENSE', 'Death Defy', None, 0),
     ('DEFENSE', 'Health Regen', None, 0),
+    ('UTILITY', 'Enemy Attack Level Skip', 1e8, 0),
+    ('UTILITY', 'Enemy Health Level Skip', 1e8,0),
     ('UTILITY', 'Enemy Attack Level Skip', 1e9, 0),
     ('UTILITY', 'Enemy Health Level Skip', 1e9, 0),
     ('ATTACK', 'Damage', None, 6000),
@@ -213,6 +215,8 @@ UPGRADE_PRIORITY = [
     ('DEFENSE', 'Wall Health', 1e6, 0),
     ('DEFENSE', 'Health Regen', 1e6, 0),
     ('DEFENSE', 'Health', None, 0),
+    ('UTILITY', 'Enemy Attack Level Skip', None, 0),
+    ('UTILITY', 'Enemy Health Level Skip', None, 0),
 ] 
 FLOATER_POSITIONS = [
     (0.5815, 0.3016)
