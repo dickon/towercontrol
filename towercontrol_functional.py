@@ -170,7 +170,7 @@ PERK_CHOICES = [
     r'Chrono Field Duration( \+[\d\.]+s)?',
     r'Unlock Chrono Field',
     r'(x[\d\.]+ )?Max Health',
-    r'Upgrade Chance for all',
+   # r'Upgrade Chance for all',
     r'Unlock poison swamp',
     r'(x[\d\.]+ )?Cash Bonus',
     r'Spotlight Damage Bonus( x[\d\.]+)?',
@@ -189,8 +189,9 @@ DISABLE_UPGRADES = False
 UPGRADE_PRIORITY = [
     ('UTILITY', 'Enemy Attack Level Skip', 1e7, 0),
     ('UTILITY', 'Enemy Health Level Skip', 1e7,0),
-    ('ATTACK', 'Damage', 3e5, 6000),
+    ('ATTACK', 'Damage', 3e5, 4500),
     ('DEFENSE', 'Health', 1e6, 0),
+    ('DEFENSE', 'Defense %', None, 3000),
     ('DEFENSE', 'Shockwave Size', None, 2000),
     ('DEFENSE', 'Shockwave Frequency', None, 2000),
     ('DEFENSE', 'Land Mine Chance', None, 9000),
@@ -1231,6 +1232,18 @@ def _content_frac_to_window_px(fx: float, fy: float) -> Tuple[int, int]:
     return px_x, px_y
 
 
+def _pause_input_after_failsafe(log: logging.Logger) -> None:
+    """Pause automated input after PyAutoGUI detects a screen-corner failsafe."""
+    global ctx
+    now = time.time()
+    ctx.input_enabled = False
+    ctx.input_paused_until = now + 20 * 60
+    ctx.status = "paused"
+    log.warning(
+        "PyAutoGUI fail-safe triggered; disabling automated input for 20 minutes"
+    )
+
+
 def do_click(message, click_x_frac, click_y_frac):
     global ctx
     log = logging.getLogger(__name__)
@@ -1282,7 +1295,12 @@ def do_click(message, click_x_frac, click_y_frac):
         except Exception as e:
             log.trace(f"Could not snapshot focus/cursor: {e}")
 
-        pyautogui.click(ax, ay, interval=config.click_pause)
+        try:
+            pyautogui.click(ax, ay, interval=config.click_pause)
+        except pyautogui.FailSafeException:
+            print('PyAutoGUI fail-safe triggered.')
+            _kill_bluestacks()
+            return False
         log.info(f"Clicked at ({ax}, {ay}); sleep for {config.click_pause:.2f} seconds" + (f"  [{message}]" if message else ""))
         time.sleep(config.click_pause)
 
@@ -3102,11 +3120,7 @@ def _advance_upgrade_state(from_label: str = "", reason: str = "") -> None:
     ctx.upgrade_scroll_direction = 'down'
     prio = _active_upgrade_priority()
     # filter prio to exclude any ugprads where field 3 is less than the current wave
-    print('raw prios')
-    pprint.pprint(prio)
     prio = [upgrade for upgrade in prio if upgrade[3] < int(ctx.game_state.wave)]
-    print('filetered prios')
-    pprint.pprint(prio)
     to_label = prio[ctx.upgrade_state][1] if ctx.upgrade_state < len(prio) else "â€”"
     if ctx.upgrade_state >= len(prio):
         log.info("All priority upgrades complete")
@@ -3407,8 +3421,14 @@ def execute_swipe(x: int, y: int, distance: int, direction: str,
     ax, ay = to_absolute_coords(x, y, rect)
     offset = distance if direction == "up" else -distance
     
-    pyautogui.moveTo(ax, ay)
-    pyautogui.drag(0, offset, duration=0.3)
+    try:
+        pyautogui.moveTo(ax, ay)
+        pyautogui.drag(0, offset, duration=0.3)
+    except pyautogui.FailSafeException:
+        log.warning("PyAutoGUI failsafe triggered during swipe - killing bluestacks")
+        # restart bluestacks
+        _kill_bluestacks()
+        return False
     log.info(f"Swiped {direction} from ({ax}, {ay}) by {offset} pixels; sleep for {config.swipe_pause:.2f} seconds")
     time.sleep(config.swipe_pause)
     return True
@@ -3796,6 +3816,19 @@ def automation_loop_tick():
         "My games button (priority, template match)"
     ):
         return False  # Exit the tick function immediately
+
+    # check for "games" in OCR text around (0.593, 0.494)
+
+    if _priority_click(
+        frame,
+        filter_fn=lambda r: 'games' in r.text.lower() and r.is_near(0.593, 0.494, 0.1),
+        log_message="PRIORITY: 'games' text detected at",
+        reason="games text (priority)",
+        wait_time=2,
+    ):
+        # click at 0.96, 0.02
+        do_click("Clicking top-right corner to exit games screen", 0.96, 0.02)
+    
 
     # PRIORITY: Check for cloud grab warning dialog ("Warning" + "Yes" button)
     if check_cloud_grab_warning(frame):
