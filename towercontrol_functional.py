@@ -1251,6 +1251,9 @@ def _pause_input_after_failsafe(log: logging.Logger) -> None:
 def do_click(message, click_x_frac, click_y_frac):
     global ctx
     log = logging.getLogger(__name__)
+    if ctx.window_rect is None:
+        log.warning(f"Click suppressed (no window): {message}")
+        return False
     w = ctx.window_rect.width
     h = ctx.window_rect.height
     # All stored click fractions are in the content-only coordinate frame.
