@@ -1236,16 +1236,6 @@ def _content_frac_to_window_px(fx: float, fy: float) -> Tuple[int, int]:
     return px_x, px_y
 
 
-def _pause_input_after_failsafe(log: logging.Logger) -> None:
-    """Pause automated input after PyAutoGUI detects a screen-corner failsafe."""
-    global ctx
-    now = time.time()
-    ctx.input_enabled = False
-    ctx.input_paused_until = now + 20 * 60
-    ctx.status = "paused"
-    log.warning(
-        "PyAutoGUI fail-safe triggered; disabling automated input for 20 minutes"
-    )
 
 
 def do_click(message, click_x_frac, click_y_frac):
@@ -1306,7 +1296,6 @@ def do_click(message, click_x_frac, click_y_frac):
             pyautogui.click(ax, ay, interval=config.click_pause)
         except pyautogui.FailSafeException:
             print('PyAutoGUI fail-safe triggered.')
-            _kill_bluestacks()
             return False
         log.info(f"Clicked at ({ax}, {ay}); sleep for {config.click_pause:.2f} seconds" + (f"  [{message}]" if message else ""))
         time.sleep(config.click_pause)
@@ -3434,7 +3423,6 @@ def execute_swipe(x: int, y: int, distance: int, direction: str,
     except pyautogui.FailSafeException:
         log.warning("PyAutoGUI failsafe triggered during swipe - killing bluestacks")
         # restart bluestacks
-        _kill_bluestacks()
         return False
     log.info(f"Swiped {direction} from ({ax}, {ay}) by {offset} pixels; sleep for {config.swipe_pause:.2f} seconds")
     time.sleep(config.swipe_pause)
@@ -4439,12 +4427,17 @@ def _is_bluestacks_running(process_name: str) -> bool:
 
 
 def watchdog_bluestacks_tick():
-    """Check if BlueStacks is running; restart it if not (with cooldown)."""
+    """Check if BlueStacks is running; restart it if not (with cooldown).
+
+    We may also restart bluestacks if the game UI has not been visible for a long time, but that is handled in watchdog_game_tick().
+    """
     global ctx
     log = logging.getLogger(__name__)
     if not ctx.config.watchdog_enabled:
         return
     if _is_bluestacks_running(ctx.config.bluestacks_process):
+
+        log.info('bluestacks is running')
         return
     now = time.time()
     if now - ctx.last_bs_restart < ctx.config.watchdog_cooldown:
@@ -4486,24 +4479,25 @@ def launch_game():
         log.error("Failed to launch BlueStacks: %s", exc)
 
 
-def watchdog_game_tick():
+def watchdog_game_liveness_tick():
     """If game UI has not been visible for game_launch_timeout seconds, relaunch BlueStacks."""
     global ctx
     log = logging.getLogger(__name__)
     if not ctx.config.game_launch_enabled:
+        log.info('game liveness watchdog disabled')
         return
     if ctx.hard_restart_running:
+        log.info('game liveness hard restart running')
         return  # hard restart already in progress; don't interfere
-    if not ctx.window_rect:
-        return  # BlueStacks window not present yet; BlueStacks watchdog handles this
     if not ctx.input_enabled:
-        ctx.last_game_ui_seen = time.time()  # don't count elapsed time while clicks are disabled
+        log.info('game liveness input disabled')
         return
     now = time.time()
     if now - ctx.last_game_ui_seen < ctx.config.game_launch_timeout:
+        log.info('game UI seen recently (%.0fs since last detection)', now - ctx.last_game_ui_seen)
         return  # game UI seen recently
     if now - ctx.last_game_launch < ctx.config.game_launch_cooldown:
-        log.trace("Game launch cooldown active (%.0fs remaining)",
+        log.info("Game launch cooldown active (%.0fs remaining)",
                   ctx.config.game_launch_cooldown - (now - ctx.last_game_launch))
         return
     log.warning("Game UI not seen for %.0fs â€” relaunching BlueStacks",
@@ -4592,13 +4586,14 @@ def watchdog_wave_stall_tick():
     if ctx.hard_restart_running:
         return
     if not ctx.input_enabled:
-        ctx.last_wave_advance = time.time()  # don't count elapsed time while clicks are paused
+        ctx.last_wave_advance = timeb.time()  # don't count elapsed time while clicks are paused
         return
     now = time.time()
     if ctx.last_wave_advance == 0.0:
         ctx.last_wave_advance = now
     stall_seconds = now - ctx.last_wave_advance
-    
+
+    log.info('last wave advance %.0fs ago (threshold %.0fs)', stall_seconds, ctx.config.wave_stall_timeout)
     if stall_seconds < ctx.config.wave_stall_timeout:
         if stall_seconds> 60:
             log.warning("Wave stall detected for %.0fs but below threshold of %.0fs",
@@ -4639,7 +4634,7 @@ def automation_loop_run(ctx: RuntimeContext):
             log.info("Input pause expired â€“ re-enabling input")
         try:
             watchdog_bluestacks_tick()
-            watchdog_game_tick()
+            watchdog_game_liveness_tick()
             watchdog_wave_stall_tick()
             idle = automation_loop_tick()
             ctx.idle = idle
